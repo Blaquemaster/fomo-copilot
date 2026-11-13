@@ -1,0 +1,148 @@
+name: Deploy
+
+on:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: none
+
+concurrency:
+  group: deploy-production
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Check deploy secrets
+        id: gate
+        env:
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+          DEPLOY_KNOWN_HOSTS: ${{ secrets.DEPLOY_KNOWN_HOSTS }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_ADMIN_CHAT_ID: ${{ secrets.TELEGRAM_ADMIN_CHAT_ID }}
+          HELIUS_API_KEY: ${{ secrets.HELIUS_API_KEY }}
+          POSTGRES_PASSWORD: ${{ secrets.POSTGRES_PASSWORD }}
+        run: |
+          set -euo pipefail
+          missing=()
+          for name in DEPLOY_SSH_KEY DEPLOY_HOST DEPLOY_USER DEPLOY_KNOWN_HOSTS TELEGRAM_BOT_TOKEN TELEGRAM_ADMIN_CHAT_ID HELIUS_API_KEY POSTGRES_PASSWORD; do
+            if [[ -z "${!name}" ]]; then
+              missing+=("$name")
+            fi
+          done
+          if ((${#missing[@]} > 0)); then
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+            echo "::notice title=Deploy skipped::Missing GitHub secrets: ${missing[*]}. The server is not contacted. Add the secrets listed in docs/runbook.md, then re-run this workflow."
+            exit 0
+          fi
+          if [[ "$DEPLOY_SSH_KEY" != *"PRIVATE KEY"* ]]; then
+            echo "DEPLOY_SSH_KEY does not look like a private key." >&2
+            exit 1
+          fi
+          if [[ ! "$DEPLOY_HOST" =~ ^[A-Za-z0-9._:-]+$ ]]; then
+            echo "DEPLOY_HOST contains unexpected characters." >&2
+            exit 1
+          fi
+          if [[ ! "$DEPLOY_USER" =~ ^[a-z][a-z0-9_-]{0,31}$ ]]; then
+            echo "DEPLOY_USER must be a simple Linux username. The bootstrap script creates 'deploy'." >&2
+            exit 1
+          fi
+          if [[ ! "$DEPLOY_KNOWN_HOSTS" =~ ssh-ed25519|ssh-rsa|ecdsa-sha2- ]]; then
+            echo "DEPLOY_KNOWN_HOSTS does not look like ssh-keyscan output." >&2
+            exit 1
+          fi
+          if [[ ${#POSTGRES_PASSWORD} -lt 8 || ${#TELEGRAM_BOT_TOKEN} -lt 8 || ${#HELIUS_API_KEY} -lt 8 ]]; then
+            echo "POSTGRES_PASSWORD, TELEGRAM_BOT_TOKEN, and HELIUS_API_KEY must each be at least 8 characters." >&2
+            exit 1
+          fi
+          if [[ ! "$TELEGRAM_ADMIN_CHAT_ID" =~ ^[1-9][0-9]*$ ]]; then
+            echo "TELEGRAM_ADMIN_CHAT_ID must be the positive integer id of your private chat." >&2
+            exit 1
+          fi
+          echo "skip=false" >> "$GITHUB_OUTPUT"
+
+      - name: Write env file and deploy over SSH
+        if: steps.gate.outputs.skip != 'true'
+        env:
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+          DEPLOY_KNOWN_HOSTS: ${{ secrets.DEPLOY_KNOWN_HOSTS }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_ADMIN_CHAT_ID: ${{ secrets.TELEGRAM_ADMIN_CHAT_ID }}
+          HELIUS_API_KEY: ${{ secrets.HELIUS_API_KEY }}
+          POSTGRES_PASSWORD: ${{ secrets.POSTGRES_PASSWORD }}
+        run: |
+          set -euo pipefail
+          umask 077
+          key_file="$(mktemp)"
+          known_file="$(mktemp)"
+          env_file="$(mktemp)"
+          trap 'rm -f "$key_file" "$known_file" "$env_file"' EXIT
+          printf '%s\n' "$DEPLOY_SSH_KEY" | sed 's/\\n/\n/g' > "$key_file"
+          printf '%s\n' "$DEPLOY_KNOWN_HOSTS" | sed 's/\\n/\n/g' > "$known_file"
+          chmod 600 "$key_file" "$known_file"
+          python3 - "$env_file" << 'PY'
+          import os, pathlib, sys, urllib.parse
+          destination = pathlib.Path(sys.argv[1])
+          password = os.environ["POSTGRES_PASSWORD"]
+          token = os.environ["TELEGRAM_BOT_TOKEN"]
+          chat = os.environ["TELEGRAM_ADMIN_CHAT_ID"]
+          helius = os.environ["HELIUS_API_KEY"]
+
+          def line(key, value):
+              if "\n" in value or "\r" in value or "\x00" in value:
+                  raise SystemExit(f"{key} contains a newline or NUL")
+              escaped = value.replace("\\", "\\\\").replace('"', '\\"')
+              return f'{key}="{escaped}"'
+
+          user = "fomo"
+          database = "fomo"
+          url = "postgres://%s:%s@postgres:5432/%s" % (
+              user,
+              urllib.parse.quote(password, safe=""),
+              database,
+          )
+          text = "\n".join([
+              line("NODE_ENV", "production"),
+              line("LOG_LEVEL", "info"),
+              line("POSTGRES_USER", user),
+              line("POSTGRES_PASSWORD", password),
+              line("POSTGRES_DB", database),
+              line("DATABASE_URL", url),
+              line("TELEGRAM_BOT_TOKEN", token),
+              line("TELEGRAM_ADMIN_CHAT_ID", chat),
+              line("HELIUS_API_KEY", helius),
+              line("THRESHOLDS_PATH", "/app/config/thresholds.yaml"),
+          ]) + "\n"
+          destination.write_text(text, encoding="utf-8")
+          PY
+          ssh_base=(
+            ssh
+            -i "$key_file"
+            -o IdentitiesOnly=yes
+            -o BatchMode=yes
+            -o StrictHostKeyChecking=yes
+            -o "UserKnownHostsFile=${known_file}"
+            -o ConnectTimeout=20
+          )
+          target="${DEPLOY_USER}@${DEPLOY_HOST}"
+          "${ssh_base[@]}" "$target" "umask 077; test -d /opt/fomo-copilot/.git; cat > /opt/fomo-copilot/.env.incoming" < "$env_file"
+          "${ssh_base[@]}" "$target" bash -s << 'REMOTE'
+          set -euo pipefail
+          cd /opt/fomo-copilot
+          export GIT_SSH_COMMAND="ssh -i ${HOME}/.ssh/github_deploy -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes -o UserKnownHostsFile=${HOME}/.ssh/known_hosts"
+          git fetch origin main
+          git checkout main
+          git pull --ff-only origin main
+          test -f .env.incoming
+          mv .env.incoming .env
+          chmod 600 .env
+          docker compose --env-file .env -f infra/docker-compose.yml up -d --build
+          docker image prune -f
+          REMOTE

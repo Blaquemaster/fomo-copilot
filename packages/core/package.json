@@ -1,0 +1,17 @@
+{
+  "name": "@fomo/core",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "dependencies": {
+    "pino": "10.4.0",
+    "yaml": "2.9.1",
+    "zod": "4.6.7"
+  }
+}
