@@ -1,0 +1,76 @@
+import { readFileSync, readdirSync, statSync } from "node:fs";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
+
+import { describe, expect, it } from "vitest";
+
+const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../..");
+
+describe("repository guards", () => {
+  it("publishes no host ports and does not bind 0.0.0.0", () => {
+    const compose = readFileSync(path.join(root, "infra/docker-compose.yml"), "utf8");
+    const rootCompose = readFileSync(path.join(root, "compose.yaml"), "utf8");
+    expect(compose).not.toMatch(/^\s*ports\s*:/m);
+    expect(compose).not.toContain("0.0.0.0");
+    expect(compose).not.toMatch(/transactionSubscribe/);
+    expect(rootCompose).not.toMatch(/^\s*ports\s*:/m);
+  });
+
+  it("gitignores .env and the example file has no token-shaped secret", () => {
+    const gitignore = readFileSync(path.join(root, ".gitignore"), "utf8");
+    expect(gitignore).toMatch(/^\.env$/m);
+    const example = readFileSync(path.join(root, ".env.example"), "utf8");
+    expect(example).not.toMatch(/\b\d{6,12}:[A-Za-z0-9_-]{20,}\b/);
+    expect(example).toContain("TELEGRAM_BOT_TOKEN=");
+    expect(example).toContain("TELEGRAM_ADMIN_CHAT_ID=0");
+  });
+
+  it("pins dependency versions without ranges", () => {
+    for (const file of packageJsonFiles(root)) {
+      const manifest = JSON.parse(readFileSync(file, "utf8")) as {
+        dependencies?: Record<string, string>;
+        devDependencies?: Record<string, string>;
+      };
+      for (const section of [manifest.dependencies, manifest.devDependencies]) {
+        if (section === undefined) continue;
+        for (const [name, version] of Object.entries(section)) {
+          expect(version, `${file} ${name}`).toMatch(/^\d+\.\d+\.\d+$/);
+        }
+      }
+    }
+  });
+
+  it("keeps the deploy workflow on strict host key checking", () => {
+    const workflow = readFileSync(path.join(root, ".github/workflows/deploy.yml"), "utf8");
+    expect(workflow).toContain("StrictHostKeyChecking=yes");
+    expect(workflow).not.toContain("StrictHostKeyChecking=no");
+    expect(workflow).not.toContain("0.0.0.0");
+    for (const name of [
+      "DEPLOY_SSH_KEY",
+      "DEPLOY_HOST",
+      "DEPLOY_USER",
+      "DEPLOY_KNOWN_HOSTS",
+      "TELEGRAM_BOT_TOKEN",
+      "TELEGRAM_ADMIN_CHAT_ID",
+      "HELIUS_API_KEY",
+      "POSTGRES_PASSWORD",
+    ]) {
+      expect(workflow).toContain(name);
+    }
+  });
+});
+
+function packageJsonFiles(directory: string): string[] {
+  const found: string[] = [];
+  for (const entry of readdirSync(directory)) {
+    if (entry === "node_modules" || entry === "dist" || entry === ".git") continue;
+    const full = path.join(directory, entry);
+    const stat = statSync(full);
+    if (stat.isDirectory()) {
+      found.push(...packageJsonFiles(full));
+    } else if (entry === "package.json") {
+      found.push(full);
+    }
+  }
+  return found;
+}

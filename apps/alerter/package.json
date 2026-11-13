@@ -1,0 +1,10 @@
+{
+  "name": "@fomo/alerter",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "dependencies": {
+    "@fomo/core": "0.0.0",
+    "grammy": "1.46.0"
+  }
+}

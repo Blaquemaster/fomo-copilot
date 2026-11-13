@@ -1,0 +1,9 @@
+{
+  "name": "@fomo/screener",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "dependencies": {
+    "@fomo/core": "0.0.0"
+  }
+}

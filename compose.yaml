@@ -1,0 +1,4 @@
+# `docker compose up -d --build` from the repository root.
+# Service definitions live in infra/docker-compose.yml.
+include:
+  - path: infra/docker-compose.yml

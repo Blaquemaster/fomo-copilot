@@ -1,0 +1,36 @@
+# Phase 0 defaults from the build spec, Section 7.
+# Placeholders to tune with paper-trading data. They are not trade recommendations.
+#
+# quiet_hours: "set-by-me", "off", or a 24-hour window "HH:MM-HH:MM" (overnight is allowed).
+# Risk sizes stay "set-by-me" until the owner sets a number.
+#
+# assumed_fee_bps is the spec's fallback (50 = 0.50%). Official FOMO help, verified
+# 2026-11-13, shows a route- and size-dependent schedule, and the Terms say the fee on
+# the confirmation screen controls. Keep 50 until the owner changes it. Paper trading
+# should record the confirmation-screen fee when that phase exists.
+
+screen:
+  first_screen_delay_s: 90
+  rescreen_at_min: [5, 30]
+  hard_fail:
+    mint_authority_active: true
+    freeze_authority_active: true
+    transfer_fee_bps_above: 300
+    exit_quote_impact_pct_above: 5
+    required_source_error: WATCH
+  soft:
+    top10_holders_pct_warn: 35
+    sniper_bundle_pct_warn: 30
+    min_liquidity_usd: 15000
+    min_unique_makers_1h: 50
+alerts:
+  max_per_hour: 6
+  quiet_hours: set-by-me
+risk_rules:
+  max_position_usd: set-by-me
+  max_concurrent_positions: set-by-me
+  daily_loss_cutoff_usd: set-by-me
+  no_averaging_down: true
+paper:
+  assumed_slippage_bps: 150
+  assumed_fee_bps: 50
