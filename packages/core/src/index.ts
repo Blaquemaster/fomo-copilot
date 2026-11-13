@@ -15,3 +15,42 @@ export {
   type CrashKind,
 } from "./telegram/crashAlert.js";
 export { sendTelegramMessage } from "./telegram/sendMessage.js";
+export { planCandidateWrites, tokenIsYoung, type CandidateDraft } from "./ingest/apply.js";
+export { encodeBase58, decodeBase58 } from "./ingest/base58.js";
+export {
+  allowanceCredits,
+  budgetLevel,
+  formatCredits,
+  projectMonthlyCredits,
+  selectWsMethod,
+  usageMicros,
+  utcDayStart,
+  utcMonth,
+  type HeliusPlan,
+  type ResolvedWsMethod,
+} from "./ingest/budget.js";
+export {
+  decodeProgramData,
+  observationsFromLogs,
+  observationsFromTransaction,
+  parseLogsNotification,
+  parseRpcTransaction,
+  parseTransactionNotification,
+  type Observation,
+} from "./ingest/decode.js";
+export {
+  DBC_PROGRAM_ID,
+  DAMM_V2_PROGRAM_ID,
+  DLMM_PROGRAM_ID,
+  QUOTE_MINTS,
+  TOKEN_MAX_AGE_MS,
+  WATCHED_PROGRAMS,
+} from "./ingest/programs.js";
+export {
+  SignatureWindow,
+  backoffDelayMs,
+  planBackfillPage,
+  silenceExceeded,
+} from "./ingest/reliability.js";
+export { formatIngestStatus, formatSpotCheck } from "./ingest/statusText.js";
+export { IngestRepository, createPool, migrate } from "./db/ingest.js";

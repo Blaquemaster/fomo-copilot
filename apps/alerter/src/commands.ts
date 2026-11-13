@@ -3,9 +3,11 @@ import { isAllowlistedAdmin } from "@fomo/core";
 export type HandleResult =
   | { action: "ignore"; reason: "not-allowlisted" | "empty" }
   | { action: "reply" }
+  | { action: "status" }
+  | { action: "events" }
   | { action: "crash" };
 
-const HELP = "Commands: /ping, /crashtest";
+const HELP = "Commands: /ping, /status, /events, /crashtest";
 
 export async function handleTelegramMessage(input: {
   chatId: number | string | undefined;
@@ -26,6 +28,12 @@ export async function handleTelegramMessage(input: {
   if (command === "/ping") {
     await input.reply("pong");
     return { action: "reply" };
+  }
+  if (command === "/status") {
+    return { action: "status" };
+  }
+  if (command === "/events") {
+    return { action: "events" };
   }
   if (command === "/crashtest") {
     await input.reply("Crash test triggered. This process will exit after sending an alert.");

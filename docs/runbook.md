@@ -122,6 +122,31 @@ docker compose --env-file .env -f infra/docker-compose.yml ps
 docker compose --env-file .env -f infra/docker-compose.yml logs alerter
 ```
 
+## Ingest (Phase 1)
+
+No new GitHub secrets. `HELIUS_API_KEY` is already written into the server `.env`.
+
+Optional GitHub Actions **variables** (Settings → Secrets and variables → Actions → Variables), not secrets:
+
+| Variable         | Default if unset | Values                                                                                            |
+| ---------------- | ---------------- | ------------------------------------------------------------------------------------------------- |
+| `HELIUS_PLAN`    | `developer`      | `developer` or `free`. Set `free` on 2026-12-07 unless the Developer plan is renewed.             |
+| `HELIUS_WS_MODE` | `auto`           | `auto`, `standard`, or `enhanced`. `auto` uses `transactionSubscribe` only on developer.          |
+| `INGEST_MODE`    | `dry-run`        | `dry-run` or `continuous`. Dry-run still stores events. Leave it on dry-run for the 24 hour soak. |
+
+After merge, the ingestor connects on its own. On the server:
+
+```bash
+cd /opt/fomo-copilot
+docker compose --env-file .env -f infra/docker-compose.yml logs -f ingestor
+docker compose --env-file .env -f infra/docker-compose.yml exec -T ingestor \
+  node apps/ingestor/dist/main.js --spot-check
+```
+
+In the admin chat, `/status` shows connection state, events today, bytes today, and the 30-day credit projection. `/events` prints recent rows with Solscan links. A laptop with `.env` can run `scripts/spot-check-events.sh` after `npm run build`.
+
+Leave it for 24 hours. Then spot-check 20 signatures on Solscan, read the projection, and only then set `INGEST_MODE` to `continuous` if the credit estimate is acceptable. A disconnect or 60 seconds without a socket message (including ping replies) sends a Telegram alert. Non-essential RPC pauses at 90% of the monthly allowance.
+
 ## 7. Test /ping
 
 From your phone, open the bot and send:

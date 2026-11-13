@@ -53,6 +53,25 @@ describe("handleTelegramMessage", () => {
     expect(order[1]).toContain("/crashtest");
   });
 
+  it("lets only the admin request ingest status", async () => {
+    const stranger = await handleTelegramMessage({
+      chatId: 7,
+      text: "/status",
+      adminChatId,
+      reply: async () => undefined,
+      crash: async () => undefined,
+    });
+    expect(stranger.action).toBe("ignore");
+    const admin = await handleTelegramMessage({
+      chatId: 424242,
+      text: "/events",
+      adminChatId,
+      reply: async () => undefined,
+      crash: async () => undefined,
+    });
+    expect(admin).toEqual({ action: "events" });
+  });
+
   it("does not crash when a non-admin sends /crashtest", async () => {
     const crash = vi.fn(async () => undefined);
     const result = await handleTelegramMessage({

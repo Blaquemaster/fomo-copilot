@@ -1,7 +1,14 @@
 import { hostname } from "node:os";
 
-import { deliverCrashAlert, secretValuesFromEnv, startApp } from "@fomo/core";
+import {
+  IngestRepository,
+  createPool,
+  deliverCrashAlert,
+  secretValuesFromEnv,
+  startApp,
+} from "@fomo/core";
 import { Bot } from "grammy";
+import type pg from "pg";
 
 import { handleTelegramMessage } from "./commands.js";
 
@@ -13,6 +20,11 @@ await startApp({
     }
 
     const secrets = secretValuesFromEnv(env);
+    let pool: pg.Pool | null = null;
+    const ingest = () => {
+      pool ??= createPool(env.DATABASE_URL);
+      return new IngestRepository(pool);
+    };
     const bot = new Bot(env.TELEGRAM_BOT_TOKEN, {
       client: {
         // Longer than the 30s long poll, shorter than grammY's 500s default,
@@ -46,6 +58,25 @@ await startApp({
       });
       if (result.action === "ignore") {
         logger.info({ reason: result.reason }, "ignored telegram update");
+        return;
+      }
+      if (result.action === "status" || result.action === "events") {
+        try {
+          const text =
+            result.action === "status"
+              ? await ingest().statusReport({
+                  plan: env.HELIUS_PLAN,
+                  allowanceOverride: env.HELIUS_MONTHLY_CREDITS,
+                  now: new Date(),
+                })
+              : await ingest().spotCheckText(20);
+          await ctx.reply(text);
+        } catch (error) {
+          logger.error({ err: error }, "ingest query failed");
+          await ctx.reply(
+            result.action === "status" ? "ingest status unavailable" : "stored events unavailable",
+          );
+        }
       }
     });
 
