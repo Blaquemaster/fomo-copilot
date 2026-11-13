@@ -12,6 +12,12 @@ export function backoffDelayMs(attempt: number, random: () => number = Math.rand
 
 export const SILENCE_MS = 60_000;
 
+/** Helius/Solana -32015 means the client asked for a transaction version it did not accept. */
+export function nextTransactionVersion(code: number | null, attempt: number): number | null {
+  if (code === -32015 && attempt === 0) return 1;
+  return null;
+}
+
 /** In-process dedupe in front of the signature unique key in Postgres. */
 export class SignatureWindow {
   private readonly seen = new Set<string>();

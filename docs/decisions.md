@@ -1,5 +1,19 @@
 # Decision log
 
+## 2026-11-13 — Ingest cost and decode fix
+
+The first dry-run on fomo-1 used `transactionSubscribe` with `accountInclude` set to the three program ids. That is every swap, not just launches. About 1.06 GB and 21,381 credits arrived in 11.5 minutes, which projects to roughly 79M credits over 30 days against a 10M Developer allowance.
+
+`auto` now subscribes with `parsedTransactionSubscribe` on `wss://beta.helius-rpc.com`, filtered to initialize and `migration_damm_v2` instruction names. Helius documents that method on every plan at 1 credit per delivered event, with fields AND-ed and names matched case- and separator-insensitively: https://www.helius.dev/docs/api-reference/parsed-streams/parsedtransactionsubscribe
+
+From the same 11.5 minute window the interesting rows were 19 DBC inits, 34 DAMM v2 inits, and 38 migrations (DLMM was zero). At 1 credit each that is about 340,000 credits per 30 days: about 3.4% of Developer and about 34% of Free. Ordinary swaps, which were the firehose, are not subscribed. Curve completion that happens only inside a swap is not subscribed either; graduation is the `migration_damm_v2` instruction. `enhanced` remains available only when `HELIUS_PLAN=developer` and `HELIUS_WS_MODE=enhanced`, and it is not the default.
+
+The credit projection uses `ingest_status.soak_started_at` and `credits_since_start`, not UTC midnight.
+
+Mint and pool were null because Anchor events in these transactions are inner instructions prefixed with `e445a52e51cb9a1d`, not `Program data:` logs, and the instruction-name log was stored before accounts were read. Rows without a pool, or without a mint when the kind needs one, are not inserted. `getTransaction` rpc `-32015` retries once with `maxSupportedTransactionVersion: 1`. A signature gap past the first page does not call `getTransaction`.
+
+Real fixtures: DAMM v2 inits `3YL1tKH3…WQNVm` and `5fnZtmht…QyFieJ`, migration `4NZnhkpug…vrdmw6`. A live DBC initialize was not in the small public-RPC sample (recent DBC signatures are almost all swaps; public RPC then returned 429). The parsed-notification test covers `initialize_virtual_pool_with_spl_token` named accounts.
+
 ## 2026-11-13 — Phase 1 ingest
 
 Helius docs checked again on this date (credits, plans, LaserStream WebSocket, `transactionSubscribe`):

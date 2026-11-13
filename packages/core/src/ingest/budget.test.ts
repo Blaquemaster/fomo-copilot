@@ -12,11 +12,12 @@ import type { Observation } from "./decode.js";
 import { TOKEN_MAX_AGE_MS } from "./programs.js";
 
 describe("helius method selection", () => {
-  it("uses enhanced websockets only when the plan allows them", () => {
-    expect(selectWsMethod("developer", "auto")).toBe("enhanced");
-    expect(selectWsMethod("free", "auto")).toBe("standard");
-    expect(selectWsMethod("free", "enhanced")).toBe("standard");
-    expect(selectWsMethod("developer", "standard")).toBe("standard");
+  it("defaults every plan to the filtered parsed stream", () => {
+    expect(selectWsMethod("developer", "auto")).toBe("parsed");
+    expect(selectWsMethod("free", "auto")).toBe("parsed");
+    expect(selectWsMethod("free", "enhanced")).toBe("parsed");
+    expect(selectWsMethod("developer", "standard")).toBe("parsed");
+    expect(selectWsMethod("developer", "enhanced")).toBe("enhanced");
     expect(allowanceCredits("free", undefined)).toBe(1_000_000n);
     expect(allowanceCredits("developer", 25)).toBe(25n);
   });

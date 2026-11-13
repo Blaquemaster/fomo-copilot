@@ -131,10 +131,10 @@ Optional GitHub Actions **variables** (Settings → Secrets and variables → Ac
 | Variable         | Default if unset | Values                                                                                            |
 | ---------------- | ---------------- | ------------------------------------------------------------------------------------------------- |
 | `HELIUS_PLAN`    | `developer`      | `developer` or `free`. Set `free` on 2026-12-07 unless the Developer plan is renewed.             |
-| `HELIUS_WS_MODE` | `auto`           | `auto`, `standard`, or `enhanced`. `auto` uses `transactionSubscribe` only on developer.          |
+| `HELIUS_WS_MODE` | `auto`           | `auto` and `standard` use the filtered parsed stream. `enhanced` is the full-program firehose.    |
 | `INGEST_MODE`    | `dry-run`        | `dry-run` or `continuous`. Dry-run still stores events. Leave it on dry-run for the 24 hour soak. |
 
-After merge, the ingestor connects on its own. On the server:
+The next deploy starts the ingestor on the filtered stream. That is safe to leave running. On the server:
 
 ```bash
 cd /opt/fomo-copilot

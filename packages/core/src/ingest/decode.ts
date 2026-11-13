@@ -1,14 +1,16 @@
 import { decodeBase58 } from "./base58.js";
 import { reader, readPubkey, readU16 } from "./borsh.js";
 import {
+  ANCHOR_EVENT_DISC,
   DAMM_V2_PROGRAM_ID,
   DBC_PROGRAM_ID,
   DISC,
   DLMM_PROGRAM_ID,
-  MIGRATION_DAMM_V2_ACCOUNTS,
+  INSTRUCTION_LAYOUTS,
   QUOTE_MINTS,
   sameDisc,
   type EventKind,
+  type InstructionLayout,
   type PoolType,
 } from "./programs.js";
 
@@ -92,6 +94,54 @@ export function parseTransactionNotification(
   };
 }
 
+export function parseParsedNotification(
+  message: unknown,
+  receivedBytes: number,
+): ParsedFrame | null {
+  if (!isRecord(message) || message["method"] !== "parsedTransactionNotification") return null;
+  const result = asRecord(asRecord(message["params"])?.["result"]);
+  const value = asRecord(result?.["value"]);
+  const transaction = asRecord(value?.["transaction"]);
+  const context = asRecord(result?.["context"]);
+  const signature =
+    typeof transaction?.["signature"] === "string" ? transaction["signature"] : null;
+  const slot =
+    typeof transaction?.["slot"] === "number"
+      ? transaction["slot"]
+      : typeof context?.["slot"] === "number"
+        ? context["slot"]
+        : null;
+  if (signature === null || slot === null) return null;
+  if (transaction?.["error"] != null) return null;
+  const blockTime =
+    typeof transaction?.["blockTime"] === "number" ? transaction["blockTime"] * 1000 : null;
+  const instructions = Array.isArray(value?.["instructions"]) ? value["instructions"] : [];
+  const found: Observation[] = [];
+  for (const instruction of instructions) {
+    const record = asRecord(instruction);
+    if (record === null || typeof record["instructionName"] !== "string") continue;
+    const kind = kindFromInstructionName(record["instructionName"]);
+    if (kind === null) continue;
+    const programId = typeof record["programId"] === "string" ? record["programId"] : "";
+    const named = namedAccounts(asRecord(record["decoded"]));
+    const rawAccounts = accountPubkeys({ accounts: record["rawAccounts"] }, []);
+    const built = observationFromParsedAccounts({
+      kind,
+      programId,
+      named,
+      rawAccounts,
+      signature,
+      slot,
+      blockTimeMs: blockTime,
+      eventIndex: found.length,
+    });
+    if (built) found.push(built);
+  }
+  const observations = dedupeObservations(found);
+  if (observations.length === 0) return null;
+  return { observations, byteLength: receivedBytes, signature, slot };
+}
+
 export interface ParsedFrame {
   observations: Observation[];
   byteLength: number;
@@ -117,14 +167,7 @@ export function observationsFromLogs(input: {
       stack.pop();
       continue;
     }
-    const instruction = /^Program log: Instruction: (.+)$/.exec(line);
-    if (instruction?.[1]) {
-      const kind = kindFromInstructionName(instruction[1], stack.at(-1) ?? "");
-      if (kind) {
-        found.push(blankObservation(input, kind.kind, kind.poolType, kind.programId, found.length));
-      }
-      continue;
-    }
+    if (/^Program log: Instruction: /.test(line)) continue;
     const data = /^Program data: ([A-Za-z0-9+/=]+)$/.exec(line);
     if (!data?.[1]) continue;
     const programId = stack.at(-1);
@@ -140,7 +183,7 @@ export function observationsFromLogs(input: {
       quoteMint: decoded.quoteMint,
     });
   }
-  return preferDetailed(found);
+  return preferDetailed(found).filter(isPersistable);
 }
 
 export function decodeProgramData(
@@ -221,30 +264,28 @@ function eventBody(
   return { kind, poolType, mint, pool, creatorWallet, virtualPool, quoteMint };
 }
 
-function kindFromInstructionName(
-  name: string,
-  programId: string,
-): { kind: EventKind; poolType: PoolType; programId: string } | null {
-  const normalized = name.toLowerCase().replaceAll("_", "").replaceAll(" ", "");
-  if (programId === DBC_PROGRAM_ID) {
-    if (normalized.includes("initializevirtualpool")) {
-      return { kind: "dbc_initialize", poolType: "dbc", programId };
-    }
-    if (normalized === "migrationdammv2") {
-      return { kind: "dbc_migration_damm_v2", poolType: "damm_v2", programId };
-    }
-  }
+export function isPersistable(observation: Observation): boolean {
+  if (observation.pool === null) return false;
+  if (observation.kind === "dbc_curve_complete") return true;
+  return observation.mint !== null;
+}
+
+export function normalizeInstructionName(name: string): string {
+  return name.toLowerCase().replaceAll("_", "").replaceAll(" ", "");
+}
+
+function kindFromInstructionName(name: string): EventKind | null {
+  const normalized = normalizeInstructionName(name);
+  if (normalized.includes("initializevirtualpool")) return "dbc_initialize";
+  if (normalized === "migrationdammv2") return "dbc_migration_damm_v2";
   if (
-    programId === DAMM_V2_PROGRAM_ID &&
-    (normalized.startsWith("initializepool") || normalized.startsWith("initializecustomizablepool"))
+    normalized.startsWith("initializecustomizablepool") ||
+    normalized.startsWith("initializepool")
   ) {
-    return { kind: "damm_v2_initialize", poolType: "damm_v2", programId };
+    return "damm_v2_initialize";
   }
-  if (
-    programId === DLMM_PROGRAM_ID &&
-    (normalized.startsWith("initializelbpair") || normalized.includes("permissionlesslbpair"))
-  ) {
-    return { kind: "dlmm_initialize", poolType: "dlmm", programId };
+  if (normalized.startsWith("initializelbpair") || normalized.includes("permissionlesslbpair")) {
+    return "dlmm_initialize";
   }
   return null;
 }
@@ -272,6 +313,75 @@ export function parseRpcTransaction(result: unknown, signature: string): Observa
     },
   });
   return dedupeObservations([...fromLogs, ...fromInstructions]);
+}
+
+function observationFromParsedAccounts(input: {
+  kind: EventKind;
+  programId: string;
+  named: Map<string, string>;
+  rawAccounts: string[];
+  signature: string;
+  slot: number;
+  blockTimeMs: number | null;
+  eventIndex: number;
+}): Observation | null {
+  const poolType: PoolType =
+    input.kind === "dbc_initialize" || input.kind === "dbc_curve_complete"
+      ? "dbc"
+      : input.kind === "dlmm_initialize"
+        ? "dlmm"
+        : "damm_v2";
+  const pick = (...names: string[]): string | null => {
+    for (const name of names) {
+      const value = input.named.get(normalizeInstructionName(name));
+      if (value) return value;
+    }
+    return null;
+  };
+  let mint = pick("base_mint");
+  const pool = pick("pool", "lb_pair");
+  const mintA = pick("token_a_mint", "token_mint_x", "token_x");
+  const mintB = pick("token_b_mint", "token_mint_y", "token_y");
+  if (mint === null && mintA !== null) {
+    mint = mintB === null ? mintA : chooseTokenMint(mintA, mintB);
+  }
+  const creator = pick("creator", "funder", "payer");
+  const virtualPool = pick("virtual_pool");
+  const quoteMint = pick("quote_mint");
+  if ((mint === null || pool === null) && input.rawAccounts.length > 0) {
+    const layout = INSTRUCTION_LAYOUTS.find(
+      (entry) => entry.layout.kind === input.kind && entry.programId === input.programId,
+    );
+    if (layout) {
+      const fromRaw = observationFromLayout(
+        { ...input, programId: input.programId, accounts: input.rawAccounts },
+        layout.layout,
+      );
+      if (fromRaw && isPersistable(fromRaw)) return fromRaw;
+    }
+  }
+  const observation: Observation = {
+    ...blankObservation(input, input.kind, poolType, input.programId, input.eventIndex),
+    mint,
+    pool,
+    creatorWallet: creator,
+    virtualPool,
+    quoteMint,
+  };
+  return isPersistable(observation) ? observation : null;
+}
+
+function namedAccounts(decoded: Record<string, unknown> | null): Map<string, string> {
+  const out = new Map<string, string>();
+  const accounts = decoded?.["accounts"];
+  if (!Array.isArray(accounts)) return out;
+  for (const account of accounts) {
+    const record = asRecord(account);
+    if (record && typeof record["name"] === "string" && typeof record["pubkey"] === "string") {
+      out.set(normalizeInstructionName(record["name"]), record["pubkey"]);
+    }
+  }
+  return out;
 }
 
 export function observationsFromTransaction(input: {
@@ -305,12 +415,11 @@ export function observationsFromTransaction(input: {
     } catch {
       continue;
     }
-    const accounts = accountIndexes(record);
+    const accounts = accountPubkeys(record, keys);
     const built = observationFromInstruction({
       programId,
       data: raw,
       accounts,
-      keys,
       signature: input.signature,
       slot: input.slot,
       blockTimeMs: input.blockTimeMs,
@@ -324,36 +433,60 @@ export function observationsFromTransaction(input: {
 function observationFromInstruction(input: {
   programId: string | null;
   data: Uint8Array;
-  accounts: number[];
-  keys: string[];
+  accounts: string[];
   signature: string;
   slot: number;
   blockTimeMs: number | null;
   eventIndex: number;
 }): Observation | null {
-  if (input.programId === null || input.data.length < 8) return null;
-  const key = (index: number): string | null => {
-    const accountIndex = input.accounts[index];
-    if (accountIndex === undefined) return null;
-    return input.keys[accountIndex] ?? null;
-  };
-  if (input.programId === DBC_PROGRAM_ID && sameDisc(input.data, DISC.ixMigrationDammV2)) {
+  const programId = input.programId;
+  if (programId === null || input.data.length < 8) return null;
+  if (sameDisc(input.data, ANCHOR_EVENT_DISC) && input.data.length >= 16) {
+    const decoded = decodeProgramData(
+      programId,
+      Buffer.from(input.data.subarray(8)).toString("base64"),
+    );
+    if (!decoded) return null;
     return {
-      signature: input.signature,
-      slot: input.slot,
-      programId: input.programId,
-      eventIndex: input.eventIndex,
-      kind: "dbc_migration_damm_v2",
-      poolType: "damm_v2",
-      mint: key(MIGRATION_DAMM_V2_ACCOUNTS.baseMint),
-      pool: key(MIGRATION_DAMM_V2_ACCOUNTS.dammPool),
-      creatorWallet: key(MIGRATION_DAMM_V2_ACCOUNTS.payer),
-      virtualPool: key(MIGRATION_DAMM_V2_ACCOUNTS.virtualPool),
-      quoteMint: key(MIGRATION_DAMM_V2_ACCOUNTS.quoteMint),
-      blockTimeMs: input.blockTimeMs,
+      ...blankObservation(input, decoded.kind, decoded.poolType, programId, input.eventIndex),
+      mint: decoded.mint,
+      pool: decoded.pool,
+      creatorWallet: decoded.creatorWallet,
+      virtualPool: decoded.virtualPool,
+      quoteMint: decoded.quoteMint,
     };
   }
-  return null;
+  const match = INSTRUCTION_LAYOUTS.find(
+    (entry) => entry.programId === programId && sameDisc(input.data, entry.disc),
+  );
+  if (!match) return null;
+  return observationFromLayout({ ...input, programId }, match.layout);
+}
+
+function observationFromLayout(
+  input: {
+    programId: string;
+    accounts: string[];
+    signature: string;
+    slot: number;
+    blockTimeMs: number | null;
+    eventIndex: number;
+  },
+  layout: InstructionLayout,
+): Observation | null {
+  const at = (index: number | null): string | null =>
+    index === null ? null : (input.accounts[index] ?? null);
+  const mintA = at(layout.mintA);
+  const mintB = at(layout.mintB);
+  const mint = mintA === null ? null : mintB === null ? mintA : chooseTokenMint(mintA, mintB);
+  return {
+    ...blankObservation(input, layout.kind, layout.poolType, input.programId, input.eventIndex),
+    mint,
+    pool: at(layout.pool),
+    creatorWallet: at(layout.creator),
+    virtualPool: at(layout.virtualPool),
+    quoteMint: at(layout.quoteMint),
+  };
 }
 
 function accountKeys(
@@ -394,12 +527,17 @@ function programIdOf(instruction: Record<string, unknown>, keys: string[]): stri
   return null;
 }
 
-function accountIndexes(instruction: Record<string, unknown>): number[] {
+function accountPubkeys(instruction: Record<string, unknown>, keys: string[]): string[] {
   const accounts = instruction["accounts"];
-  if (Array.isArray(accounts) && accounts.every((value) => typeof value === "number")) {
-    return accounts;
-  }
-  return [];
+  if (!Array.isArray(accounts)) return [];
+  return accounts
+    .map((account) => {
+      if (typeof account === "number") return keys[account] ?? null;
+      if (typeof account === "string") return account;
+      const record = asRecord(account);
+      return typeof record?.["pubkey"] === "string" ? record["pubkey"] : null;
+    })
+    .filter((account): account is string => account !== null);
 }
 
 function stringList(value: unknown): string[] {
@@ -437,6 +575,7 @@ function dedupeObservations(observations: Observation[]): Observation[] {
     const key = `${observation.kind}:${observation.pool ?? ""}:${observation.mint ?? ""}:${observation.virtualPool ?? ""}`;
     if (seen.has(key)) continue;
     seen.add(key);
+    if (!isPersistable(observation)) continue;
     out.push({ ...observation, eventIndex: out.length });
   }
   return out;

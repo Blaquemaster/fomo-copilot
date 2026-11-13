@@ -1,3 +1,15 @@
+import { nextTransactionVersion } from "@fomo/core";
+
+export class HeliusRpcError extends Error {
+  readonly code: number | null;
+
+  constructor(message: string, code: number | null) {
+    super(message);
+    this.name = "HeliusRpcError";
+    this.code = code;
+  }
+}
+
 export async function heliusRpc(input: {
   apiKey: string;
   method: string;
@@ -35,9 +47,35 @@ export async function heliusRpc(input: {
       ? (body as { error?: { code?: number }; result?: unknown })
       : null;
   if (record?.error) {
-    throw new Error(`helius ${input.method} rpc ${record.error.code ?? "error"}`);
+    throw new HeliusRpcError(
+      `helius ${input.method} rpc ${record.error.code ?? "error"}`,
+      record.error.code ?? null,
+    );
   }
   return record?.result;
+}
+
+export async function getTransaction(apiKey: string, signature: string): Promise<unknown> {
+  const config = (version: number) => ({
+    encoding: "json",
+    commitment: "confirmed",
+    maxSupportedTransactionVersion: version,
+  });
+  try {
+    return await heliusRpc({
+      apiKey,
+      method: "getTransaction",
+      params: [signature, config(0)],
+    });
+  } catch (error) {
+    const retry = nextTransactionVersion(error instanceof HeliusRpcError ? error.code : null, 0);
+    if (retry === null) throw error;
+    return await heliusRpc({
+      apiKey,
+      method: "getTransaction",
+      params: [signature, config(retry)],
+    });
+  }
 }
 
 export function websocketUrl(apiKey: string): string {

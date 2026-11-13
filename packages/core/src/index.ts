@@ -23,6 +23,7 @@ export {
   formatCredits,
   projectMonthlyCredits,
   selectWsMethod,
+  MICROS_PER_CREDIT,
   usageMicros,
   utcDayStart,
   utcMonth,
@@ -33,12 +34,15 @@ export {
   decodeProgramData,
   observationsFromLogs,
   observationsFromTransaction,
+  isPersistable,
   parseLogsNotification,
+  parseParsedNotification,
   parseRpcTransaction,
   parseTransactionNotification,
   type Observation,
 } from "./ingest/decode.js";
 export {
+  PARSED_INSTRUCTION_NAMES,
   DBC_PROGRAM_ID,
   DAMM_V2_PROGRAM_ID,
   DLMM_PROGRAM_ID,
@@ -50,6 +54,7 @@ export {
   SignatureWindow,
   backoffDelayMs,
   planBackfillPage,
+  nextTransactionVersion,
   silenceExceeded,
 } from "./ingest/reliability.js";
 export { formatIngestStatus, formatSpotCheck } from "./ingest/statusText.js";

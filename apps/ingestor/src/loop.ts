@@ -5,7 +5,10 @@ import {
   allowanceCredits,
   backoffDelayMs,
   budgetLevel,
+  MICROS_PER_CREDIT,
+  PARSED_INSTRUCTION_NAMES,
   parseLogsNotification,
+  parseParsedNotification,
   parseRpcTransaction,
   parseTransactionNotification,
   planBackfillPage,
@@ -22,9 +25,10 @@ import {
   type ResolvedWsMethod,
 } from "@fomo/core";
 
-import { heliusRpc } from "./helius.js";
+import { getTransaction, heliusRpc } from "./helius.js";
 
-const MAX_FRAME_CHARS = 2_000_000;
+const MAX_FRAME_CHARS = 100_000;
+const MAX_QUEUED_FRAMES = 2;
 const BACKFILL_MAX_PAGES = 3;
 const BACKFILL_MAX_TRANSACTIONS = 20;
 const STATUS_MS = 15_000;
@@ -43,10 +47,10 @@ export async function runIngestLoop(input: {
   ];
   let attempt = 0;
   const choice = { method: selectWsMethod(input.env.HELIUS_PLAN, input.env.HELIUS_WS_MODE) };
-  if (input.env.HELIUS_WS_MODE === "enhanced" && choice.method === "standard") {
+  if (input.env.HELIUS_WS_MODE === "enhanced" && choice.method === "parsed") {
     input.logger.warn(
       { plan: input.env.HELIUS_PLAN },
-      "enhanced websockets are not available on this plan; using standard logsSubscribe",
+      "enhanced websockets are not used on this plan; using the filtered parsed stream",
     );
   }
   while (!input.signal.aborted) {
@@ -78,9 +82,9 @@ async function runSocket(input: {
   choice: { method: ResolvedWsMethod };
   secrets: string[];
 }): Promise<void> {
-  const ws = new WebSocket(websocketUrlSafe(input.env.HELIUS_API_KEY));
+  const ws = new WebSocket(websocketUrlSafe(input.env.HELIUS_API_KEY, input.choice.method));
   const seen = new SignatureWindow();
-  let method = input.choice.method;
+  const method = input.choice.method;
   let lastMessageAt = Date.now();
   let silentClose = false;
   let lastSlot: number | null = null;
@@ -107,6 +111,9 @@ async function runSocket(input: {
       creditMicros: usageMicros({ streamedBytes: 0n, rpcCalls: 0, socketOpens: 1 }),
     });
     subscribe(ws, method);
+    for (const programId of WATCHED_PROGRAMS) {
+      input.logger.info({ method, programId }, "subscription requested");
+    }
     input.logger.info(
       { method, plan: input.env.HELIUS_PLAN, mode: input.env.INGEST_MODE },
       "helius subscription started",
@@ -126,8 +133,11 @@ async function runSocket(input: {
       () => ({ method, lastSlot }),
     );
     let chain = Promise.resolve();
+    let queued = 0;
     ws.addEventListener("message", (event) => {
       lastMessageAt = Date.now();
+      if (queued >= MAX_QUEUED_FRAMES) return;
+      queued += 1;
       chain = chain
         .then(async () =>
           handleText(await frameText(event.data), {
@@ -139,18 +149,20 @@ async function runSocket(input: {
               lastSlot = slot;
             },
             onRejectEnhanced: () => {
-              method = "standard";
-              input.choice.method = "standard";
+              input.choice.method = "parsed";
               input.logger.warn(
                 {},
-                "transactionSubscribe was rejected; falling back to logsSubscribe",
+                "enhanced subscription rejected; reconnecting with the filtered stream",
               );
-              subscribe(ws, "standard");
+              ws.close();
             },
           }),
         )
         .catch((error: unknown) => {
           input.logger.error({ err: error }, "failed to handle helius frame");
+        })
+        .finally(() => {
+          queued -= 1;
         });
     });
     await Promise.race([closed, abortPromise(input.signal)]);
@@ -267,20 +279,32 @@ async function handleText(
     input.onRejectEnhanced();
   }
   const frame =
-    input.method === "enhanced"
-      ? (parseTransactionNotification(message, Number(bytes)) ??
-        parseLogsNotification(message, Number(bytes)))
-      : parseLogsNotification(message, Number(bytes));
+    input.method === "parsed"
+      ? parseParsedNotification(message, Number(bytes))
+      : (parseTransactionNotification(message, Number(bytes)) ??
+        parseLogsNotification(message, Number(bytes)));
+  const parsedEvent = isRecord(message) && message["method"] === "parsedTransactionNotification";
   await input.repo.addUsage({
     now: new Date(),
     streamedBytes: bytes,
     messages: 1,
     storedEvents: 0,
-    creditMicros: usageMicros({ streamedBytes: bytes, rpcCalls: 0, socketOpens: 0 }),
+    creditMicros:
+      input.method === "parsed"
+        ? parsedEvent
+          ? MICROS_PER_CREDIT
+          : 0n
+        : usageMicros({ streamedBytes: bytes, rpcCalls: 0, socketOpens: 0 }),
   });
   if (!frame) {
-    if (isRecord(message) && typeof message["method"] === "string")
+    if (isRecord(message) && typeof message["result"] === "number") {
+      input.logger.info(
+        { subscription: message["result"], request: message["id"] },
+        "subscription confirmed",
+      );
+    } else if (isRecord(message) && typeof message["method"] === "string") {
       noteIgnored(input.logger, message["method"]);
+    }
     return;
   }
   input.onSlot(frame.slot);
@@ -329,14 +353,7 @@ async function enrichFromRpc(
   current: Observation[],
 ): Promise<Observation[]> {
   try {
-    const result = await heliusRpc({
-      apiKey: input.env.HELIUS_API_KEY,
-      method: "getTransaction",
-      params: [
-        signature,
-        { encoding: "json", commitment: "confirmed", maxSupportedTransactionVersion: 0 },
-      ],
-    });
+    const result = await getTransaction(input.env.HELIUS_API_KEY, signature);
     await input.repo.addUsage({
       now: new Date(),
       streamedBytes: 0n,
@@ -436,30 +453,28 @@ export async function backfillProgram(input: {
   if (gapRemains) {
     input.logger.warn(
       { programId: input.programId },
-      "signature gap is larger than the backfill window",
+      "signature gap is larger than the backfill window; skipped getTransaction",
     );
+    return;
   }
   for (const signature of missing.slice(0, BACKFILL_MAX_TRANSACTIONS)) {
-    const result = await heliusRpc({
-      apiKey: input.env.HELIUS_API_KEY,
-      method: "getTransaction",
-      params: [
-        signature,
-        { encoding: "json", commitment: "confirmed", maxSupportedTransactionVersion: 0 },
-      ],
-    });
-    await input.repo.addUsage({
-      now: new Date(),
-      streamedBytes: 0n,
-      messages: 0,
-      storedEvents: 0,
-      creditMicros: usageMicros({ streamedBytes: 0n, rpcCalls: 1, socketOpens: 0 }),
-    });
-    const observations = parseRpcTransaction(result, signature);
-    for (const observation of observations) {
-      const inserted = await input.repo.insertRaw(observation, 0, new Date());
-      if (!inserted) continue;
-      await applyOne(input.repo, observation);
+    try {
+      const result = await getTransaction(input.env.HELIUS_API_KEY, signature);
+      await input.repo.addUsage({
+        now: new Date(),
+        streamedBytes: 0n,
+        messages: 0,
+        storedEvents: 0,
+        creditMicros: usageMicros({ streamedBytes: 0n, rpcCalls: 1, socketOpens: 0 }),
+      });
+      const observations = parseRpcTransaction(result, signature);
+      for (const observation of observations) {
+        const inserted = await input.repo.insertRaw(observation, 0, new Date());
+        if (!inserted) continue;
+        await applyOne(input.repo, observation);
+      }
+    } catch (error) {
+      input.logger.warn({ err: error }, "backfill getTransaction skipped");
     }
   }
 }
@@ -510,16 +525,22 @@ function subscribe(ws: WebSocket, method: ResolvedWsMethod): void {
     );
     return;
   }
-  for (const [index, program] of WATCHED_PROGRAMS.entries()) {
-    ws.send(
-      JSON.stringify({
-        jsonrpc: "2.0",
-        id: index + 2,
-        method: "logsSubscribe",
-        params: [{ mentions: [program] }, { commitment: "confirmed" }],
-      }),
-    );
-  }
+  ws.send(
+    JSON.stringify({
+      jsonrpc: "2.0",
+      id: 1,
+      method: "parsedTransactionSubscribe",
+      params: [
+        {
+          programs: [...WATCHED_PROGRAMS],
+          instructionNames: [...PARSED_INSTRUCTION_NAMES],
+          includeFailed: false,
+          includeCpi: true,
+        },
+        { commitment: "confirmed", details: "matched" },
+      ],
+    }),
+  );
 }
 
 async function notify(
@@ -545,8 +566,9 @@ async function frameText(data: unknown): Promise<string> {
   return "";
 }
 
-function websocketUrlSafe(apiKey: string): string {
-  return `wss://mainnet.helius-rpc.com/?api-key=${encodeURIComponent(apiKey)}`;
+function websocketUrlSafe(apiKey: string, method: ResolvedWsMethod): string {
+  const host = method === "parsed" ? "beta.helius-rpc.com" : "mainnet.helius-rpc.com";
+  return `wss://${host}/?api-key=${encodeURIComponent(apiKey)}`;
 }
 
 function abortPromise(signal: AbortSignal): Promise<void> {
