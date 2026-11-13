@@ -1,6 +1,6 @@
 # Node 22.23.4 was released 2026-10-20. This official image digest was rebuilt
 # 2026-11-05 as a Debian base refresh of that same Node version.
-FROM node:22.23.4-bookworm-slim@sha256:5ec23b7c622b00547753bc6ffd78085dd868a68aeb41c8e0a1418f033e13d96d AS build
+FROM node:26.13.0-bookworm-slim@sha256:add5c17c14752c54d2f3d519ec46a3815684d41c33f198bcb09fb998f7dcbf68 AS build
 WORKDIR /app
 COPY package.json package-lock.json .npmrc ./
 COPY tsconfig.base.json tsconfig.json ./
@@ -16,7 +16,7 @@ COPY apps/alerter/src apps/alerter/src
 COPY config config
 RUN npm run build && npm prune --omit=dev && npm cache clean --force
 
-FROM node:22.23.4-bookworm-slim@sha256:5ec23b7c622b00547753bc6ffd78085dd868a68aeb41c8e0a1418f033e13d96d
+FROM node:26.13.0-bookworm-slim@sha256:add5c17c14752c54d2f3d519ec46a3815684d41c33f198bcb09fb998f7dcbf68
 WORKDIR /app
 ENV NODE_ENV=production
 ENV HOME=/tmp
