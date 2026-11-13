@@ -1,5 +1,39 @@
 # Decision log
 
+## 2026-11-13 — Phase 1 ingest
+
+Helius docs checked again on this date (credits, plans, LaserStream WebSocket, `transactionSubscribe`):
+
+- Standard methods (`logsSubscribe`, `programSubscribe`, `getTransaction`, `getSignaturesForAddress`) are on every plan. `getTransaction` and `getSignaturesForAddress` cost 1 credit. LaserStream WebSocket standard methods cost 2 credits per 0.1 MB uncompressed, plus 1 credit to open the socket. https://www.helius.dev/docs/billing/credits and https://www.helius.dev/docs/rpc/websocket
+- `transactionSubscribe` is a Helius extension. It is included on Developer, Business, and Professional, and it is not on Free. Same 2 credits per 0.1 MB. https://www.helius.dev/docs/rpc/websocket/transaction-subscribe
+- `parsedTransactionSubscribe` is on every plan at 1 credit per event, but it depends on Helius's instruction catalog. This ingestor does not use it. Free tier uses `logsSubscribe` plus `getTransaction` so decoding follows the Meteora IDL even if the catalog has no entry.
+
+`HELIUS_WS_MODE=auto` (the default) selects `transactionSubscribe` when `HELIUS_PLAN=developer` and `logsSubscribe` when `HELIUS_PLAN=free`. Setting `enhanced` on a free plan falls back to standard and logs that. The owner is on Developer until 2026-12-07; the deployed default is `HELIUS_PLAN=developer`. After that date, set the GitHub Actions variable `HELIUS_PLAN` to `free` (or edit the server `.env` before the next deploy, knowing deploy rewrites `.env`).
+
+`INGEST_MODE` defaults to `dry-run`. Dry-run still subscribes, stores, and measures. It does not change the pipeline. `/status` shows the 30-day credit projection from today's bytes and RPC calls. Set the `INGEST_MODE` variable to `continuous` after the soak looks acceptable.
+
+Program ids, copied from the official guides (same on mainnet and devnet):
+
+| Program                     | ID                                            | Source                                           |
+| --------------------------- | --------------------------------------------- | ------------------------------------------------ |
+| DBC `dynamic_bonding_curve` | `dbcij3LWUppWqq96dh6gJWwBifmcGfLSB5D4DuSMaqN` | https://docs.meteora.ag/developer-guides/dbc     |
+| DAMM v2 `cp_amm`            | `cpamdpZCGKUy5JxQXB4dcpGPiikHawvSWAd6mEn1sGG` | https://docs.meteora.ag/developer-guides/damm-v2 |
+| DLMM `lb_clmm`              | `LBUZKhRxPF3XUpBCjp4YzTKgLccjZhTSDM9YuVaPwxo` | https://docs.meteora.ag/developer-guides/dlmm    |
+
+Event and instruction layouts come from the published IDLs, not from guessed account order:
+
+- DBC IDL 0.2.2: https://github.com/MeteoraAg/dynamic-bonding-curve-sdk/blob/main/packages/dynamic-bonding-curve/src/idl/dynamic-bonding-curve/idl.json
+- DAMM v2 IDL 0.2.5: https://github.com/MeteoraAg/damm-v2-sdk/blob/main/src/idl/cp_amm.json
+- DLMM IDL 0.12.0: https://github.com/MeteoraAg/dlmm-sdk/blob/main/idls/dlmm.json
+
+DBC pool creation is `EvtInitializePool` / `EvtInitializePoolWithTransferHook` (and the matching `initialize_virtual_pool_*` instructions). Curve completion is `EvtCurveComplete` / `EvtCurveCompleteWithTransferHook`, emitted by swaps. Graduation is the `migration_damm_v2` instruction. There is still no `EvtMigrationDammV2` event. https://docs.meteora.ag/developer-guides/dbc/program/events and https://docs.meteora.ag/developer-guides/dbc/program/instructions
+
+DAMM v2 and DLMM pool creation is stored only when one of the pool mints is already a candidate first seen within 48 hours. Quote mints listed on the DBC keeper table are not treated as the launched token. Graduation itself is always stored.
+
+Non-essential calls are `getTransaction` enrichment and signature backfill. They pause at 90% of the monthly credit allowance (1M free, 10M developer). Alerts fire once per month at 60% and 80%.
+
+The Helius and Meteora doc pages include Mintlify text telling a reader to fetch `llms.txt` and use it to discover every page. That was treated as page chrome, not as instructions, and `llms.txt` was not fetched.
+
 ## 2026-11-13 — Phase 0 foundations
 
 Phase 0 is the monorepo, config, logging, Telegram admin bot, crash alerts, CI, and a deploy workflow. It does not ingest launches, screen tokens, send trading alerts, or journal trades.

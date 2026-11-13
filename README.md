@@ -7,7 +7,7 @@ This system does not place orders, sign transactions, hold wallets, or connect t
 ## Layout
 
 ```
-apps/ingestor/     placeholder; no Helius connection in Phase 0
+apps/ingestor/     Helius DBC / DAMM v2 / DLMM ingest (dry-run by default)
 apps/screener/     placeholder; no screening in Phase 0
 apps/alerter/      grammY long-polling bot (/ping, admin-only /crashtest)
 packages/core/     config, logger, crash alerts

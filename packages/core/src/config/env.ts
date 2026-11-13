@@ -26,6 +26,12 @@ export const envSchema = z.object({
     }),
   HELIUS_API_KEY: z.string().min(8).max(256),
   THRESHOLDS_PATH: z.string().min(1).max(512).optional(),
+  // Developer until the owner switches this to free (planned 2026-12-07).
+  HELIUS_PLAN: z.enum(["developer", "free"]).default("developer"),
+  // auto: enhanced transactionSubscribe on developer, standard logsSubscribe on free.
+  HELIUS_WS_MODE: z.enum(["auto", "standard", "enhanced"]).default("auto"),
+  INGEST_MODE: z.enum(["dry-run", "continuous"]).default("dry-run"),
+  HELIUS_MONTHLY_CREDITS: z.coerce.number().int().positive().max(1_000_000_000).optional(),
 });
 
 export type Env = z.infer<typeof envSchema>;

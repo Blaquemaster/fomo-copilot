@@ -77,6 +77,9 @@ jobs:
           TELEGRAM_ADMIN_CHAT_ID: ${{ secrets.TELEGRAM_ADMIN_CHAT_ID }}
           HELIUS_API_KEY: ${{ secrets.HELIUS_API_KEY }}
           POSTGRES_PASSWORD: ${{ secrets.POSTGRES_PASSWORD }}
+          HELIUS_PLAN: ${{ vars.HELIUS_PLAN }}
+          HELIUS_WS_MODE: ${{ vars.HELIUS_WS_MODE }}
+          INGEST_MODE: ${{ vars.INGEST_MODE }}
         run: |
           set -euo pipefail
           umask 077
@@ -94,6 +97,12 @@ jobs:
           token = os.environ["TELEGRAM_BOT_TOKEN"]
           chat = os.environ["TELEGRAM_ADMIN_CHAT_ID"]
           helius = os.environ["HELIUS_API_KEY"]
+
+          def pick(name, default, allowed):
+              value = os.environ.get(name, "").strip() or default
+              if value not in allowed:
+                  raise SystemExit(f"{name} must be one of: {', '.join(sorted(allowed))}")
+              return value
 
           def line(key, value):
               if "\n" in value or "\r" in value or "\x00" in value:
@@ -118,6 +127,9 @@ jobs:
               line("TELEGRAM_BOT_TOKEN", token),
               line("TELEGRAM_ADMIN_CHAT_ID", chat),
               line("HELIUS_API_KEY", helius),
+              line("HELIUS_PLAN", pick("HELIUS_PLAN", "developer", {"developer", "free"})),
+              line("HELIUS_WS_MODE", pick("HELIUS_WS_MODE", "auto", {"auto", "standard", "enhanced"})),
+              line("INGEST_MODE", pick("INGEST_MODE", "dry-run", {"dry-run", "continuous"})),
               line("THRESHOLDS_PATH", "/app/config/thresholds.yaml"),
           ]) + "\n"
           destination.write_text(text, encoding="utf-8")
