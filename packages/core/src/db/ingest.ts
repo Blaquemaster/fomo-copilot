@@ -4,7 +4,6 @@ import {
   allowanceCredits,
   formatCredits,
   projectMonthlyCredits,
-  utcDayStart,
   utcMonth,
   type HeliusPlan,
 } from "../ingest/budget.js";
@@ -93,6 +92,9 @@ create table if not exists ingest_checkpoint (
   slot bigint not null,
   updated_at timestamptz not null default now()
 );
+
+alter table ingest_status add column if not exists soak_started_at timestamptz;
+alter table ingest_status add column if not exists credits_since_start bigint not null default 0;
 `;
 
 export function createPool(databaseUrl: string): pg.Pool {
@@ -236,6 +238,15 @@ export class IngestRepository {
          credit_micros = ingest_month.credit_micros + excluded.credit_micros`,
       [month, input.creditMicros.toString()],
     );
+    await this.pool.query(
+      `insert into ingest_status
+        (id, state, ws_method, plan, mode, soak_started_at, credits_since_start, updated_at)
+       values (1, 'starting', 'parsed', 'developer', 'dry-run', $2, $1, $2)
+       on conflict (id) do update set
+         credits_since_start = ingest_status.credits_since_start + excluded.credits_since_start,
+         soak_started_at = coalesce(ingest_status.soak_started_at, excluded.soak_started_at)`,
+      [input.creditMicros.toString(), input.now.toISOString()],
+    );
   }
 
   async monthUsage(now: Date): Promise<{
@@ -301,7 +312,8 @@ export class IngestRepository {
          paused_nonessential = excluded.paused_nonessential,
          last_slot = coalesce(excluded.last_slot, ingest_status.last_slot),
          last_error = excluded.last_error,
-         updated_at = excluded.updated_at`,
+         updated_at = excluded.updated_at,
+         soak_started_at = coalesce(ingest_status.soak_started_at, excluded.updated_at)`,
       [
         input.state,
         input.wsMethod,
@@ -379,8 +391,12 @@ export class IngestRepository {
       paused_nonessential: boolean;
       last_slot: string | null;
       updated_at: Date;
+      soak_started_at: Date | null;
+      credits_since_start: string | null;
     }>(
-      "select state, ws_method, plan, mode, paused_nonessential, last_slot, updated_at from ingest_status where id = 1",
+      `select state, ws_method, plan, mode, paused_nonessential, last_slot, updated_at,
+              soak_started_at, credits_since_start
+       from ingest_status where id = 1`,
     );
     const row = status.rows[0];
     const day = input.now.toISOString().slice(0, 10);
@@ -394,8 +410,9 @@ export class IngestRepository {
     const month = await this.monthUsage(input.now);
     const allowance = allowanceCredits(input.plan, input.allowanceOverride);
     const dailyRow = daily.rows[0];
-    const elapsed = input.now.getTime() - utcDayStart(input.now).getTime();
-    const creditsToday = BigInt(dailyRow?.credit_micros ?? "0");
+    const soakStarted = row?.soak_started_at ? new Date(row.soak_started_at) : null;
+    const elapsed = soakStarted ? input.now.getTime() - soakStarted.getTime() : 0;
+    const creditsToday = BigInt(row?.credits_since_start ?? dailyRow?.credit_micros ?? "0");
     const updatedAt = row ? new Date(row.updated_at) : null;
     return formatIngestStatus({
       state: row?.state ?? "down",

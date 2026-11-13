@@ -72,6 +72,114 @@ export const MIGRATION_DAMM_V2_ACCOUNTS = {
   payer: 19,
 } as const;
 
+/** Anchor `emit_cpi` instruction prefix. The event discriminator follows these 8 bytes. */
+export const ANCHOR_EVENT_DISC = bytes(0xe4, 0x45, 0xa5, 0x2e, 0x51, 0xcb, 0x9a, 0x1d);
+
+export interface InstructionLayout {
+  kind: EventKind;
+  poolType: PoolType;
+  pool: number;
+  mintA: number;
+  mintB: number | null;
+  creator: number | null;
+  virtualPool: number | null;
+  quoteMint: number | null;
+}
+
+/** Account positions from the published IDLs. DBC inits share the same prefix. */
+export const INSTRUCTION_LAYOUTS: ReadonlyArray<{
+  programId: string;
+  disc: Uint8Array;
+  layout: InstructionLayout;
+}> = [
+  {
+    programId: DBC_PROGRAM_ID,
+    disc: DISC.ixDbcInitSpl,
+    layout: layout("dbc_initialize", "dbc", 5, 3, null, 2, null, 4),
+  },
+  {
+    programId: DBC_PROGRAM_ID,
+    disc: DISC.ixDbcInitToken2022,
+    layout: layout("dbc_initialize", "dbc", 5, 3, null, 2, null, 4),
+  },
+  {
+    programId: DBC_PROGRAM_ID,
+    disc: DISC.ixDbcInitToken2022Hook,
+    layout: layout("dbc_initialize", "dbc", 5, 3, null, 2, null, 4),
+  },
+  {
+    programId: DBC_PROGRAM_ID,
+    disc: DISC.ixMigrationDammV2,
+    layout: layout("dbc_migration_damm_v2", "damm_v2", 4, 13, null, 19, 0, 14),
+  },
+  {
+    programId: DAMM_V2_PROGRAM_ID,
+    disc: DISC.ixDammInitCustom,
+    layout: layout("damm_v2_initialize", "damm_v2", 5, 7, 8, 0, null, null),
+  },
+  {
+    programId: DAMM_V2_PROGRAM_ID,
+    disc: DISC.ixDammInitPool,
+    layout: layout("damm_v2_initialize", "damm_v2", 6, 8, 9, 0, null, null),
+  },
+  {
+    programId: DAMM_V2_PROGRAM_ID,
+    disc: DISC.ixDammInitDynamic,
+    layout: layout("damm_v2_initialize", "damm_v2", 7, 9, 10, 0, null, null),
+  },
+  {
+    programId: DLMM_PROGRAM_ID,
+    disc: DISC.ixDlmmInit,
+    layout: layout("dlmm_initialize", "dlmm", 0, 2, 3, null, null, null),
+  },
+  {
+    programId: DLMM_PROGRAM_ID,
+    disc: DISC.ixDlmmInit2,
+    layout: layout("dlmm_initialize", "dlmm", 0, 2, 3, null, null, null),
+  },
+  {
+    programId: DLMM_PROGRAM_ID,
+    disc: DISC.ixDlmmInitCustom,
+    layout: layout("dlmm_initialize", "dlmm", 0, 2, 3, null, null, null),
+  },
+  {
+    programId: DLMM_PROGRAM_ID,
+    disc: DISC.ixDlmmInitCustom2,
+    layout: layout("dlmm_initialize", "dlmm", 0, 2, 3, null, null, null),
+  },
+];
+
+/**
+ * Names sent to parsedTransactionSubscribe. Helius matches these
+ * case- and separator-insensitively against its catalog.
+ */
+export const PARSED_INSTRUCTION_NAMES = [
+  "initialize_virtual_pool_with_spl_token",
+  "initialize_virtual_pool_with_token2022",
+  "initialize_virtual_pool_with_token2022_transfer_hook",
+  "migration_damm_v2",
+  "initialize_pool",
+  "initialize_customizable_pool",
+  "initialize_pool_with_dynamic_config",
+  "initialize_lb_pair",
+  "initialize_lb_pair2",
+  "initialize_customizable_permissionless_lb_pair",
+  "initialize_customizable_permissionless_lb_pair2",
+] as const;
+
+function layout(
+  kind: EventKind,
+  poolType: PoolType,
+  pool: number,
+  mintA: number,
+  mintB: number | null,
+  creator: number | null,
+  virtualPool: number | null,
+  quoteMint: number | null,
+): InstructionLayout {
+  return { kind, poolType, pool, mintA, mintB, creator, virtualPool, quoteMint };
+}
+
 function bytes(...values: number[]): Uint8Array {
   return Uint8Array.from(values);
 }

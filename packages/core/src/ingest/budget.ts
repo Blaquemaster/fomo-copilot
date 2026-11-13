@@ -9,12 +9,12 @@ export const PLAN_CREDITS = {
 
 export type HeliusPlan = keyof typeof PLAN_CREDITS;
 export type WsMode = "auto" | "standard" | "enhanced";
-export type ResolvedWsMethod = "standard" | "enhanced";
+/** parsed = instruction-filtered parsedTransactionSubscribe. enhanced is the full-program firehose. */
+export type ResolvedWsMethod = "parsed" | "enhanced";
 
 export function selectWsMethod(plan: HeliusPlan, mode: WsMode): ResolvedWsMethod {
-  if (mode === "standard") return "standard";
-  if (mode === "enhanced") return plan === "developer" ? "enhanced" : "standard";
-  return plan === "developer" ? "enhanced" : "standard";
+  if (mode === "enhanced" && plan === "developer") return "enhanced";
+  return "parsed";
 }
 
 export function allowanceCredits(plan: HeliusPlan, override: number | undefined): bigint {
@@ -45,10 +45,10 @@ export function budgetLevel(usedMicros: bigint, allowanceCreditsValue: bigint): 
   return "ok";
 }
 
+/** Project 30 days from credits observed since soak start, not since UTC midnight. */
 export function projectMonthlyCredits(input: {
   creditsTodayMicros: bigint;
   elapsedMs: number;
-  now?: Date;
 }): string {
   if (input.elapsedMs < 60_000) return "warming up";
   const dayFraction = input.elapsedMs / 86_400_000;

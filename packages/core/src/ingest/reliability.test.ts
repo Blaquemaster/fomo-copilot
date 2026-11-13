@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import {
   backoffDelayMs,
+  nextTransactionVersion,
   planBackfillPage,
   silenceExceeded,
   SignatureWindow,
@@ -64,6 +65,14 @@ describe("gap detection", () => {
     });
     expect(exhausted.fetchAnotherPage).toBe(false);
     expect(exhausted.gapRemains).toBe(true);
+  });
+});
+
+describe("getTransaction version retry", () => {
+  it("retries once after rpc -32015 and otherwise stops", () => {
+    expect(nextTransactionVersion(-32015, 0)).toBe(1);
+    expect(nextTransactionVersion(-32015, 1)).toBeNull();
+    expect(nextTransactionVersion(-32602, 0)).toBeNull();
   });
 });
 
