@@ -7,6 +7,17 @@ import { describe, expect, it } from "vitest";
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../..");
 
 describe("repository guards", () => {
+  it("gives postgres only its own settings so app env edits do not recreate it", () => {
+    const compose = readFileSync(path.join(root, "infra/docker-compose.yml"), "utf8");
+    const postgres = compose.split(/^ {2}ingestor:/m)[0] ?? "";
+    expect(postgres).toContain("pgdata:/var/lib/postgresql/data");
+    expect(postgres).toContain("POSTGRES_USER:");
+    expect(postgres).toContain("POSTGRES_PASSWORD:");
+    expect(postgres).toContain("POSTGRES_DB:");
+    expect(postgres).not.toMatch(/env_file/);
+    expect(postgres).not.toMatch(/HELIUS|TELEGRAM|BACKFILL/);
+  });
+
   it("publishes no host ports and does not bind 0.0.0.0", () => {
     const compose = readFileSync(path.join(root, "infra/docker-compose.yml"), "utf8");
     const rootCompose = readFileSync(path.join(root, "compose.yaml"), "utf8");

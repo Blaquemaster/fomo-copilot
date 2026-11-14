@@ -1,5 +1,13 @@
 # Decision log
 
+## 2026-11-14 — Replay anchor, startup cap, Postgres env
+
+The replay walked from the chain tip and treated a page as finished when fewer than 100 signatures remained after dropping failed transactions. `getSignaturesForAddress` pages are full at 100 rows before that filter. Historical windows also need a `before` cursor: `--anchor-signature` is a signature strictly above `--to-slot` (a later `raw_events` row, or any signature from `getBlock` of `--to-slot + 1`, which costs 1 credit). `--before` and `--until` pass through. Listing calls count toward the credit cap.
+
+A deploy gap of about 71 slots held more than 60 DBC and DAMM transactions, so startup backfill hit the 60-transaction cap and recovered nothing. When the bound is the persisted live slot, the per-program cap is `STARTUP_BACKFILL_MAX_TX` (400). Wider gaps stay `unrecovered`. `getSignaturesForAddress` does not return instruction names, so those listings are not skipped; a name list is skipped only when one is present and none of the names are watched.
+
+Postgres no longer mounts the app `.env`. Adding `BACKFILL_SLOT_MARGIN` changed that file and Compose recreated the database container. The service now receives only `POSTGRES_USER`, `POSTGRES_PASSWORD`, and `POSTGRES_DB`. The `pgdata` volume is unchanged. The deploy that introduces this config recreates the container once and remounts the same volume.
+
 ## 2026-11-14 — Backfill margin, unrecovered gaps, replay
 
 Backfill now stops at `last_live_slot - BACKFILL_SLOT_MARGIN` (default 16) so a notification that arrives slightly out of order is still fetched. `raw_events` dedupe and the known-signature skip drop the overlap. If the scan hits the transaction cap or a fetch throws before that stop slot, the row is `unrecovered` with `gap_from_slot` and `gap_to_slot`, and the log line is `backfill unrecovered gap`. `scripts/unrecovered-gaps.sql` counts those rows.

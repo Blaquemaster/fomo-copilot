@@ -173,16 +173,30 @@ docker exec -i fomo-copilot-postgres-1 sh -c 'psql -U "$POSTGRES_USER" -d "$POST
 
 `event-gaps.sh` prints the p50, p95, p99, and max seconds between stored events, overall and per program. The unrecovered query counts backfills that stopped before the slot window was covered.
 
-Replay one historical window into a scratch schema (default credit cap 150). This does not write `public` tables:
+Replay one historical window into a scratch schema (default credit cap 150, and listing calls count toward it). This does not write `public` tables. `getSignaturesForAddress` walks newest-first, so a window from the previous day needs `--anchor-signature`: a transaction at a slot strictly above `--to-slot`. The RPC `before` parameter excludes that signature, which is why it must sit just after the window.
+
+Find one on the server. `raw_events` has rows inside 468993762–468993810; take a signature from a later slot, or pay 1 credit for `getBlock` on slot 468993811 and use any signature from that block:
 
 ```bash
 cd /opt/fomo-copilot
+docker compose --env-file .env -f infra/docker-compose.yml exec -T postgres \
+  sh -c 'psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -c "select signature, slot from raw_events where slot > 468993810 order by slot asc limit 5"'
+```
+
+Then replay the two missed DBC creates (`4QpMmMWT…` at 468993762 and `HhWvvxWs…` at 468993810):
+
+```bash
 docker compose --env-file .env -f infra/docker-compose.yml exec -T ingestor \
   node apps/ingestor/dist/replay.js \
   --from-slot 468993762 --to-slot 468993810 \
   --programs dbcij3LWUppWqq96dh6gJWwBifmcGfLSB5D4DuSMaqN \
+  --anchor-signature ANCHOR_SIGNATURE \
   --schema scratch_replay --credit-cap 150
 ```
+
+`--before` and `--until` pass straight through to `getSignaturesForAddress` when you already have those signatures. `--anchor-signature` is the `before` cursor when `--before` is omitted.
+
+The first deploy that gives Postgres its own env recreates the Postgres container once. The named volume `pgdata` is not renamed or removed, so the existing data directory is mounted again. Do not run `docker compose down -v`. Later edits to Helius or Telegram settings in `.env` no longer change the Postgres service config.
 
 ## 7. Test /ping
 

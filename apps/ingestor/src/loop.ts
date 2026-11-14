@@ -1,7 +1,6 @@
 import {
   BACKFILL_MAX_SLOT_SPAN,
   BACKFILL_PAGE_CAP,
-  BACKFILL_TX_CAP,
   BoundedSet,
   DisposableBag,
   IngestRepository,
@@ -27,6 +26,8 @@ import {
   planBackfillPage,
   PARSED_INSTRUCTION_NAMES,
   planCandidateWrites,
+  selectBackfillTxCap,
+  shouldSkipListedSignature,
   redactString,
   rpcCreditMicros,
   selectWsMethod,
@@ -61,6 +62,8 @@ interface ReconnectGap {
   tipSlot: number | null;
   /** Set when a stored live slot is too old for the credit cap to cover. */
   staleFromSlot?: number | null;
+  /** True when untilSlot came from ingest_status after a restart. */
+  fromPersistedSlot?: boolean;
 }
 
 export interface SocketLike {
@@ -667,7 +670,10 @@ export async function backfillProgram(input: {
     return;
   }
   const pageCap = input.deps?.pageCap ?? BACKFILL_PAGE_CAP;
-  const txCap = input.deps?.txCap ?? BACKFILL_TX_CAP;
+  const txCap = selectBackfillTxCap({
+    fromPersistedSlot: gap.fromPersistedSlot === true,
+    override: input.deps?.txCap,
+  });
   const liveStop =
     gap.untilSlot === null ? null : backfillStopSlot(gap.untilSlot, input.env.BACKFILL_SLOT_MARGIN);
   const gapFromSlot = liveStop ?? checkpoint.slot;
@@ -678,20 +684,24 @@ export async function backfillProgram(input: {
   let capHit = false;
   let errored = false;
   let newestSlot: number | null = null;
+  const listedNames = new Map<string, readonly string[]>();
   try {
     while (pages < pageCap) {
       pages += 1;
       const page = await getSignatures(input, input.programId, before, meter);
-      for (const row of page) {
+      for (const row of page.rows) {
         if (row.slot !== null && (newestSlot === null || row.slot > newestSlot))
           newestSlot = row.slot;
+        if (row.instructionNames && row.instructionNames.length > 0) {
+          listedNames.set(row.signature, row.instructionNames);
+        }
       }
       const step = planBackfillPage({
-        newestFirst: page,
+        newestFirst: page.rows,
         checkpoint: liveStop === null ? checkpoint.signature : null,
         checkpointSlot: liveStop === null ? checkpoint.slot : null,
         untilSlot: liveStop,
-        pageWasFull: page.length >= 100,
+        pageWasFull: page.rawLength >= 100,
         pagesFetched: pages,
         maxPages: pageCap,
       });
@@ -701,7 +711,7 @@ export async function backfillProgram(input: {
         capHit = step.gapRemains;
         break;
       }
-      before = page.at(-1)?.signature;
+      before = page.oldestSignature ?? undefined;
       if (!before) {
         capHit = true;
         break;
@@ -736,6 +746,15 @@ export async function backfillProgram(input: {
   let transactionsFetched = 0;
   for (const signature of selected.signatures) {
     if (known.has(signature)) continue;
+    const listed = listedNames.get(signature);
+    if (
+      shouldSkipListedSignature({
+        instructionNames: listed,
+        watchedNames: PARSED_INSTRUCTION_NAMES,
+      })
+    ) {
+      continue;
+    }
     try {
       const result = await callRpc({ env: input.env, meter, deps: input.deps }, "getTransaction", [
         signature,
@@ -816,7 +835,16 @@ async function getSignatures(
   programId: string,
   before: string | undefined,
   meter: RpcMeter,
-): Promise<Array<{ signature: string; slot: number | null }>> {
+): Promise<{
+  rawLength: number;
+  oldestSignature: string | null;
+  rows: Array<{
+    signature: string;
+    slot: number | null;
+    failed?: boolean;
+    instructionNames: readonly string[] | null;
+  }>;
+}> {
   const config: Record<string, unknown> = { limit: 100, commitment: "confirmed" };
   if (before) config["before"] = before;
   const result = await callRpc(
@@ -824,20 +852,35 @@ async function getSignatures(
     "getSignaturesForAddress",
     [programId, config],
   );
-  if (!Array.isArray(result)) return [];
-  return result
-    .map((row) => {
-      const record =
-        typeof row === "object" && row !== null
-          ? (row as { signature?: unknown; slot?: unknown; err?: unknown })
-          : null;
-      if (!record || typeof record.signature !== "string" || record.err != null) return null;
-      return {
-        signature: record.signature,
-        slot: typeof record.slot === "number" ? record.slot : null,
-      };
-    })
-    .filter((row): row is { signature: string; slot: number | null } => row !== null);
+  if (!Array.isArray(result)) return { rawLength: 0, oldestSignature: null, rows: [] };
+  const rows: Array<{
+    signature: string;
+    slot: number | null;
+    failed?: boolean;
+    instructionNames: readonly string[] | null;
+  }> = [];
+  let oldestSignature: string | null = null;
+  for (const row of result) {
+    if (typeof row !== "object" || row === null) continue;
+    const record = row as {
+      signature?: unknown;
+      slot?: unknown;
+      err?: unknown;
+      instructionNames?: unknown;
+    };
+    if (typeof record.signature !== "string") continue;
+    oldestSignature = record.signature;
+    const names = Array.isArray(record.instructionNames)
+      ? record.instructionNames.filter((name): name is string => typeof name === "string")
+      : null;
+    rows.push({
+      signature: record.signature,
+      slot: typeof record.slot === "number" ? record.slot : null,
+      failed: record.err != null,
+      instructionNames: names && names.length > 0 ? names : null,
+    });
+  }
+  return { rawLength: result.length, oldestSignature, rows };
 }
 
 function subscribe(ws: SocketLike, method: ResolvedWsMethod): void {
@@ -903,6 +946,7 @@ async function readGap(
     input.logger.warn({ err: error }, "getSlot failed");
   }
   let staleFromSlot: number | null = null;
+  let fromPersistedSlot = false;
   if (lastSlot === null) {
     const persisted = await input.repo.lastLiveSlot();
     if (
@@ -914,6 +958,7 @@ async function readGap(
       })
     ) {
       lastSlot = persisted;
+      fromPersistedSlot = true;
       input.logger.info(
         { persistedSlot: persisted, tipSlot: currentSlot },
         "startup backfill bounded by persisted live slot",
@@ -934,6 +979,7 @@ async function readGap(
       currentSlot,
     }),
     staleFromSlot,
+    fromPersistedSlot,
   };
 }
 

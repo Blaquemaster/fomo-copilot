@@ -8,9 +8,13 @@ services:
   postgres:
     image: postgres:16.14-bookworm@sha256:64154d0babcb1741988719e703419af0382b19953706149f9872fbd0f438efa8
     restart: unless-stopped
-    env_file:
-      - path: ../.env
-        required: false
+    # Only the database settings. The app env file also holds Helius and Telegram
+    # keys; mounting that file here recreates this container whenever those change.
+    # The named volume below is unchanged, so existing data stays in place.
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:?set POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB:?set POSTGRES_DB}
     volumes:
       - pgdata:/var/lib/postgresql/data
     networks:

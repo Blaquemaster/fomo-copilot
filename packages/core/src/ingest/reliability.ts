@@ -172,6 +172,8 @@ export function measureReconnectGap(input: {
 /** Page cap and getTransaction cap for one program on one reconnect. Each page or tx is 1 credit. */
 export const BACKFILL_PAGE_CAP = 40;
 export const BACKFILL_TX_CAP = 60;
+/** Per-program getTransaction cap when startup is bounded by the persisted live slot. */
+export const STARTUP_BACKFILL_MAX_TX = 400;
 /** Slots kept behind the last live slot so a late notification is still fetched. */
 export const DEFAULT_BACKFILL_SLOT_MARGIN = 16;
 /**
@@ -219,6 +221,7 @@ export function signaturesToRecover(input: {
 export interface BackfillSignature {
   signature: string;
   slot: number | null;
+  failed?: boolean;
 }
 
 /**
@@ -278,6 +281,7 @@ export function planBackfillPage(input: {
       reached = true;
       break;
     }
+    if (typeof row !== "string" && row.failed) continue;
     missing.push(signature);
   }
   if (reached) return { missing, fetchAnotherPage: false, gapRemains: false };
@@ -296,6 +300,7 @@ export function planReplayPage(input: {
     if (row.slot === null) continue;
     if (row.slot > input.toSlot) continue;
     if (row.slot < input.fromSlot) return { inWindow, reachedFrom: true };
+    if (row.failed) continue;
     inWindow.push(row);
   }
   return { inWindow, reachedFrom: false };
@@ -303,4 +308,49 @@ export function planReplayPage(input: {
 
 export function withinCreditCap(used: number, nextCost: number, cap: number): boolean {
   return used + nextCost <= cap;
+}
+
+/**
+ * A getSignaturesForAddress page is full when the RPC returned 100 rows, including
+ * failed transactions. Filtering those out first makes a full page look short and
+ * stops the walk at the tip.
+ */
+export function replayListingContinues(rawPageLength: number, reachedFrom: boolean): boolean {
+  return !reachedFrom && rawPageLength >= 100;
+}
+
+export function selectBackfillTxCap(input: {
+  fromPersistedSlot: boolean;
+  override?: number;
+  reconnectCap?: number;
+  startupCap?: number;
+}): number {
+  if (input.override !== undefined) return input.override;
+  return input.fromPersistedSlot
+    ? (input.startupCap ?? STARTUP_BACKFILL_MAX_TX)
+    : (input.reconnectCap ?? BACKFILL_TX_CAP);
+}
+
+/**
+ * getSignaturesForAddress returns signature, slot, err, memo, blockTime, and
+ * confirmationStatus. It does not include program logs or instruction names, so a
+ * memo cannot prove a transaction is outside PARSED_INSTRUCTION_NAMES. Skip only
+ * when an instruction-name list is actually present and none of the names are watched.
+ */
+export function shouldSkipListedSignature(input: {
+  instructionNames?: readonly string[] | null;
+  watchedNames: readonly string[];
+}): boolean {
+  const names = input.instructionNames;
+  if (!names || names.length === 0) return false;
+  const watched = new Set(input.watchedNames.map((name) => normalizeListedName(name)));
+  return !names.some((name) => watched.has(normalizeListedName(name)));
+}
+
+function normalizeListedName(name: string): string {
+  return name.toLowerCase().replaceAll("_", "").replaceAll(" ", "");
+}
+
+export function anchorSlotInWindow(slot: number | null, fromSlot: number, toSlot: number): boolean {
+  return slot !== null && slot >= fromSlot && slot <= toSlot;
 }
