@@ -740,6 +740,93 @@ function preferDetailed(observations: Observation[]): Observation[] {
     .map((observation, eventIndex) => ({ ...observation, eventIndex }));
 }
 
+export interface CanonicalEvent {
+  signature: string;
+  slot: number;
+  programId: string;
+  kind: EventKind;
+  poolType: PoolType;
+  mint: string | null;
+  pool: string | null;
+  creatorWallet: string | null;
+  virtualPool: string | null;
+  quoteMint: string | null;
+}
+
+export function canonicalEvents(observations: readonly Observation[]): CanonicalEvent[] {
+  return observations.map((observation) => ({
+    signature: observation.signature,
+    slot: observation.slot,
+    programId: observation.programId,
+    kind: observation.kind,
+    poolType: observation.poolType,
+    mint: observation.mint,
+    pool: observation.pool,
+    creatorWallet: observation.creatorWallet,
+    virtualPool: observation.virtualPool,
+    quoteMint: observation.quoteMint,
+  }));
+}
+
+/**
+ * Turn a getTransaction result into the parsed-stream notification shape.
+ * Named accounts follow the same IDL lists the instruction decoder uses.
+ */
+export function normalizeRpcToParsedNotification(result: unknown, signature: string): unknown {
+  const record = asRecord(result);
+  const meta = asRecord(record?.["meta"]);
+  const slot = typeof record?.["slot"] === "number" ? record["slot"] : 0;
+  const blockTime = typeof record?.["blockTime"] === "number" ? record["blockTime"] : null;
+  const transaction = asRecord(record?.["transaction"]);
+  const message = asRecord(transaction?.["message"]);
+  const keys = accountKeys(message, meta);
+  const rawInstructions = Array.isArray(message?.["instructions"]) ? message["instructions"] : [];
+  const instructions = [];
+  for (const instruction of rawInstructions) {
+    const row = asRecord(instruction);
+    if (row === null) continue;
+    const programId = programIdOf(row, keys);
+    const data = typeof row["data"] === "string" ? row["data"] : "";
+    let bytes: Uint8Array;
+    try {
+      bytes = data.length > 0 ? decodeBase58(data) : new Uint8Array();
+    } catch {
+      continue;
+    }
+    if (programId === null || bytes.length < 8) continue;
+    const match = INSTRUCTION_LAYOUTS.find(
+      (entry) => entry.programId === programId && sameDisc(bytes, entry.disc),
+    );
+    if (!match) continue;
+    const accounts = accountPubkeys(row, keys);
+    instructions.push({
+      programId,
+      instructionName: match.layout.instructionName,
+      decoded: {
+        accounts: match.layout.accountNames
+          .map((name, index) => {
+            const pubkey = accounts[index];
+            return pubkey ? { name, pubkey } : null;
+          })
+          .filter((account): account is { name: string; pubkey: string } => account !== null),
+      },
+    });
+  }
+  return {
+    jsonrpc: "2.0",
+    method: "parsedTransactionNotification",
+    params: {
+      result: {
+        context: { slot },
+        value: {
+          transaction: { signature, slot, error: null, blockTime },
+          instructions,
+        },
+      },
+    },
+  };
+}
+
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }

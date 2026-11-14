@@ -104,6 +104,12 @@ jobs:
                   raise SystemExit(f"{name} must be one of: {', '.join(sorted(allowed))}")
               return value
 
+          def slot_margin():
+              raw = os.environ.get("BACKFILL_SLOT_MARGIN", "").strip() or "16"
+              if not raw.isdigit() or int(raw) > 10000:
+                  raise SystemExit("BACKFILL_SLOT_MARGIN must be an integer from 0 to 10000")
+              return raw
+
           def line(key, value):
               if "\n" in value or "\r" in value or "\x00" in value:
                   raise SystemExit(f"{key} contains a newline or NUL")
@@ -130,6 +136,7 @@ jobs:
               line("HELIUS_PLAN", pick("HELIUS_PLAN", "developer", {"developer", "free"})),
               line("HELIUS_WS_MODE", pick("HELIUS_WS_MODE", "auto", {"auto", "standard", "enhanced"})),
               line("INGEST_MODE", pick("INGEST_MODE", "dry-run", {"dry-run", "continuous"})),
+              line("BACKFILL_SLOT_MARGIN", slot_margin()),
               line("THRESHOLDS_PATH", "/app/config/thresholds.yaml"),
           ]) + "\n"
           destination.write_text(text, encoding="utf-8")

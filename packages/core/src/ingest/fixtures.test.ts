@@ -3,9 +3,11 @@ import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 
 import {
+  canonicalEvents,
   decodeRpcTransaction,
   isPersistable,
   normalizeInstructionName,
+  normalizeRpcToParsedNotification,
   parseParsedNotification,
   parseRpcTransaction,
 } from "./decode.js";
@@ -88,6 +90,23 @@ describe("mainnet transaction fixtures", () => {
       }),
     ]);
     expect(secondObs.every(isPersistable)).toBe(true);
+  });
+
+  it("decodes the transfer-hook getTransaction fixtures the same way as the stream payload", () => {
+    for (const name of ["dbc-hook-1.json", "dbc-hook-2.json"] as const) {
+      const fixture = load(name);
+      const fromRpc = canonicalEvents(parseRpcTransaction(fixture.result, fixture.signature));
+      const stream = normalizeRpcToParsedNotification(fixture.result, fixture.signature);
+      const frame = parseParsedNotification(stream, 0);
+      const fromStream = canonicalEvents(frame?.observations ?? []);
+      expect(fromStream).toEqual(fromRpc);
+      expect(fromRpc).toEqual([
+        expect.objectContaining({
+          kind: "dbc_initialize",
+          signature: fixture.signature,
+        }),
+      ]);
+    }
   });
 
   it("keeps a plain Token-2022 mint and fills dbc_curve_complete from the swap base_mint", () => {

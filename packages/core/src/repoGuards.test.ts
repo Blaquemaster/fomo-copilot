@@ -65,6 +65,10 @@ describe("repository guards", () => {
     expect(sql).toContain("create table if not exists decode_failure");
     expect(sql).toContain("create table if not exists ingest_backfill");
     expect(sql).toContain("002_liveness_backfill");
+    expect(sql).toContain("003_unrecovered_gap");
+    expect(sql).toContain("004_heap_sample");
+    expect(sql).toContain("unrecovered boolean");
+    expect(sql).toContain("create table if not exists ingest_heap_sample");
     expect(sql).toContain("gap_seconds");
     expect(sql).toContain("events_recovered");
   });

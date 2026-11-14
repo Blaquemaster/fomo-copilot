@@ -16,7 +16,8 @@
     "typecheck": "tsc -b --pretty false",
     "lint": "eslint . && prettier --check .",
     "format": "prettier --write .",
-    "test": "vitest run"
+    "test": "vitest run",
+    "backfill:replay": "node apps/ingestor/dist/replay.js"
   },
   "overrides": {
     "@eslint-community/regexpp": "4.12.2",

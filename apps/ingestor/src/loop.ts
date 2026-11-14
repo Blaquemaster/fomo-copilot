@@ -1,4 +1,5 @@
 import {
+  BACKFILL_MAX_SLOT_SPAN,
   BACKFILL_PAGE_CAP,
   BACKFILL_TX_CAP,
   BoundedSet,
@@ -9,12 +10,15 @@ import {
   WATCHED_PROGRAMS,
   allowanceCredits,
   backoffDelayMs,
+  backfillStopSlot,
   budgetLevel,
   decodeRpcTransaction,
   livenessLevel,
   measureReconnectGap,
+  isUnrecoveredGap,
   nextReconnectAlert,
   parsedEventMicros,
+  persistedSlotIsUsable,
   parseLogsNotification,
   parseParsedNotification,
   parseSlotNotification,
@@ -54,6 +58,9 @@ interface ReconnectGap {
   gapSeconds: number | null;
   gapSlots: number | null;
   untilSlot: number | null;
+  tipSlot: number | null;
+  /** Set when a stored live slot is too old for the credit cap to cover. */
+  staleFromSlot?: number | null;
 }
 
 export interface SocketLike {
@@ -80,6 +87,8 @@ export interface IngestDeps {
   txCap?: number;
   /** How often to write a WebSocket ping and a JSON-RPC ping. Default 60s. */
   pingMs?: number;
+  /** Heap sample interval. Default 5 minutes. Zero disables it. */
+  heapSampleMs?: number;
 }
 
 interface LiveCursor {
@@ -109,6 +118,20 @@ export async function runIngestLoop(input: {
       "enhanced websockets are not used on this plan; using the filtered parsed stream",
     );
   }
+  const heapMs = input.deps?.heapSampleMs ?? 5 * 60 * 1000;
+  const heapTimer =
+    heapMs > 0
+      ? setInterval(() => {
+          void recordHeapSample(input.repo, input.logger);
+        }, heapMs)
+      : null;
+  input.signal.addEventListener(
+    "abort",
+    () => {
+      if (heapTimer) clearInterval(heapTimer);
+    },
+    { once: true },
+  );
   while (!input.signal.aborted) {
     let opened = false;
     try {
@@ -142,6 +165,7 @@ export async function runIngestLoop(input: {
       await sleep(backoffDelayMs(attempt), input.signal);
     }
   }
+  if (heapTimer) clearInterval(heapTimer);
 }
 
 async function runSocket(input: {
@@ -619,7 +643,7 @@ export async function backfillProgram(input: {
   gap?: ReconnectGap;
   deps?: IngestDeps;
 }): Promise<void> {
-  const gap = input.gap ?? { gapSeconds: null, gapSlots: null, untilSlot: null };
+  const gap = input.gap ?? { gapSeconds: null, gapSlots: null, untilSlot: null, tipSlot: null };
   const seen = input.seen ?? new SignatureWindow();
   const meter = input.meter ?? makeMeter(input.repo, input.logger);
   if (input.paused) return;
@@ -636,39 +660,75 @@ export async function backfillProgram(input: {
       transactionsFetched: 0,
       reachedCheckpoint: true,
       creditCapHit: false,
+      unrecovered: false,
+      gapFromSlot: null,
+      gapToSlot: null,
     });
     return;
   }
   const pageCap = input.deps?.pageCap ?? BACKFILL_PAGE_CAP;
   const txCap = input.deps?.txCap ?? BACKFILL_TX_CAP;
+  const liveStop =
+    gap.untilSlot === null ? null : backfillStopSlot(gap.untilSlot, input.env.BACKFILL_SLOT_MARGIN);
+  const gapFromSlot = liveStop ?? checkpoint.slot;
   let before: string | undefined;
   let pages = 0;
   const missing: string[] = [];
   let reached = false;
   let capHit = false;
-  while (pages < pageCap) {
-    pages += 1;
-    const page = await getSignatures(input, input.programId, before, meter);
-    const step = planBackfillPage({
-      newestFirst: page,
-      checkpoint: checkpoint.signature,
-      checkpointSlot: checkpoint.slot,
-      untilSlot: gap.untilSlot,
-      pageWasFull: page.length >= 100,
+  let errored = false;
+  let newestSlot: number | null = null;
+  try {
+    while (pages < pageCap) {
+      pages += 1;
+      const page = await getSignatures(input, input.programId, before, meter);
+      for (const row of page) {
+        if (row.slot !== null && (newestSlot === null || row.slot > newestSlot))
+          newestSlot = row.slot;
+      }
+      const step = planBackfillPage({
+        newestFirst: page,
+        checkpoint: liveStop === null ? checkpoint.signature : null,
+        checkpointSlot: liveStop === null ? checkpoint.slot : null,
+        untilSlot: liveStop,
+        pageWasFull: page.length >= 100,
+        pagesFetched: pages,
+        maxPages: pageCap,
+      });
+      missing.push(...step.missing);
+      if (!step.fetchAnotherPage) {
+        reached = !step.gapRemains;
+        capHit = step.gapRemains;
+        break;
+      }
+      before = page.at(-1)?.signature;
+      if (!before) {
+        capHit = true;
+        break;
+      }
+    }
+  } catch (error) {
+    const gapToSlot = newestSlot ?? gap.tipSlot;
+    input.logger.warn(
+      { err: error, programId: input.programId, gapFromSlot, gapToSlot },
+      "backfill unrecovered gap",
+    );
+    await input.repo.insertBackfill({
+      observedAt: new Date(),
+      programId: input.programId,
+      gapSeconds: gap.gapSeconds,
+      gapSlots: gap.gapSlots,
+      eventsRecovered: 0,
       pagesFetched: pages,
-      maxPages: pageCap,
+      signaturesSeen: missing.length,
+      transactionsFetched: 0,
+      reachedCheckpoint: false,
+      creditCapHit: true,
+      unrecovered: true,
+      gapFromSlot,
+      gapToSlot,
     });
-    missing.push(...step.missing);
-    if (!step.fetchAnotherPage) {
-      reached = !step.gapRemains;
-      capHit = step.gapRemains;
-      break;
-    }
-    before = page.at(-1)?.signature;
-    if (!before) {
-      capHit = true;
-      break;
-    }
+    return;
   }
   const selected = signaturesToRecover({ missingNewestFirst: missing, txCap });
   const known = await input.repo.knownSignatures(selected.signatures);
@@ -689,10 +749,34 @@ export async function backfillProgram(input: {
         0,
       );
     } catch (error) {
+      errored = true;
       input.logger.warn({ err: error }, "backfill getTransaction failed");
     }
   }
   const creditCapHit = capHit || selected.truncated;
+  const unrecovered =
+    gap.staleFromSlot != null ||
+    isUnrecoveredGap({
+      reachedStop: reached,
+      truncated: selected.truncated,
+      errored,
+    });
+  const gapFromSlotReported = gap.staleFromSlot ?? gapFromSlot;
+  const gapToSlot =
+    gap.staleFromSlot != null ? (gap.tipSlot ?? newestSlot) : (newestSlot ?? gap.tipSlot);
+  if (unrecovered) {
+    input.logger.warn(
+      {
+        programId: input.programId,
+        gapFromSlot: gapFromSlotReported,
+        gapToSlot,
+        eventsRecovered,
+        transactionsFetched,
+        creditCapHit,
+      },
+      "backfill unrecovered gap",
+    );
+  }
   input.logger.info(
     {
       programId: input.programId,
@@ -704,6 +788,9 @@ export async function backfillProgram(input: {
       transactionsFetched,
       reachedCheckpoint: reached,
       creditCapHit,
+      unrecovered,
+      gapFromSlot: gapFromSlotReported,
+      gapToSlot,
     },
     "backfill finished",
   );
@@ -718,6 +805,9 @@ export async function backfillProgram(input: {
     transactionsFetched,
     reachedCheckpoint: reached,
     creditCapHit,
+    unrecovered,
+    gapFromSlot: gapFromSlotReported,
+    gapToSlot,
   });
 }
 
@@ -794,6 +884,7 @@ async function readGap(
   input: {
     env: Env;
     logger: Logger;
+    repo: IngestRepository;
     live: LiveCursor;
     deps?: IngestDeps;
   },
@@ -801,7 +892,7 @@ async function readGap(
 ): Promise<ReconnectGap> {
   const now = input.deps?.now ?? Date.now;
   const lastLiveAtMs = input.live.atMs;
-  const lastSlot = input.live.slot;
+  let lastSlot = input.live.slot;
   let currentSlot: number | null = null;
   try {
     const result = await callRpc({ env: input.env, meter, deps: input.deps }, "getSlot", [
@@ -811,12 +902,68 @@ async function readGap(
   } catch (error) {
     input.logger.warn({ err: error }, "getSlot failed");
   }
-  return measureReconnectGap({
-    nowMs: now(),
-    lastLiveAtMs,
-    lastSlot,
-    currentSlot,
-  });
+  let staleFromSlot: number | null = null;
+  if (lastSlot === null) {
+    const persisted = await input.repo.lastLiveSlot();
+    if (
+      persistedSlotIsUsable({
+        persistedSlot: persisted,
+        tipSlot: currentSlot,
+        margin: input.env.BACKFILL_SLOT_MARGIN,
+        maxSpan: BACKFILL_MAX_SLOT_SPAN,
+      })
+    ) {
+      lastSlot = persisted;
+      input.logger.info(
+        { persistedSlot: persisted, tipSlot: currentSlot },
+        "startup backfill bounded by persisted live slot",
+      );
+    } else if (persisted !== null) {
+      staleFromSlot = backfillStopSlot(persisted, input.env.BACKFILL_SLOT_MARGIN);
+      input.logger.warn(
+        { persistedSlot: persisted, tipSlot: currentSlot, gapFromSlot: staleFromSlot },
+        "persisted live slot is older than the backfill cap",
+      );
+    }
+  }
+  return {
+    ...measureReconnectGap({
+      nowMs: now(),
+      lastLiveAtMs,
+      lastSlot,
+      currentSlot,
+    }),
+    staleFromSlot,
+  };
+}
+
+export async function recordHeapSample(repo: IngestRepository, logger: Logger): Promise<void> {
+  const memory = process.memoryUsage();
+  const uptimeSec = Math.round(process.uptime());
+  logger.info(
+    {
+      rss: memory.rss,
+      heapTotal: memory.heapTotal,
+      heapUsed: memory.heapUsed,
+      external: memory.external,
+      arrayBuffers: memory.arrayBuffers,
+      uptimeSec,
+    },
+    "ingest heap sample",
+  );
+  try {
+    await repo.insertHeapSample({
+      sampledAt: new Date(),
+      uptimeSec,
+      rssBytes: memory.rss,
+      heapTotalBytes: memory.heapTotal,
+      heapUsedBytes: memory.heapUsed,
+      externalBytes: memory.external,
+      arrayBuffersBytes: memory.arrayBuffers,
+    });
+  } catch (error) {
+    logger.error({ err: error }, "failed to store heap sample");
+  }
 }
 
 async function callRpc(

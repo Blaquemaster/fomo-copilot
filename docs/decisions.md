@@ -1,5 +1,13 @@
 # Decision log
 
+## 2026-11-14 — Backfill margin, unrecovered gaps, replay
+
+Backfill now stops at `last_live_slot - BACKFILL_SLOT_MARGIN` (default 16) so a notification that arrives slightly out of order is still fetched. `raw_events` dedupe and the known-signature skip drop the overlap. If the scan hits the transaction cap or a fetch throws before that stop slot, the row is `unrecovered` with `gap_from_slot` and `gap_to_slot`, and the log line is `backfill unrecovered gap`. `scripts/unrecovered-gaps.sql` counts those rows.
+
+A restart reads `ingest_status.last_slot`. When that slot is within 600 slots of the tip, startup backfill uses it minus the margin instead of the 60-transaction checkpoint scan. A missing or older cursor keeps the checkpoint window.
+
+`ingest_heap_sample` stores `process.memoryUsage()` plus process uptime every 5 minutes. `scripts/event-gaps.sh` reports p50/p95/p99/max seconds between `raw_events`. `npm run backfill:replay` writes a historical slot window into a scratch schema, never `public`.
+
 ## 2026-11-14 — Keepalive and slot-bounded backfill
 
 Production closed the parsed-stream socket every 5 minutes (`helius websocket closed`, no liveness warning). Helius drops a connection the client has not written to for 5 minutes, even while notifications are flowing. Node's built-in `WebSocket` cannot send ping frames, and the liveness probe only writes `getSlot` after evidence has already gone stale. The client now uses `ws` 8.22.0 and writes a protocol ping plus the documented JSON-RPC `ping` every 60 seconds. Protocol pings do not reset the separate 10-minute idle timer (no client messages and no notifications); the JSON-RPC `ping` does. Pongs and ping replies still count as liveness.

@@ -147,7 +147,12 @@ export function measureReconnectGap(input: {
   lastLiveAtMs: number | null;
   lastSlot: number | null;
   currentSlot: number | null;
-}): { gapSeconds: number | null; gapSlots: number | null; untilSlot: number | null } {
+}): {
+  gapSeconds: number | null;
+  gapSlots: number | null;
+  untilSlot: number | null;
+  tipSlot: number | null;
+} {
   const gapSeconds =
     input.lastLiveAtMs === null
       ? null
@@ -156,12 +161,49 @@ export function measureReconnectGap(input: {
     input.lastSlot === null || input.currentSlot === null
       ? null
       : Math.max(0, input.currentSlot - input.lastSlot);
-  return { gapSeconds, gapSlots, untilSlot: input.lastSlot };
+  return {
+    gapSeconds,
+    gapSlots,
+    untilSlot: input.lastSlot,
+    tipSlot: input.currentSlot,
+  };
 }
 
 /** Page cap and getTransaction cap for one program on one reconnect. Each page or tx is 1 credit. */
 export const BACKFILL_PAGE_CAP = 40;
 export const BACKFILL_TX_CAP = 60;
+/** Slots kept behind the last live slot so a late notification is still fetched. */
+export const DEFAULT_BACKFILL_SLOT_MARGIN = 16;
+/**
+ * A persisted live slot farther than this behind the tip is not a full startup
+ * backfill. The transaction cap cannot cover it, so the caller uses the checkpoint window.
+ */
+export const BACKFILL_MAX_SLOT_SPAN = 600;
+
+export function backfillStopSlot(lastLiveSlot: number, margin: number): number {
+  const safeMargin = Number.isFinite(margin) ? Math.max(0, Math.floor(margin)) : 0;
+  return Math.max(0, Math.floor(lastLiveSlot) - safeMargin);
+}
+
+export function persistedSlotIsUsable(input: {
+  persistedSlot: number | null;
+  tipSlot: number | null;
+  margin: number;
+  maxSpan?: number;
+}): boolean {
+  if (input.persistedSlot === null) return false;
+  if (input.tipSlot === null) return true;
+  const stop = backfillStopSlot(input.persistedSlot, input.margin);
+  return input.tipSlot - stop <= (input.maxSpan ?? BACKFILL_MAX_SLOT_SPAN);
+}
+
+export function isUnrecoveredGap(input: {
+  reachedStop: boolean;
+  truncated: boolean;
+  errored: boolean;
+}): boolean {
+  return input.errored || input.truncated || !input.reachedStop;
+}
 
 export function signaturesToRecover(input: {
   missingNewestFirst: readonly string[];
@@ -204,10 +246,10 @@ export interface BackfillStep {
 }
 
 /**
- * Stop at the checkpoint signature, or at the first row whose slot is already covered.
- * Covered means slot <= the last live slot, or slot <= the stored checkpoint slot when
- * the live cursor is absent. The stored event signature is often far behind the program
- * tip, so an exact-signature search pages through unrelated history.
+ * When `untilSlot` is set it is the only stop: the first row at or below that slot.
+ * The caller passes last_live_slot minus the safety margin, so exact checkpoint
+ * signatures are not allowed to cut the margin short. Without a live slot, stop on
+ * the checkpoint signature or checkpoint slot.
  */
 export function planBackfillPage(input: {
   newestFirst: readonly (string | BackfillSignature)[];
@@ -221,16 +263,14 @@ export function planBackfillPage(input: {
   if (input.checkpoint === null && input.untilSlot == null && input.checkpointSlot == null) {
     return { missing: [], fetchAnotherPage: false, gapRemains: false };
   }
-  const stopSlots = [input.untilSlot, input.checkpointSlot].filter(
-    (slot): slot is number => typeof slot === "number",
-  );
-  const stopSlot = stopSlots.length === 0 ? null : Math.max(...stopSlots);
+  const stopSlot = input.untilSlot ?? input.checkpointSlot ?? null;
+  const honorSignature = input.untilSlot == null && input.checkpoint !== null;
   const missing: string[] = [];
   let reached = false;
   for (const row of input.newestFirst) {
     const signature = typeof row === "string" ? row : row.signature;
     const slot = typeof row === "string" ? null : row.slot;
-    if (input.checkpoint !== null && signature === input.checkpoint) {
+    if (honorSignature && signature === input.checkpoint) {
       reached = true;
       break;
     }
@@ -243,4 +283,24 @@ export function planBackfillPage(input: {
   if (reached) return { missing, fetchAnotherPage: false, gapRemains: false };
   const canContinue = input.pageWasFull && input.pagesFetched < input.maxPages;
   return { missing, fetchAnotherPage: canContinue, gapRemains: !canContinue };
+}
+
+/** Keep signatures inside a historical slot window. Pages are newest-first. */
+export function planReplayPage(input: {
+  newestFirst: readonly BackfillSignature[];
+  fromSlot: number;
+  toSlot: number;
+}): { inWindow: BackfillSignature[]; reachedFrom: boolean } {
+  const inWindow: BackfillSignature[] = [];
+  for (const row of input.newestFirst) {
+    if (row.slot === null) continue;
+    if (row.slot > input.toSlot) continue;
+    if (row.slot < input.fromSlot) return { inWindow, reachedFrom: true };
+    inWindow.push(row);
+  }
+  return { inWindow, reachedFrom: false };
+}
+
+export function withinCreditCap(used: number, nextCost: number, cap: number): boolean {
+  return used + nextCost <= cap;
 }
