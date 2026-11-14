@@ -2,12 +2,21 @@ import { describe, expect, it } from "vitest";
 
 import { encodeBase58 } from "./base58.js";
 import {
+  accountsByName,
   decodeProgramData,
+  decodeRpcTransaction,
   observationsFromLogs,
   observationsFromTransaction,
   parseLogsNotification,
 } from "./decode.js";
-import { DBC_PROGRAM_ID, DAMM_V2_PROGRAM_ID, DISC, DLMM_PROGRAM_ID } from "./programs.js";
+import {
+  DBC_INIT_TOKEN2022_ACCOUNTS,
+  DBC_INIT_TOKEN2022_HOOK_ACCOUNTS,
+  DBC_PROGRAM_ID,
+  DAMM_V2_PROGRAM_ID,
+  DISC,
+  DLMM_PROGRAM_ID,
+} from "./programs.js";
 
 const CREATOR = pubkey(3);
 const MINT = pubkey(4);
@@ -154,6 +163,50 @@ describe("DBC log fixtures", () => {
     expect(dammFound?.mint).toBe(encodeBase58(MINT));
     expect(dlmmFound?.kind).toBe("dlmm_initialize");
     expect(dlmmFound?.pool).toBe(encodeBase58(POOL));
+  });
+});
+
+describe("named accounts", () => {
+  it("reads the plain Token-2022 mint by the IDL name base_mint", () => {
+    const accounts = DBC_INIT_TOKEN2022_ACCOUNTS.map((name) => `acct-${name}`);
+    const named = accountsByName(DBC_INIT_TOKEN2022_ACCOUNTS, accounts);
+    expect(named.get("base_mint")).toBe("acct-base_mint");
+    expect(named.get("pool")).toBe("acct-pool");
+    expect(named.has("transfer_hook_program")).toBe(false);
+  });
+
+  it("records a decode failure when a known instruction is missing its pool", () => {
+    const decoded = decodeRpcTransaction(
+      {
+        slot: 5,
+        blockTime: null,
+        meta: { err: null, logMessages: [], innerInstructions: [] },
+        transaction: {
+          message: {
+            accountKeys: [DBC_PROGRAM_ID, "only-one"],
+            instructions: [
+              {
+                programIdIndex: 0,
+                accounts: [1],
+                data: encodeBase58(DISC.ixDbcInitToken2022),
+              },
+            ],
+          },
+        },
+      },
+      "sig-fail",
+    );
+    expect(decoded.observations).toEqual([]);
+    expect(decoded.failures).toEqual([
+      {
+        signature: "sig-fail",
+        slot: 5,
+        programId: DBC_PROGRAM_ID,
+        instructionName: "initialize_virtual_pool_with_token2022",
+        error: "missing account pool",
+      },
+    ]);
+    expect(DBC_INIT_TOKEN2022_HOOK_ACCOUNTS).toContain("transfer_hook_program");
   });
 });
 

@@ -145,7 +145,20 @@ docker compose --env-file .env -f infra/docker-compose.yml exec -T ingestor \
 
 In the admin chat, `/status` shows connection state, events today, bytes today, and the 30-day credit projection. `/events` prints recent rows with Solscan links. A laptop with `.env` can run `scripts/spot-check-events.sh` after `npm run build`.
 
-Leave it for 24 hours. Then spot-check 20 signatures on Solscan, read the projection, and only then set `INGEST_MODE` to `continuous` if the credit estimate is acceptable. A disconnect or 60 seconds without a socket message (including ping replies) sends a Telegram alert. Non-essential RPC pauses at 90% of the monthly allowance.
+Leave it for 24 hours. Then spot-check 20 signatures on Solscan, read the projection, and only then set `INGEST_MODE` to `continuous` if the credit estimate is acceptable. A quiet program does not reconnect the socket. The ingestor treats the socket as dead only when slot notifications and ping replies both stop: it logs a warning, sends one `getSlot` probe, and reconnects if that stays unanswered. Telegram fires when a reconnect fails to open, not for a routine reconnect that succeeds. Non-essential RPC pauses at 90% of the monthly allowance. Parsed stream events are metered at 1 credit each. `getSlot`, `getTransaction`, and `getSignaturesForAddress` are metered at 1 credit per call, including backfill and liveness probes.
+
+## Host healthcheck
+
+Bootstrap installs `infra/fomo-healthcheck.sh` to `/usr/local/bin/fomo-healthcheck.sh` and `infra/fomo-healthcheck.cron` to `/etc/cron.d/fomo-healthcheck` (every 5 minutes as root). The script sources `/etc/fomo-healthcheck.env` for `HC_URL` and an optional `BASE_RESTARTS`.
+
+Create that env file on the server yourself. Do not commit it and do not paste the URL into the repo, a log, or a pull request:
+
+```bash
+sudo install -m 0600 -o root -g root /dev/null /etc/fomo-healthcheck.env
+sudoedit /etc/fomo-healthcheck.env
+```
+
+The file mode stays `0600` and the owner stays `root:root`. The cron line appends to `/var/log/fomo-healthcheck.log`.
 
 ## 7. Test /ping
 
@@ -203,4 +216,4 @@ The notice in the Actions log lists the secret names that are empty. GitHub neve
 - Create the DigitalOcean droplet, the Helius account, and the Telegram bot.
 - Pay for the droplet when you are ready ($6/month). This phase did not start that bill.
 - Merge pull requests. The deploy key cannot push.
-- Phase 7 items in [../infra/hardening.md](../infra/hardening.md): Tailscale-only SSH, turn off root login, unattended upgrades, backups, Healthchecks.io, Helius IP allow-list.
+- Phase 7 items in [../infra/hardening.md](../infra/hardening.md): Tailscale-only SSH, turn off root login, unattended upgrades, backups, and the Helius IP allow-list. The healthcheck cron is installed; you still create its env file on the host.

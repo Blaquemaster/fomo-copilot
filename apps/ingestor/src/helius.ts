@@ -10,12 +10,16 @@ export class HeliusRpcError extends Error {
   }
 }
 
+export type RpcMeter = (method: string) => void;
+
 export async function heliusRpc(input: {
   apiKey: string;
   method: string;
   params: unknown[];
   fetchImpl?: typeof fetch;
+  meter?: RpcMeter;
 }): Promise<unknown> {
+  input.meter?.(input.method);
   const url = `https://mainnet.helius-rpc.com/?api-key=${encodeURIComponent(input.apiKey)}`;
   let response: Response;
   try {
@@ -55,7 +59,11 @@ export async function heliusRpc(input: {
   return record?.result;
 }
 
-export async function getTransaction(apiKey: string, signature: string): Promise<unknown> {
+export async function getTransaction(
+  apiKey: string,
+  signature: string,
+  meter?: RpcMeter,
+): Promise<unknown> {
   const config = (version: number) => ({
     encoding: "json",
     commitment: "confirmed",
@@ -66,6 +74,7 @@ export async function getTransaction(apiKey: string, signature: string): Promise
       apiKey,
       method: "getTransaction",
       params: [signature, config(0)],
+      meter,
     });
   } catch (error) {
     const retry = nextTransactionVersion(error instanceof HeliusRpcError ? error.code : null, 0);
@@ -74,8 +83,19 @@ export async function getTransaction(apiKey: string, signature: string): Promise
       apiKey,
       method: "getTransaction",
       params: [signature, config(retry)],
+      meter,
     });
   }
+}
+
+export async function getSlot(apiKey: string, meter?: RpcMeter): Promise<number | null> {
+  const result = await heliusRpc({
+    apiKey,
+    method: "getSlot",
+    params: [{ commitment: "confirmed" }],
+    meter,
+  });
+  return typeof result === "number" ? result : null;
 }
 
 export function websocketUrl(apiKey: string): string {

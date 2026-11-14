@@ -12,6 +12,7 @@ Phase 0 ships the posture below. Phase 7 in the build spec is not done.
 - Deploy writes `/opt/fomo-copilot/.env` as mode 600 from GitHub secrets. The file is gitignored.
 - GitHub Actions deploy uses `StrictHostKeyChecking=yes` and a pinned `DEPLOY_KNOWN_HOSTS` secret.
 - Logs are JSON to stdout, with secret redaction. Docker json-file logs are capped at 10 MiB times 3 files.
+- Bootstrap installs `/usr/local/bin/fomo-healthcheck.sh` and `/etc/cron.d/fomo-healthcheck`. The operator creates `/etc/fomo-healthcheck.env` (root:root, mode 0600). The URL is not in git.
 
 ## Not done (Phase 7)
 
@@ -21,7 +22,6 @@ Phase 0 ships the posture below. Phase 7 in the build spec is not done.
 - Non-root is done for app containers; Postgres still starts as root inside its image and drops privileges itself.
 - The `deploy` user is in the `docker` group. That group is root-equivalent on the host. A later phase can replace it with a narrower socket proxy.
 - Nightly encrypted off-server backups and a restore test.
-- Healthchecks.io ping every 5 minutes.
 - Helius IP allow-list, once a Helius key is in use. Official docs support Allowed IPs and Allowed CIDRs for public addresses.
 - Read-only GitHub deploy key is created by the bootstrap script; write access must stay off.
 

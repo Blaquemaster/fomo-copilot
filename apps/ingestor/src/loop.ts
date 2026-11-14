@@ -1,44 +1,87 @@
 import {
+  BACKFILL_PAGE_CAP,
+  BACKFILL_TX_CAP,
+  BoundedSet,
+  DisposableBag,
   IngestRepository,
-  SignatureWindow,
+  LIVENESS_CRITICAL_MS,
+  LIVENESS_WARN_MS,
   WATCHED_PROGRAMS,
   allowanceCredits,
   backoffDelayMs,
   budgetLevel,
-  MICROS_PER_CREDIT,
-  PARSED_INSTRUCTION_NAMES,
+  decodeRpcTransaction,
+  livenessLevel,
+  measureReconnectGap,
+  nextReconnectAlert,
+  parsedEventMicros,
   parseLogsNotification,
   parseParsedNotification,
-  parseRpcTransaction,
+  parseSlotNotification,
   parseTransactionNotification,
+  parseSlotResponse,
   planBackfillPage,
+  PARSED_INSTRUCTION_NAMES,
   planCandidateWrites,
   redactString,
+  rpcCreditMicros,
   selectWsMethod,
   sendTelegramMessage,
-  silenceExceeded,
+  SignatureWindow,
+  signaturesToRecover,
   truncateTelegramText,
   usageMicros,
+  type DecodeFailure,
   type Env,
   type Logger,
   type Observation,
   type ResolvedWsMethod,
 } from "@fomo/core";
 
-import { getTransaction, heliusRpc } from "./helius.js";
+import { getSlot, getTransaction, heliusRpc, type RpcMeter } from "./helius.js";
 
 const MAX_FRAME_CHARS = 100_000;
 const MAX_QUEUED_FRAMES = 2;
-const BACKFILL_MAX_PAGES = 3;
-const BACKFILL_MAX_TRANSACTIONS = 20;
 const STATUS_MS = 15_000;
 const PING_MS = 20_000;
+const LIVENESS_TICK_MS = 5_000;
+const NOTED_NOTIFICATIONS = 32;
+
+export interface SocketLike {
+  readyState: number;
+  send(data: string): void;
+  close(): void;
+  addEventListener(
+    type: string,
+    listener: (event: { data?: unknown }) => void,
+    options?: { once?: boolean },
+  ): void;
+  removeEventListener(type: string, listener: (event: { data?: unknown }) => void): void;
+  ping?: () => void;
+}
+
+export interface IngestDeps {
+  openSocket?: (url: string) => SocketLike;
+  callRpc?: (method: string, params: unknown[]) => Promise<unknown>;
+  now?: () => number;
+  warnMs?: number;
+  criticalMs?: number;
+  livenessTickMs?: number;
+  pageCap?: number;
+  txCap?: number;
+}
+
+interface LiveCursor {
+  atMs: number | null;
+  slot: number | null;
+}
 
 export async function runIngestLoop(input: {
   env: Env;
   logger: Logger;
   repo: IngestRepository;
   signal: AbortSignal;
+  deps?: IngestDeps;
 }): Promise<void> {
   const secrets = [
     input.env.HELIUS_API_KEY,
@@ -46,7 +89,9 @@ export async function runIngestLoop(input: {
     input.env.POSTGRES_PASSWORD,
   ];
   let attempt = 0;
+  let outageAlerted = false;
   const choice = { method: selectWsMethod(input.env.HELIUS_PLAN, input.env.HELIUS_WS_MODE) };
+  const live: LiveCursor = { atMs: null, slot: null };
   if (input.env.HELIUS_WS_MODE === "enhanced" && choice.method === "parsed") {
     input.logger.warn(
       { plan: input.env.HELIUS_PLAN },
@@ -54,19 +99,33 @@ export async function runIngestLoop(input: {
     );
   }
   while (!input.signal.aborted) {
+    let opened = false;
     try {
-      await runSocket({ ...input, choice, secrets });
+      await runSocket({
+        ...input,
+        choice,
+        secrets,
+        live,
+        onOpen: () => {
+          opened = true;
+        },
+      });
+      outageAlerted = nextReconnectAlert({ opened: true, outageAlerted }).outageAlerted;
       attempt = 0;
     } catch (error) {
       if (input.signal.aborted) break;
+      const decision = nextReconnectAlert({ opened, outageAlerted });
+      outageAlerted = decision.outageAlerted;
       const message = error instanceof Error ? error.message : "socket closed";
-      input.logger.warn({ err: error }, "helius websocket closed");
-      if (!message.includes("silent")) {
+      if (decision.alert) {
+        input.logger.error({ err: error }, "helius reconnect failed");
         await notify(
           input,
           secrets,
-          `FOMO copilot ingest disconnected\n${redactString(message, secrets)}`,
+          `FOMO copilot ingest reconnect failed\n${redactString(message, secrets)}`,
         );
+      } else {
+        input.logger.warn({ err: error }, "helius websocket closed; reconnecting");
       }
       attempt += 1;
       await sleep(backoffDelayMs(attempt), input.signal);
@@ -81,14 +140,40 @@ async function runSocket(input: {
   signal: AbortSignal;
   choice: { method: ResolvedWsMethod };
   secrets: string[];
+  live: LiveCursor;
+  deps?: IngestDeps;
+  onOpen: () => void;
 }): Promise<void> {
-  const ws = new WebSocket(websocketUrlSafe(input.env.HELIUS_API_KEY, input.choice.method));
+  const now = input.deps?.now ?? Date.now;
+  const ws = openSocket(input);
   const seen = new SignatureWindow();
   const method = input.choice.method;
-  let lastMessageAt = Date.now();
-  let silentClose = false;
-  let lastSlot: number | null = null;
-  const allowance = allowanceCredits(input.env.HELIUS_PLAN, input.env.HELIUS_MONTHLY_CREDITS);
+  const bag = new DisposableBag();
+  let dead = false;
+  let lastEvidenceAtMs: number | null = null;
+  let lastSlot = input.live.slot;
+  const meter = makeMeter(input.repo, input.logger);
+  let probeId = 1000;
+  let outstandingProbe: number | null = null;
+  let connectedAtMs = 0;
+
+  const touch = (slot?: number): void => {
+    lastEvidenceAtMs = now();
+    input.live.atMs = lastEvidenceAtMs;
+    if (slot !== undefined) {
+      lastSlot = slot;
+      input.live.slot = slot;
+    }
+  };
+
+  const sendProbe = (): void => {
+    if (ws.readyState !== 1) return;
+    if (typeof ws.ping === "function") ws.ping();
+    probeId += 1;
+    outstandingProbe = probeId;
+    ws.send(JSON.stringify({ jsonrpc: "2.0", id: probeId, method: "getSlot" }));
+    meter("getSlot");
+  };
 
   const opened = new Promise<void>((resolve, reject) => {
     ws.addEventListener("open", () => resolve(), { once: true });
@@ -102,15 +187,43 @@ async function runSocket(input: {
 
   try {
     await opened;
-    lastMessageAt = Date.now();
+    input.onOpen();
+    let chain = Promise.resolve();
+    let queued = 0;
+    const onMessage = (event: { data?: unknown }): void => {
+      if (queued >= MAX_QUEUED_FRAMES) return;
+      queued += 1;
+      chain = chain
+        .then(() => onFrame(event))
+        .catch((error: unknown) => {
+          input.logger.error({ err: error }, "failed to handle helius frame");
+        })
+        .finally(() => {
+          queued -= 1;
+        });
+    };
+    ws.addEventListener("message", onMessage);
+    bag.add(() => {
+      ws.removeEventListener("message", onMessage);
+    });
+    const onPong = (): void => {
+      touch();
+    };
+    ws.addEventListener("pong", onPong);
+    bag.add(() => {
+      ws.removeEventListener("pong", onPong);
+    });
+    subscribe(ws, method);
+    const gap = await readGap(input, meter);
+    connectedAtMs = now();
+    touch();
     await input.repo.addUsage({
       now: new Date(),
       streamedBytes: 0n,
       messages: 0,
       storedEvents: 0,
-      creditMicros: usageMicros({ streamedBytes: 0n, rpcCalls: 0, socketOpens: 1 }),
+      creditMicros: 0n,
     });
-    subscribe(ws, method);
     for (const programId of WATCHED_PROGRAMS) {
       input.logger.info({ method, programId }, "subscription requested");
     }
@@ -118,129 +231,128 @@ async function runSocket(input: {
       { method, plan: input.env.HELIUS_PLAN, mode: input.env.INGEST_MODE },
       "helius subscription started",
     );
-    await backfillOnConnect({ env: input.env, repo: input.repo, logger: input.logger }).catch(
-      (error: unknown) => {
-        input.logger.warn({ err: error }, "backfill failed");
-      },
-    );
-    const timers = startTimers(
+    startTimers({
       ws,
       input,
-      () => lastMessageAt,
-      () => {
-        silentClose = true;
+      bag,
+      now,
+      method,
+      connectedAtMs: () => connectedAtMs,
+      lastEvidence: () => lastEvidenceAtMs,
+      lastSlot: () => lastSlot,
+      sendProbe,
+      markDead: () => {
+        dead = true;
       },
-      () => ({ method, lastSlot }),
-    );
-    let chain = Promise.resolve();
-    let queued = 0;
-    ws.addEventListener("message", (event) => {
-      lastMessageAt = Date.now();
-      if (queued >= MAX_QUEUED_FRAMES) return;
-      queued += 1;
-      chain = chain
-        .then(async () =>
-          handleText(await frameText(event.data), {
-            ...input,
-            method,
-            seen,
-            allowance,
-            onSlot: (slot) => {
-              lastSlot = slot;
-            },
-            onRejectEnhanced: () => {
-              input.choice.method = "parsed";
-              input.logger.warn(
-                {},
-                "enhanced subscription rejected; reconnecting with the filtered stream",
-              );
-              ws.close();
-            },
-          }),
-        )
-        .catch((error: unknown) => {
-          input.logger.error({ err: error }, "failed to handle helius frame");
-        })
-        .finally(() => {
-          queued -= 1;
-        });
+    });
+    await backfillOnConnect({
+      env: input.env,
+      repo: input.repo,
+      logger: input.logger,
+      seen,
+      meter,
+      gap,
+      deps: input.deps,
+    }).catch((error: unknown) => {
+      input.logger.warn({ err: error }, "backfill failed");
     });
     await Promise.race([closed, abortPromise(input.signal)]);
-    clearInterval(timers.ping);
-    clearInterval(timers.silence);
-    clearInterval(timers.status);
-    if (silentClose) {
-      throw new Error("helius websocket silent");
-    }
+    if (dead) throw new Error("helius websocket dead");
   } finally {
-    if (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING) {
-      ws.close();
-    }
+    bag.dispose();
+    if (ws.readyState === 1 || ws.readyState === 0) ws.close();
   }
-  if (!input.signal.aborted) {
-    throw new Error("helius websocket closed");
+  if (!input.signal.aborted) throw new Error("helius websocket closed");
+
+  async function onFrame(event: { data?: unknown }): Promise<void> {
+    const text = await frameText(event.data);
+    await handleText(text, {
+      ...input,
+      method,
+      seen,
+      meter,
+      outstandingProbe: () => outstandingProbe,
+      onEvidence: touch,
+      onRejectEnhanced: () => {
+        input.choice.method = "parsed";
+        input.logger.warn(
+          {},
+          "enhanced subscription rejected; reconnecting with the filtered stream",
+        );
+        ws.close();
+      },
+    });
   }
 }
 
-function startTimers(
-  ws: WebSocket,
+function startTimers(input: {
+  ws: SocketLike;
   input: {
     env: Env;
     logger: Logger;
     repo: IngestRepository;
-    signal: AbortSignal;
-    secrets: string[];
-  },
-  lastMessageAt: () => number,
-  markSilent: () => void,
-  snapshot: () => { method: ResolvedWsMethod; lastSlot: number | null },
-): {
-  ping: ReturnType<typeof setInterval>;
-  silence: ReturnType<typeof setInterval>;
-  status: ReturnType<typeof setInterval>;
-} {
-  let pingId = 1000;
-  const ping = setInterval(() => {
-    if (ws.readyState !== WebSocket.OPEN) return;
-    ws.send(JSON.stringify({ jsonrpc: "2.0", id: pingId, method: "ping" }));
-    pingId += 1;
+    deps?: IngestDeps;
+  };
+  bag: DisposableBag;
+  now: () => number;
+  method: ResolvedWsMethod;
+  connectedAtMs: () => number;
+  lastEvidence: () => number | null;
+  lastSlot: () => number | null;
+  sendProbe: () => void;
+  markDead: () => void;
+}): void {
+  const warnMs = input.input.deps?.warnMs ?? LIVENESS_WARN_MS;
+  const criticalMs = input.input.deps?.criticalMs ?? LIVENESS_CRITICAL_MS;
+  const tickMs = input.input.deps?.livenessTickMs ?? LIVENESS_TICK_MS;
+  input.bag.interval(() => {
+    if (input.ws.readyState !== 1) return;
+    if (typeof input.ws.ping === "function") input.ws.ping();
   }, PING_MS);
-  let alerted = false;
-  const silence = setInterval(() => {
-    if (
-      !silenceExceeded({
-        lastMessageAtMs: lastMessageAt(),
-        nowMs: Date.now(),
-        alreadyAlerted: alerted,
-      })
-    )
+  let warned = false;
+  input.bag.interval(() => {
+    const level = livenessLevel({
+      nowMs: input.now(),
+      connectedAtMs: input.connectedAtMs(),
+      lastEvidenceAtMs: input.lastEvidence(),
+      warnMs,
+      criticalMs,
+    });
+    if (level === "ok") {
+      warned = false;
       return;
-    alerted = true;
-    markSilent();
-    void notify(input, input.secrets, "FOMO copilot ingest silent for more than 60s").finally(
-      () => {
-        ws.close();
-      },
-    );
-  }, 5_000);
-  const status = setInterval(() => {
-    const snap = snapshot();
-    void input.repo
+    }
+    if (level === "warn") {
+      if (warned) return;
+      warned = true;
+      input.input.logger.warn(
+        { warnMs, criticalMs },
+        "helius websocket liveness degraded; probing with getSlot",
+      );
+      input.sendProbe();
+      return;
+    }
+    input.input.logger.error({ criticalMs }, "helius websocket liveness critical; reconnecting");
+    input.markDead();
+    input.ws.close();
+  }, tickMs);
+  input.bag.interval(() => {
+    const paused = false;
+    void input.input.repo
       .writeStatus({
         state: "connected",
-        wsMethod: snap.method,
-        plan: input.env.HELIUS_PLAN,
-        mode: input.env.INGEST_MODE,
-        paused: false,
-        lastSlot: snap.lastSlot,
+        wsMethod: input.method,
+        plan: input.input.env.HELIUS_PLAN,
+        mode: input.input.env.INGEST_MODE,
+        paused,
+        lastSlot: input.lastSlot(),
         lastError: null,
         now: new Date(),
       })
       .catch((error: unknown) => {
-        input.logger.error({ err: error }, "failed to write ingest status");
+        input.input.logger.error({ err: error }, "failed to write ingest status");
       });
   }, STATUS_MS);
-  return { ping, silence, status };
 }
 
 async function handleText(
@@ -251,9 +363,11 @@ async function handleText(
     repo: IngestRepository;
     method: ResolvedWsMethod;
     seen: SignatureWindow;
-    allowance: bigint;
+    meter: RpcMeter;
     secrets: string[];
-    onSlot: (slot: number) => void;
+    deps?: IngestDeps;
+    outstandingProbe: () => number | null;
+    onEvidence: (slot?: number) => void;
     onRejectEnhanced: () => void;
   },
 ): Promise<void> {
@@ -264,7 +378,12 @@ async function handleText(
       streamedBytes: bytes,
       messages: 1,
       storedEvents: 0,
-      creditMicros: usageMicros({ streamedBytes: bytes, rpcCalls: 0, socketOpens: 0 }),
+      creditMicros:
+        input.method === "parsed" && text.includes("parsedTransactionNotification")
+          ? parsedEventMicros(1)
+          : input.method === "parsed"
+            ? 0n
+            : usageMicros({ streamedBytes: bytes, rpcCalls: 0 }),
     });
     input.logger.warn({ bytes: bytes.toString() }, "dropped oversized helius frame");
     return;
@@ -274,6 +393,26 @@ async function handleText(
     message = JSON.parse(text) as unknown;
   } catch {
     return;
+  }
+  const slotNote = parseSlotNotification(message);
+  if (slotNote !== null) {
+    input.onEvidence(slotNote);
+    await recordFrame(input.repo, bytes, 0n);
+    return;
+  }
+  const probe = input.outstandingProbe();
+  if (probe !== null) {
+    const probed = parseSlotResponse(message, probe);
+    if (probed !== null) {
+      input.onEvidence(probed);
+      await recordFrame(input.repo, bytes, 0n);
+      return;
+    }
+    if (isRecord(message) && message["id"] === probe && message["error"]) {
+      input.onEvidence();
+      await recordFrame(input.repo, bytes, 0n);
+      return;
+    }
   }
   if (isRecord(message) && message["error"] && message["id"] === 1 && input.method === "enhanced") {
     input.onRejectEnhanced();
@@ -292,9 +431,9 @@ async function handleText(
     creditMicros:
       input.method === "parsed"
         ? parsedEvent
-          ? MICROS_PER_CREDIT
+          ? parsedEventMicros(1)
           : 0n
-        : usageMicros({ streamedBytes: bytes, rpcCalls: 0, socketOpens: 0 }),
+        : usageMicros({ streamedBytes: bytes, rpcCalls: 0 }),
   });
   if (!frame) {
     if (isRecord(message) && typeof message["result"] === "number") {
@@ -307,23 +446,55 @@ async function handleText(
     }
     return;
   }
-  input.onSlot(frame.slot);
+  if (frame.slot > 0) input.onEvidence(frame.slot);
   const paused = await refreshBudget(input);
   let observations = frame.observations;
-  if (
-    !paused &&
+  let failures = frame.failures;
+  const needsBody =
     observations.some(
       (observation) => observation.pool === null && observation.kind !== "dbc_curve_complete",
-    )
-  ) {
-    observations = await enrichFromRpc(input, frame.signature, observations);
+    ) ||
+    (observations.length === 0 && failures.length > 0);
+  if (!paused && needsBody) {
+    const enriched = await enrichFromRpc(input, frame.signature);
+    if (enriched.observations.length > 0) observations = enriched.observations;
+    failures = [...failures, ...enriched.failures];
+  }
+  await persistDecoded(input, { observations, failures }, Number(bytes));
+}
+
+async function recordFrame(
+  repo: IngestRepository,
+  bytes: bigint,
+  creditMicros: bigint,
+): Promise<void> {
+  await repo.addUsage({
+    now: new Date(),
+    streamedBytes: bytes,
+    messages: 1,
+    storedEvents: 0,
+    creditMicros,
+  });
+}
+
+async function persistDecoded(
+  input: { repo: IngestRepository; logger: Logger; seen: SignatureWindow },
+  decoded: { observations: Observation[]; failures: DecodeFailure[] },
+  byteLength: number,
+): Promise<number> {
+  for (const failure of decoded.failures) {
+    try {
+      await input.repo.insertDecodeFailure(failure, new Date());
+    } catch (error) {
+      input.logger.error({ err: error }, "failed to store decode failure");
+    }
   }
   let stored = 0;
-  for (const observation of observations) {
+  for (const observation of decoded.observations) {
     if (!input.seen.add(observation.signature, observation.eventIndex)) continue;
     const inserted = await input.repo.insertRaw(
       observation,
-      observation.eventIndex === 0 ? Number(bytes) : 0,
+      observation.eventIndex === 0 ? byteLength : 0,
       new Date(),
     );
     if (!inserted) continue;
@@ -345,28 +516,20 @@ async function handleText(
       creditMicros: 0n,
     });
   }
+  return stored;
 }
 
 async function enrichFromRpc(
-  input: { env: Env; repo: IngestRepository; logger: Logger },
+  input: { env: Env; repo: IngestRepository; logger: Logger; meter: RpcMeter; deps?: IngestDeps },
   signature: string,
-  current: Observation[],
-): Promise<Observation[]> {
+): Promise<{ observations: Observation[]; failures: DecodeFailure[] }> {
   try {
-    const result = await getTransaction(input.env.HELIUS_API_KEY, signature);
-    await input.repo.addUsage({
-      now: new Date(),
-      streamedBytes: 0n,
-      messages: 0,
-      storedEvents: 0,
-      creditMicros: usageMicros({ streamedBytes: 0n, rpcCalls: 1, socketOpens: 0 }),
-    });
-    if (result == null) return current;
-    const parsed = parseRpcTransaction(result, signature);
-    return parsed.length > 0 ? parsed : current;
+    const result = await callRpc(input, "getTransaction", [signature]);
+    if (result == null) return { observations: [], failures: [] };
+    return decodeRpcTransaction(result, signature);
   } catch (error) {
     input.logger.warn({ err: error }, "getTransaction failed");
-    return current;
+    return { observations: [], failures: [] };
   }
 }
 
@@ -382,13 +545,13 @@ async function applyOne(repo: IngestRepository, observation: Observation): Promi
 async function refreshBudget(input: {
   env: Env;
   repo: IngestRepository;
-  allowance: bigint;
   secrets: string[];
   logger: Logger;
 }): Promise<boolean> {
+  const allowance = allowanceCredits(input.env.HELIUS_PLAN, input.env.HELIUS_MONTHLY_CREDITS);
   const now = new Date();
   const month = await input.repo.monthUsage(now);
-  const level = budgetLevel(month.creditMicros, input.allowance);
+  const level = budgetLevel(month.creditMicros, allowance);
   if (level === "warn60" && !month.alerted60) {
     await input.repo.markBudgetAlert(now, "warn60");
     await notify(
@@ -420,77 +583,122 @@ export async function backfillProgram(input: {
   logger: Logger;
   programId: string;
   paused: boolean;
+  seen?: SignatureWindow;
+  meter?: RpcMeter;
+  gap?: { gapSeconds: number | null; gapSlots: number | null };
+  deps?: IngestDeps;
 }): Promise<void> {
+  const gap = input.gap ?? { gapSeconds: null, gapSlots: null };
+  const seen = input.seen ?? new SignatureWindow();
+  const meter = input.meter ?? makeMeter(input.repo, input.logger);
   if (input.paused) return;
   const checkpoint = await input.repo.checkpoint(input.programId);
+  if (checkpoint === null) {
+    await input.repo.insertBackfill({
+      observedAt: new Date(),
+      programId: input.programId,
+      gapSeconds: gap.gapSeconds,
+      gapSlots: gap.gapSlots,
+      eventsRecovered: 0,
+      pagesFetched: 0,
+      signaturesSeen: 0,
+      transactionsFetched: 0,
+      reachedCheckpoint: true,
+      creditCapHit: false,
+    });
+    return;
+  }
+  const pageCap = input.deps?.pageCap ?? BACKFILL_PAGE_CAP;
+  const txCap = input.deps?.txCap ?? BACKFILL_TX_CAP;
   let before: string | undefined;
   let pages = 0;
   const missing: string[] = [];
-  let gapRemains = false;
-  while (pages < BACKFILL_MAX_PAGES) {
+  let reached = false;
+  let capHit = false;
+  while (pages < pageCap) {
     pages += 1;
-    const page = await getSignatures(input.env.HELIUS_API_KEY, input.programId, before);
-    await input.repo.addUsage({
-      now: new Date(),
-      streamedBytes: 0n,
-      messages: 0,
-      storedEvents: 0,
-      creditMicros: usageMicros({ streamedBytes: 0n, rpcCalls: 1, socketOpens: 0 }),
-    });
+    const page = await getSignatures(input, input.programId, before, meter);
     const step = planBackfillPage({
       newestFirst: page.map((row) => row.signature),
-      checkpoint: checkpoint?.signature ?? null,
+      checkpoint: checkpoint.signature,
       pageWasFull: page.length >= 100,
       pagesFetched: pages,
-      maxPages: BACKFILL_MAX_PAGES,
+      maxPages: pageCap,
     });
     missing.push(...step.missing);
-    gapRemains = step.gapRemains;
-    if (!step.fetchAnotherPage) break;
+    if (!step.fetchAnotherPage) {
+      reached = !step.gapRemains;
+      capHit = step.gapRemains;
+      break;
+    }
     before = page.at(-1)?.signature;
-    if (!before) break;
-  }
-  if (gapRemains) {
-    input.logger.warn(
-      { programId: input.programId },
-      "signature gap is larger than the backfill window; skipped getTransaction",
-    );
-    return;
-  }
-  for (const signature of missing.slice(0, BACKFILL_MAX_TRANSACTIONS)) {
-    try {
-      const result = await getTransaction(input.env.HELIUS_API_KEY, signature);
-      await input.repo.addUsage({
-        now: new Date(),
-        streamedBytes: 0n,
-        messages: 0,
-        storedEvents: 0,
-        creditMicros: usageMicros({ streamedBytes: 0n, rpcCalls: 1, socketOpens: 0 }),
-      });
-      const observations = parseRpcTransaction(result, signature);
-      for (const observation of observations) {
-        const inserted = await input.repo.insertRaw(observation, 0, new Date());
-        if (!inserted) continue;
-        await applyOne(input.repo, observation);
-      }
-    } catch (error) {
-      input.logger.warn({ err: error }, "backfill getTransaction skipped");
+    if (!before) {
+      capHit = true;
+      break;
     }
   }
+  const selected = signaturesToRecover({ missingNewestFirst: missing, txCap });
+  let eventsRecovered = 0;
+  let transactionsFetched = 0;
+  for (const signature of selected.signatures) {
+    try {
+      const result = await callRpc({ env: input.env, meter, deps: input.deps }, "getTransaction", [
+        signature,
+      ]);
+      transactionsFetched += 1;
+      if (result == null) continue;
+      const decoded = decodeRpcTransaction(result, signature);
+      eventsRecovered += await persistDecoded(
+        { repo: input.repo, logger: input.logger, seen },
+        decoded,
+        0,
+      );
+    } catch (error) {
+      input.logger.warn({ err: error }, "backfill getTransaction failed");
+    }
+  }
+  const creditCapHit = capHit || selected.truncated;
+  input.logger.info(
+    {
+      programId: input.programId,
+      gapSeconds: gap.gapSeconds,
+      gapSlots: gap.gapSlots,
+      eventsRecovered,
+      pagesFetched: pages,
+      signaturesSeen: missing.length,
+      transactionsFetched,
+      reachedCheckpoint: reached,
+      creditCapHit,
+    },
+    "backfill finished",
+  );
+  await input.repo.insertBackfill({
+    observedAt: new Date(),
+    programId: input.programId,
+    gapSeconds: gap.gapSeconds,
+    gapSlots: gap.gapSlots,
+    eventsRecovered,
+    pagesFetched: pages,
+    signaturesSeen: missing.length,
+    transactionsFetched,
+    reachedCheckpoint: reached,
+    creditCapHit,
+  });
 }
 
 async function getSignatures(
-  apiKey: string,
+  input: { env: Env; deps?: IngestDeps },
   programId: string,
   before: string | undefined,
+  meter: RpcMeter,
 ): Promise<Array<{ signature: string }>> {
   const config: Record<string, unknown> = { limit: 100, commitment: "confirmed" };
   if (before) config["before"] = before;
-  const result = await heliusRpc({
-    apiKey,
-    method: "getSignaturesForAddress",
-    params: [programId, config],
-  });
+  const result = await callRpc(
+    { env: input.env, meter, deps: input.deps },
+    "getSignaturesForAddress",
+    [programId, config],
+  );
   if (!Array.isArray(result)) return [];
   return result
     .map((row) => {
@@ -504,8 +712,8 @@ async function getSignatures(
     .filter((row): row is { signature: string } => row !== null);
 }
 
-function subscribe(ws: WebSocket, method: ResolvedWsMethod): void {
-  if (ws.readyState !== WebSocket.OPEN) return;
+function subscribe(ws: SocketLike, method: ResolvedWsMethod): void {
+  if (ws.readyState !== 1) return;
   if (method === "enhanced") {
     ws.send(
       JSON.stringify({
@@ -523,24 +731,91 @@ function subscribe(ws: WebSocket, method: ResolvedWsMethod): void {
         ],
       }),
     );
-    return;
+  } else {
+    ws.send(
+      JSON.stringify({
+        jsonrpc: "2.0",
+        id: 1,
+        method: "parsedTransactionSubscribe",
+        params: [
+          {
+            programs: [...WATCHED_PROGRAMS],
+            instructionNames: [...PARSED_INSTRUCTION_NAMES],
+            includeFailed: false,
+            includeCpi: true,
+          },
+          { commitment: "confirmed", details: "matched" },
+        ],
+      }),
+    );
   }
-  ws.send(
-    JSON.stringify({
-      jsonrpc: "2.0",
-      id: 1,
-      method: "parsedTransactionSubscribe",
-      params: [
-        {
-          programs: [...WATCHED_PROGRAMS],
-          instructionNames: [...PARSED_INSTRUCTION_NAMES],
-          includeFailed: false,
-          includeCpi: true,
-        },
-        { commitment: "confirmed", details: "matched" },
-      ],
-    }),
-  );
+  ws.send(JSON.stringify({ jsonrpc: "2.0", id: 2, method: "slotSubscribe" }));
+}
+
+async function readGap(
+  input: {
+    env: Env;
+    logger: Logger;
+    live: LiveCursor;
+    deps?: IngestDeps;
+  },
+  meter: RpcMeter,
+): Promise<{ gapSeconds: number | null; gapSlots: number | null }> {
+  const now = input.deps?.now ?? Date.now;
+  const lastLiveAtMs = input.live.atMs;
+  const lastSlot = input.live.slot;
+  let currentSlot: number | null = null;
+  try {
+    const result = await callRpc({ env: input.env, meter, deps: input.deps }, "getSlot", [
+      { commitment: "confirmed" },
+    ]);
+    currentSlot = typeof result === "number" ? result : null;
+  } catch (error) {
+    input.logger.warn({ err: error }, "getSlot failed");
+  }
+  return measureReconnectGap({
+    nowMs: now(),
+    lastLiveAtMs,
+    lastSlot,
+    currentSlot,
+  });
+}
+
+async function callRpc(
+  input: { env: Env; meter: RpcMeter; deps?: IngestDeps },
+  method: string,
+  params: unknown[],
+): Promise<unknown> {
+  if (input.deps?.callRpc) {
+    input.meter(method);
+    return input.deps.callRpc(method, params);
+  }
+  if (method === "getTransaction" && typeof params[0] === "string") {
+    return getTransaction(input.env.HELIUS_API_KEY, params[0], input.meter);
+  }
+  if (method === "getSlot") return getSlot(input.env.HELIUS_API_KEY, input.meter);
+  return heliusRpc({
+    apiKey: input.env.HELIUS_API_KEY,
+    method,
+    params,
+    meter: input.meter,
+  });
+}
+
+function makeMeter(repo: IngestRepository, logger: Logger): RpcMeter {
+  return (method: string) => {
+    void repo
+      .addUsage({
+        now: new Date(),
+        streamedBytes: 0n,
+        messages: 0,
+        storedEvents: 0,
+        creditMicros: rpcCreditMicros(method),
+      })
+      .catch((error: unknown) => {
+        logger.error({ err: error }, "failed to meter helius credits");
+      });
+  };
 }
 
 async function notify(
@@ -564,6 +839,16 @@ async function frameText(data: unknown): Promise<string> {
   if (data instanceof Uint8Array) return Buffer.from(data).toString("utf8");
   if (typeof Blob !== "undefined" && data instanceof Blob) return data.text();
   return "";
+}
+
+function openSocket(input: {
+  env: Env;
+  choice: { method: ResolvedWsMethod };
+  deps?: IngestDeps;
+}): SocketLike {
+  const url = websocketUrlSafe(input.env.HELIUS_API_KEY, input.choice.method);
+  if (input.deps?.openSocket) return input.deps.openSocket(url);
+  return new WebSocket(url) as unknown as SocketLike;
 }
 
 function websocketUrlSafe(apiKey: string, method: ResolvedWsMethod): string {
@@ -592,11 +877,10 @@ function sleep(ms: number, signal: AbortSignal): Promise<void> {
   });
 }
 
-const notedNotifications = new Set<string>();
+const notedNotifications = new BoundedSet(NOTED_NOTIFICATIONS);
 
 function noteIgnored(logger: Logger, method: string): void {
-  if (notedNotifications.has(method)) return;
-  notedNotifications.add(method);
+  if (!notedNotifications.add(method)) return;
   logger.info({ notification: method }, "helius notification was not an ingest event");
 }
 
@@ -604,12 +888,16 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null;
 }
 
-export { WATCHED_PROGRAMS, backfillOnConnect };
+export { WATCHED_PROGRAMS };
 
 async function backfillOnConnect(input: {
   env: Env;
   repo: IngestRepository;
   logger: Logger;
+  seen: SignatureWindow;
+  meter: RpcMeter;
+  gap: { gapSeconds: number | null; gapSlots: number | null };
+  deps?: IngestDeps;
 }): Promise<void> {
   const month = await input.repo.monthUsage(new Date());
   const allowance = allowanceCredits(input.env.HELIUS_PLAN, input.env.HELIUS_MONTHLY_CREDITS);

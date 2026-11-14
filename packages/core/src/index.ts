@@ -21,9 +21,13 @@ export {
   allowanceCredits,
   budgetLevel,
   formatCredits,
+  parsedEventMicros,
   projectMonthlyCredits,
+  rpcCreditMicros,
+  rpcCredits,
   selectWsMethod,
   MICROS_PER_CREDIT,
+  RPC_CREDITS,
   usageMicros,
   utcDayStart,
   utcMonth,
@@ -31,14 +35,20 @@ export {
   type ResolvedWsMethod,
 } from "./ingest/budget.js";
 export {
+  accountsByName,
+  applyCurveMints,
   decodeProgramData,
+  decodeRpcTransaction,
   observationsFromLogs,
   observationsFromTransaction,
   isPersistable,
   parseLogsNotification,
   parseParsedNotification,
   parseRpcTransaction,
+  parseSlotNotification,
+  parseSlotResponse,
   parseTransactionNotification,
+  type DecodeFailure,
   type Observation,
 } from "./ingest/decode.js";
 export {
@@ -51,11 +61,20 @@ export {
   WATCHED_PROGRAMS,
 } from "./ingest/programs.js";
 export {
+  BACKFILL_PAGE_CAP,
+  BACKFILL_TX_CAP,
+  BoundedSet,
+  DisposableBag,
+  LIVENESS_CRITICAL_MS,
+  LIVENESS_WARN_MS,
   SignatureWindow,
   backoffDelayMs,
-  planBackfillPage,
+  livenessLevel,
+  measureReconnectGap,
+  nextReconnectAlert,
   nextTransactionVersion,
-  silenceExceeded,
+  planBackfillPage,
+  signaturesToRecover,
 } from "./ingest/reliability.js";
 export { formatIngestStatus, formatSpotCheck } from "./ingest/statusText.js";
 export { IngestRepository, createPool, migrate } from "./db/ingest.js";

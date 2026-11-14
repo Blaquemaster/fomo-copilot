@@ -40,6 +40,35 @@ describe("repository guards", () => {
     }
   });
 
+  it("installs the host healthcheck without committing its URL", () => {
+    const script = readFileSync(path.join(root, "infra/fomo-healthcheck.sh"), "utf8");
+    const cron = readFileSync(path.join(root, "infra/fomo-healthcheck.cron"), "utf8");
+    const bootstrap = readFileSync(path.join(root, "infra/bootstrap-droplet.sh"), "utf8");
+    const runbook = readFileSync(path.join(root, "docs/runbook.md"), "utf8");
+    expect(script).toContain(". /etc/fomo-healthcheck.env");
+    expect(script).toContain('url="$HC_URL/fail"');
+    expect(script).not.toMatch(/https?:\/\//);
+    expect(cron).toContain("/usr/local/bin/fomo-healthcheck.sh");
+    expect(bootstrap).toContain('install -m 0755 "${script_dir}/fomo-healthcheck.sh"');
+    expect(bootstrap).toContain("/etc/cron.d/fomo-healthcheck");
+    expect(bootstrap).toContain("0600");
+    expect(runbook).toContain("root:root");
+    for (const file of textFiles(root)) {
+      const body = readFileSync(file, "utf8");
+      expect(body, file).not.toMatch(/HC_URL\s*=\s*https?:\/\//);
+      expect(body, file).not.toMatch(/https?:\/\/\S*healthchecks\.io/i);
+    }
+  });
+
+  it("keeps decode-failure and backfill tables in the migration", () => {
+    const sql = readFileSync(path.join(root, "packages/core/src/db/ingest.ts"), "utf8");
+    expect(sql).toContain("create table if not exists decode_failure");
+    expect(sql).toContain("create table if not exists ingest_backfill");
+    expect(sql).toContain("002_liveness_backfill");
+    expect(sql).toContain("gap_seconds");
+    expect(sql).toContain("events_recovered");
+  });
+
   it("keeps the deploy workflow on strict host key checking", () => {
     const workflow = readFileSync(path.join(root, ".github/workflows/deploy.yml"), "utf8");
     expect(workflow).toContain("StrictHostKeyChecking=yes");
@@ -59,6 +88,21 @@ describe("repository guards", () => {
     }
   });
 });
+
+function textFiles(directory: string): string[] {
+  const found: string[] = [];
+  for (const entry of readdirSync(directory)) {
+    if (entry === "node_modules" || entry === "dist" || entry === ".git") continue;
+    const full = path.join(directory, entry);
+    const stat = statSync(full);
+    if (stat.isDirectory()) {
+      found.push(...textFiles(full));
+      continue;
+    }
+    if (/\.(ts|js|md|sh|yml|yaml|cron|json|txt)$/.test(entry)) found.push(full);
+  }
+  return found;
+}
 
 function packageJsonFiles(directory: string): string[] {
   const found: string[] = [];

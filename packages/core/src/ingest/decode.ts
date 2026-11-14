@@ -8,6 +8,8 @@ import {
   DLMM_PROGRAM_ID,
   INSTRUCTION_LAYOUTS,
   QUOTE_MINTS,
+  SWAP_LAYOUTS,
+  WATCHED_PROGRAMS,
   sameDisc,
   type EventKind,
   type InstructionLayout,
@@ -27,6 +29,70 @@ export interface Observation {
   virtualPool: string | null;
   quoteMint: string | null;
   blockTimeMs: number | null;
+}
+
+export interface DecodeFailure {
+  signature: string;
+  slot: number;
+  programId: string;
+  instructionName: string | null;
+  error: string;
+}
+
+/** Map IDL account names onto the instruction's account list, in IDL order. */
+export function accountsByName(
+  names: readonly string[],
+  accounts: readonly string[],
+): Map<string, string> {
+  const out = new Map<string, string>();
+  const limit = Math.min(names.length, accounts.length);
+  for (let index = 0; index < limit; index += 1) {
+    const name = names[index];
+    const value = accounts[index];
+    if (!name || !value) continue;
+    out.set(name, value);
+  }
+  return out;
+}
+
+export interface PoolMint {
+  pool: string;
+  mint: string;
+}
+
+/**
+ * EvtCurveComplete carries the pool and not the mint. The swap in the same
+ * transaction names base_mint, and an initialize in the same transaction does too.
+ */
+export function applyCurveMints(
+  observations: readonly Observation[],
+  swaps: readonly PoolMint[],
+): Observation[] {
+  const mints = new Map<string, string>();
+  for (const observation of observations) {
+    if (observation.kind === "dbc_initialize" && observation.pool && observation.mint) {
+      mints.set(observation.pool, observation.mint);
+    }
+  }
+  for (const swap of swaps) mints.set(swap.pool, swap.mint);
+  return observations.map((observation) => {
+    if (observation.kind !== "dbc_curve_complete" || observation.mint !== null) return observation;
+    if (observation.pool === null) return observation;
+    const mint = mints.get(observation.pool);
+    return mint === undefined ? observation : { ...observation, mint };
+  });
+}
+
+export function parseSlotNotification(message: unknown): number | null {
+  if (!isRecord(message) || message["method"] !== "slotNotification") return null;
+  const result = asRecord(asRecord(message["params"])?.["result"]);
+  return typeof result?.["slot"] === "number" ? result["slot"] : null;
+}
+
+/** Response to a getSlot request sent on the same WebSocket. The matching id is the pong. */
+export function parseSlotResponse(message: unknown, id: number): number | null {
+  if (!isRecord(message) || message["id"] !== id) return null;
+  return typeof message["result"] === "number" ? message["result"] : null;
 }
 
 export function chooseTokenMint(left: string, right: string): string {
@@ -55,7 +121,7 @@ export function parseLogsNotification(message: unknown, receivedBytes: number): 
     logs: logs.filter((line): line is string => typeof line === "string"),
     blockTimeMs: null,
   });
-  return { observations, byteLength: receivedBytes, signature, slot };
+  return { observations, failures: [], byteLength: receivedBytes, signature, slot };
 }
 
 export function parseTransactionNotification(
@@ -88,6 +154,7 @@ export function parseTransactionNotification(
   });
   return {
     observations: dedupeObservations([...fromLogs, ...fromIxs]),
+    failures: [],
     byteLength: receivedBytes,
     signature,
     slot,
@@ -117,10 +184,12 @@ export function parseParsedNotification(
     typeof transaction?.["blockTime"] === "number" ? transaction["blockTime"] * 1000 : null;
   const instructions = Array.isArray(value?.["instructions"]) ? value["instructions"] : [];
   const found: Observation[] = [];
+  const failures: DecodeFailure[] = [];
   for (const instruction of instructions) {
     const record = asRecord(instruction);
     if (record === null || typeof record["instructionName"] !== "string") continue;
-    const kind = kindFromInstructionName(record["instructionName"]);
+    const instructionName = record["instructionName"];
+    const kind = kindFromInstructionName(instructionName);
     if (kind === null) continue;
     const programId = typeof record["programId"] === "string" ? record["programId"] : "";
     const named = namedAccounts(asRecord(record["decoded"]));
@@ -135,15 +204,26 @@ export function parseParsedNotification(
       blockTimeMs: blockTime,
       eventIndex: found.length,
     });
-    if (built) found.push(built);
+    if (built) {
+      found.push(built);
+      continue;
+    }
+    failures.push({
+      signature,
+      slot,
+      programId,
+      instructionName,
+      error: "named accounts did not include a pool and mint",
+    });
   }
   const observations = dedupeObservations(found);
-  if (observations.length === 0) return null;
-  return { observations, byteLength: receivedBytes, signature, slot };
+  if (observations.length === 0 && failures.length === 0) return null;
+  return { observations, failures, byteLength: receivedBytes, signature, slot };
 }
 
 export interface ParsedFrame {
   observations: Observation[];
+  failures: DecodeFailure[];
   byteLength: number;
   signature: string;
   slot: number;
@@ -291,10 +371,17 @@ function kindFromInstructionName(name: string): EventKind | null {
 }
 
 export function parseRpcTransaction(result: unknown, signature: string): Observation[] {
+  return decodeRpcTransaction(result, signature).observations;
+}
+
+export function decodeRpcTransaction(
+  result: unknown,
+  signature: string,
+): { observations: Observation[]; failures: DecodeFailure[] } {
   const record = asRecord(result);
-  if (record === null || record["meta"] == null) return [];
+  if (record === null || record["meta"] == null) return { observations: [], failures: [] };
   const meta = asRecord(record["meta"]);
-  if (meta?.["err"] != null) return [];
+  if (meta?.["err"] != null) return { observations: [], failures: [] };
   const slot = typeof record["slot"] === "number" ? record["slot"] : 0;
   const blockTimeMs = typeof record["blockTime"] === "number" ? record["blockTime"] * 1000 : null;
   const logs = Array.isArray(meta?.["logMessages"])
@@ -302,7 +389,7 @@ export function parseRpcTransaction(result: unknown, signature: string): Observa
     : [];
   const fromLogs = observationsFromLogs({ signature, slot, logs, blockTimeMs });
   const transaction = asRecord(record["transaction"]);
-  const fromInstructions = observationsFromTransaction({
+  const walked = walkInstructions({
     signature,
     slot,
     blockTimeMs,
@@ -312,7 +399,12 @@ export function parseRpcTransaction(result: unknown, signature: string): Observa
       meta: meta ?? {},
     },
   });
-  return dedupeObservations([...fromLogs, ...fromInstructions]);
+  return {
+    observations: dedupeObservations(
+      applyCurveMints([...fromLogs, ...walked.observations], walked.swaps),
+    ),
+    failures: walked.failures,
+  };
 }
 
 function observationFromParsedAccounts(input: {
@@ -354,7 +446,12 @@ function observationFromParsedAccounts(input: {
     );
     if (layout) {
       const fromRaw = observationFromLayout(
-        { ...input, programId: input.programId, accounts: input.rawAccounts },
+        {
+          ...input,
+          programId: input.programId,
+          accounts: input.rawAccounts,
+          failures: [],
+        },
         layout.layout,
       );
       if (fromRaw && isPersistable(fromRaw)) return fromRaw;
@@ -391,7 +488,18 @@ export function observationsFromTransaction(input: {
   blockTimeMs: number | null;
   startIndex: number;
 }): Observation[] {
-  if (input.transaction === null) return [];
+  const walked = walkInstructions(input);
+  return applyCurveMints(walked.observations, walked.swaps);
+}
+
+function walkInstructions(input: {
+  signature: string;
+  slot: number;
+  transaction: Record<string, unknown> | null;
+  blockTimeMs: number | null;
+  startIndex: number;
+}): { observations: Observation[]; failures: DecodeFailure[]; swaps: PoolMint[] } {
+  if (input.transaction === null) return { observations: [], failures: [], swaps: [] };
   const message =
     asRecord(input.transaction["message"]) ??
     asRecord(asRecord(input.transaction["transaction"])?.["message"]);
@@ -404,6 +512,8 @@ export function observationsFromTransaction(input: {
     ...innerInstructions(meta),
   ];
   const found: Observation[] = [];
+  const failures: DecodeFailure[] = [];
+  const swaps: PoolMint[] = [];
   for (const instruction of instructions) {
     const record = asRecord(instruction);
     if (record === null) continue;
@@ -412,10 +522,21 @@ export function observationsFromTransaction(input: {
     let raw: Uint8Array;
     try {
       raw = data.length > 0 ? decodeBase58(data) : new Uint8Array();
-    } catch {
+    } catch (error) {
+      if (programId !== null && (WATCHED_PROGRAMS as readonly string[]).includes(programId)) {
+        failures.push({
+          signature: input.signature,
+          slot: input.slot,
+          programId,
+          instructionName: null,
+          error: error instanceof Error ? error.message : "instruction data was not base58",
+        });
+      }
       continue;
     }
     const accounts = accountPubkeys(record, keys);
+    const swap = swapMint(programId, raw, accounts);
+    if (swap) swaps.push(swap);
     const built = observationFromInstruction({
       programId,
       data: raw,
@@ -424,10 +545,24 @@ export function observationsFromTransaction(input: {
       slot: input.slot,
       blockTimeMs: input.blockTimeMs,
       eventIndex: input.startIndex + found.length,
+      failures,
     });
     if (built) found.push(built);
   }
-  return found;
+  return { observations: found, failures, swaps };
+}
+
+function swapMint(programId: string | null, data: Uint8Array, accounts: string[]): PoolMint | null {
+  if (programId === null || data.length < 8) return null;
+  const match = SWAP_LAYOUTS.find(
+    (entry) => entry.programId === programId && sameDisc(data, entry.disc),
+  );
+  if (!match) return null;
+  const named = accountsByName(match.accountNames, accounts);
+  const pool = named.get("pool");
+  const mint = named.get("base_mint");
+  if (!pool || !mint) return null;
+  return { pool, mint };
 }
 
 function observationFromInstruction(input: {
@@ -438,6 +573,7 @@ function observationFromInstruction(input: {
   slot: number;
   blockTimeMs: number | null;
   eventIndex: number;
+  failures: DecodeFailure[];
 }): Observation | null {
   const programId = input.programId;
   if (programId === null || input.data.length < 8) return null;
@@ -471,21 +607,33 @@ function observationFromLayout(
     slot: number;
     blockTimeMs: number | null;
     eventIndex: number;
+    failures: DecodeFailure[];
   },
   layout: InstructionLayout,
 ): Observation | null {
-  const at = (index: number | null): string | null =>
-    index === null ? null : (input.accounts[index] ?? null);
-  const mintA = at(layout.mintA);
-  const mintB = at(layout.mintB);
+  const named = accountsByName(layout.accountNames, input.accounts);
+  const mintA = named.get(layout.mintA) ?? null;
+  const mintB = layout.mintB === null ? null : (named.get(layout.mintB) ?? null);
   const mint = mintA === null ? null : mintB === null ? mintA : chooseTokenMint(mintA, mintB);
+  const pool = named.get(layout.pool) ?? null;
+  if (pool === null || mint === null) {
+    const missing = pool === null ? layout.pool : layout.mintA;
+    input.failures.push({
+      signature: input.signature,
+      slot: input.slot,
+      programId: input.programId,
+      instructionName: layout.instructionName,
+      error: `missing account ${missing}`,
+    });
+    return null;
+  }
   return {
     ...blankObservation(input, layout.kind, layout.poolType, input.programId, input.eventIndex),
     mint,
-    pool: at(layout.pool),
-    creatorWallet: at(layout.creator),
-    virtualPool: at(layout.virtualPool),
-    quoteMint: at(layout.quoteMint),
+    pool,
+    creatorWallet: layout.creator === null ? null : (named.get(layout.creator) ?? null),
+    virtualPool: layout.virtualPool === null ? null : (named.get(layout.virtualPool) ?? null),
+    quoteMint: layout.quoteMint === null ? null : (named.get(layout.quoteMint) ?? null),
   };
 }
 

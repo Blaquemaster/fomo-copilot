@@ -110,7 +110,7 @@ fi
 export DEBIAN_FRONTEND=noninteractive
 apt-get update
 apt-get upgrade -y
-apt-get install -y ca-certificates curl gnupg ufw
+apt-get install -y ca-certificates cron curl gnupg ufw
 
 install -m 0755 -d /etc/apt/keyrings
 curl -fsSL https://download.docker.com/linux/ubuntu/gpg -o /etc/apt/keyrings/docker.asc
@@ -228,8 +228,20 @@ else
   echo "No --repo given. After you add the deploy key on GitHub, re-run with --repo to clone into /opt/fomo-copilot."
 fi
 
+script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+if [[ ! -f "${script_dir}/fomo-healthcheck.sh" || ! -f "${script_dir}/fomo-healthcheck.cron" ]]; then
+  echo "Healthcheck files are missing next to bootstrap-droplet.sh." >&2
+  exit 1
+fi
+install -m 0755 "${script_dir}/fomo-healthcheck.sh" /usr/local/bin/fomo-healthcheck.sh
+install -m 0644 "${script_dir}/fomo-healthcheck.cron" /etc/cron.d/fomo-healthcheck
+touch /var/log/fomo-healthcheck.log
+chmod 0644 /var/log/fomo-healthcheck.log
+
 echo
 echo "Bootstrap finished."
+echo "Healthcheck cron is installed. Create /etc/fomo-healthcheck.env yourself, owner root:root, mode 0600."
+echo "That file is not committed. Put the healthcheck URL in it before expecting the cron job to succeed."
 echo "Open a second terminal and confirm: ssh -i YOUR_KEY deploy@THIS_HOST"
 echo "Root key login is still allowed. Password login is off. Inbound ufw allows SSH only."
 echo "Phase 7 (not done): Tailscale-only SSH, unattended upgrades, backups, Helius IP allow-list."
