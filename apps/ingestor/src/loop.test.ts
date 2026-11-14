@@ -1,9 +1,10 @@
+import { readFileSync } from "node:fs";
 import { Writable } from "node:stream";
 
 import { createLogger, sendTelegramMessage, type Env, type IngestRepository } from "@fomo/core";
 import { describe, expect, it, vi } from "vitest";
 
-import { runIngestLoop, type SocketLike } from "./loop.js";
+import { backfillProgram, runIngestLoop, type SocketLike } from "./loop.js";
 
 vi.mock("@fomo/core", async () => {
   const actual = await vi.importActual<typeof import("@fomo/core")>("@fomo/core");
@@ -28,6 +29,7 @@ const env: Env = {
 class FakeSocket extends EventTarget {
   readyState = 0;
   sent: string[] = [];
+  ping: () => void = () => undefined;
 
   constructor(private readonly failOpen = false) {
     super();
@@ -90,6 +92,7 @@ function repo(overrides: Partial<IngestRepository> = {}): IngestRepository {
     checkpoint: vi.fn(async () => ({ signature: "ckpt", slot: 1 })),
     insertDecodeFailure: vi.fn(async () => undefined),
     insertBackfill: vi.fn(async () => undefined),
+    knownSignatures: vi.fn(async () => new Set<string>()),
   };
   return { ...base, ...overrides } as unknown as IngestRepository;
 }
@@ -256,5 +259,84 @@ describe("ingest loop", () => {
     expect(sendTelegramMessage).toHaveBeenCalledTimes(1);
     controller.abort();
     await done;
+  });
+
+  it("writes a websocket ping and a json-rpc ping before the server's idle close", async () => {
+    const socket = new FakeSocket();
+    let pings = 0;
+    socket.ping = () => {
+      pings += 1;
+    };
+    const controller = new AbortController();
+    const done = runIngestLoop({
+      env,
+      logger: logger(),
+      repo: repo(),
+      signal: controller.signal,
+      deps: {
+        openSocket: () => asSocket(socket),
+        pingMs: 30,
+        warnMs: 60_000,
+        criticalMs: 120_000,
+        livenessTickMs: 60_000,
+        callRpc: (method) =>
+          Promise.resolve(
+            method === "getSlot" ? 30 : method === "getSignaturesForAddress" ? [] : null,
+          ),
+      },
+    });
+    await vi.waitFor(() => {
+      expect(pings).toBeGreaterThanOrEqual(1);
+    });
+    expect(socket.sent.some((frame) => frame.includes('"method":"ping"'))).toBe(true);
+    expect(socket.readyState).toBe(1);
+    controller.abort();
+    await done;
+  });
+});
+
+describe("short backfill", () => {
+  it("fetches only the signatures inside a 1-2 second slot gap", async () => {
+    const fixture = JSON.parse(
+      readFileSync(
+        new URL("../../../packages/core/src/ingest/fixtures/backfill-gap-1s.json", import.meta.url),
+        "utf8",
+      ),
+    ) as {
+      untilSlot: number;
+      checkpoint: { signature: string; slot: number };
+      page: Array<{ signature: string; slot: number }>;
+    };
+    const methods: string[] = [];
+    const fetched: string[] = [];
+    await backfillProgram({
+      env,
+      logger: logger(),
+      repo: repo({
+        checkpoint: vi.fn(async () => fixture.checkpoint),
+        knownSignatures: vi.fn(async () => new Set(["gap-1"])),
+      }),
+      programId: "dbcij3LWUppWqq96dh6gJWwBifmcGfLSB5D4DuSMaqN",
+      paused: false,
+      gap: { gapSeconds: 2, gapSlots: 6, untilSlot: fixture.untilSlot },
+      deps: {
+        callRpc: (method, params) => {
+          methods.push(method);
+          if (method === "getSignaturesForAddress") {
+            return Promise.resolve(fixture.page.map((row) => ({ ...row, err: null })));
+          }
+          if (method === "getTransaction") {
+            fetched.push(String(params[0]));
+            return Promise.resolve(null);
+          }
+          return Promise.resolve(null);
+        },
+      },
+    });
+    expect(methods.filter((method) => method === "getSignaturesForAddress")).toEqual([
+      "getSignaturesForAddress",
+    ]);
+    expect(fetched).toEqual(["gap-2"]);
+    expect(methods.filter((method) => method === "getTransaction")).toHaveLength(1);
   });
 });

@@ -411,6 +411,15 @@ export class IngestRepository {
     );
   }
 
+  async knownSignatures(signatures: readonly string[]): Promise<Set<string>> {
+    if (signatures.length === 0) return new Set();
+    const result = await this.pool.query<{ signature: string }>(
+      "select signature from raw_events where signature = any($1::text[])",
+      [signatures],
+    );
+    return new Set(result.rows.map((row) => row.signature));
+  }
+
   async checkpoint(programId: string): Promise<{ signature: string; slot: number } | null> {
     const result = await this.pool.query<{ signature: string; slot: string }>(
       "select signature, slot from ingest_checkpoint where program_id = $1",

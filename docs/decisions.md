@@ -1,5 +1,11 @@
 # Decision log
 
+## 2026-11-14 — Keepalive and slot-bounded backfill
+
+Production closed the parsed-stream socket every 5 minutes (`helius websocket closed`, no liveness warning). Helius drops a connection the client has not written to for 5 minutes, even while notifications are flowing. Node's built-in `WebSocket` cannot send ping frames, and the liveness probe only writes `getSlot` after evidence has already gone stale. The client now uses `ws` 8.22.0 and writes a protocol ping plus the documented JSON-RPC `ping` every 60 seconds. Protocol pings do not reset the separate 10-minute idle timer (no client messages and no notifications); the JSON-RPC `ping` does. Pongs and ping replies still count as liveness.
+
+Backfill was matching the last stored event signature inside `getSignaturesForAddress`, which lists every transaction for the program. After a 1–2 second gap that signature is usually far behind the tip, so the scan took the 60-transaction cap (~180 credits per reconnect across three programs). Pages now stop when a signature's slot is at or below the last live slot, or the checkpoint slot when there is no live cursor. Signatures already in `raw_events` are not fetched again.
+
 ## 2026-11-14 — Soak follow-ups
 
 The 24.7h soak on the filtered parsed stream reconnected about once per 24 minutes because 60 seconds without an ingest event closed the socket. Quiet stretches of that length are normal. Reconnects now require missed WebSocket pongs and stalled slots (`slotSubscribe`, then one `getSlot` probe). A warning is logged first. The socket closes only at the critical threshold. Telegram is sent when the following open fails, once per outage, not when a routine reconnect succeeds.

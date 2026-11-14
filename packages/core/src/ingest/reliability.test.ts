@@ -1,3 +1,5 @@
+import { readFileSync } from "node:fs";
+
 import { describe, expect, it, vi } from "vitest";
 
 import {
@@ -75,7 +77,7 @@ describe("liveness", () => {
         lastSlot: 100,
         currentSlot: 140,
       }),
-    ).toEqual({ gapSeconds: 6, gapSlots: 40 });
+    ).toEqual({ gapSeconds: 6, gapSlots: 40, untilSlot: 100 });
     expect(
       measureReconnectGap({
         nowMs: 1,
@@ -83,7 +85,7 @@ describe("liveness", () => {
         lastSlot: null,
         currentSlot: 3,
       }),
-    ).toEqual({ gapSeconds: null, gapSlots: null });
+    ).toEqual({ gapSeconds: null, gapSlots: null, untilSlot: null });
   });
 });
 
@@ -189,6 +191,31 @@ describe("disposables", () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+});
+
+describe("short reconnect gaps", () => {
+  it("stops at the last live slot instead of searching for an older event signature", () => {
+    const fixture = JSON.parse(
+      readFileSync(new URL("./fixtures/backfill-gap-1s.json", import.meta.url), "utf8"),
+    ) as {
+      untilSlot: number;
+      checkpoint: { signature: string; slot: number };
+      page: Array<{ signature: string; slot: number }>;
+    };
+    const step = planBackfillPage({
+      newestFirst: fixture.page,
+      checkpoint: fixture.checkpoint.signature,
+      checkpointSlot: fixture.checkpoint.slot,
+      untilSlot: fixture.untilSlot,
+      pageWasFull: true,
+      pagesFetched: 1,
+      maxPages: 40,
+    });
+    expect(step.missing).toEqual(["gap-1", "gap-2"]);
+    expect(step.fetchAnotherPage).toBe(false);
+    expect(step.gapRemains).toBe(false);
+    expect(fixture.page.map((row) => row.signature)).not.toContain(fixture.checkpoint.signature);
   });
 });
 
