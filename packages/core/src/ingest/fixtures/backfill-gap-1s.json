@@ -1,0 +1,11 @@
+{
+  "untilSlot": 469300000,
+  "checkpoint": { "signature": "old-stored-event-not-in-this-page", "slot": 469200000 },
+  "page": [
+    { "signature": "gap-1", "slot": 469300006 },
+    { "signature": "gap-2", "slot": 469300003 },
+    { "signature": "boundary", "slot": 469300000 },
+    { "signature": "older-1", "slot": 469299990 },
+    { "signature": "older-2", "slot": 469299980 }
+  ]
+}

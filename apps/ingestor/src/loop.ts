@@ -38,14 +38,23 @@ import {
   type ResolvedWsMethod,
 } from "@fomo/core";
 
+import WebSocket from "ws";
+
 import { getSlot, getTransaction, heliusRpc, type RpcMeter } from "./helius.js";
 
 const MAX_FRAME_CHARS = 100_000;
 const MAX_QUEUED_FRAMES = 2;
 const STATUS_MS = 15_000;
-const PING_MS = 20_000;
+/** Helius drops a parsed-stream socket the client has not written to for 5 minutes. */
+const KEEPALIVE_MS = 60_000;
 const LIVENESS_TICK_MS = 5_000;
 const NOTED_NOTIFICATIONS = 32;
+
+interface ReconnectGap {
+  gapSeconds: number | null;
+  gapSlots: number | null;
+  untilSlot: number | null;
+}
 
 export interface SocketLike {
   readyState: number;
@@ -69,6 +78,8 @@ export interface IngestDeps {
   livenessTickMs?: number;
   pageCap?: number;
   txCap?: number;
+  /** How often to write a WebSocket ping and a JSON-RPC ping. Default 60s. */
+  pingMs?: number;
 }
 
 interface LiveCursor {
@@ -155,6 +166,7 @@ async function runSocket(input: {
   const meter = makeMeter(input.repo, input.logger);
   let probeId = 1000;
   let outstandingProbe: number | null = null;
+  let keepaliveId: number | null = null;
   let connectedAtMs = 0;
 
   const touch = (slot?: number): void => {
@@ -168,11 +180,17 @@ async function runSocket(input: {
 
   const sendProbe = (): void => {
     if (ws.readyState !== 1) return;
-    if (typeof ws.ping === "function") ws.ping();
     probeId += 1;
     outstandingProbe = probeId;
     ws.send(JSON.stringify({ jsonrpc: "2.0", id: probeId, method: "getSlot" }));
     meter("getSlot");
+  };
+  const sendKeepalive = (): void => {
+    if (ws.readyState !== 1) return;
+    if (typeof ws.ping === "function") ws.ping();
+    probeId += 1;
+    keepaliveId = probeId;
+    ws.send(JSON.stringify({ jsonrpc: "2.0", id: probeId, method: "ping" }));
   };
 
   const opened = new Promise<void>((resolve, reject) => {
@@ -241,6 +259,7 @@ async function runSocket(input: {
       lastEvidence: () => lastEvidenceAtMs,
       lastSlot: () => lastSlot,
       sendProbe,
+      sendKeepalive,
       markDead: () => {
         dead = true;
       },
@@ -272,6 +291,7 @@ async function runSocket(input: {
       seen,
       meter,
       outstandingProbe: () => outstandingProbe,
+      outstandingKeepalive: () => keepaliveId,
       onEvidence: touch,
       onRejectEnhanced: () => {
         input.choice.method = "parsed";
@@ -300,15 +320,16 @@ function startTimers(input: {
   lastEvidence: () => number | null;
   lastSlot: () => number | null;
   sendProbe: () => void;
+  sendKeepalive: () => void;
   markDead: () => void;
 }): void {
   const warnMs = input.input.deps?.warnMs ?? LIVENESS_WARN_MS;
   const criticalMs = input.input.deps?.criticalMs ?? LIVENESS_CRITICAL_MS;
   const tickMs = input.input.deps?.livenessTickMs ?? LIVENESS_TICK_MS;
+  const pingMs = input.input.deps?.pingMs ?? KEEPALIVE_MS;
   input.bag.interval(() => {
-    if (input.ws.readyState !== 1) return;
-    if (typeof input.ws.ping === "function") input.ws.ping();
-  }, PING_MS);
+    input.sendKeepalive();
+  }, pingMs);
   let warned = false;
   input.bag.interval(() => {
     const level = livenessLevel({
@@ -367,6 +388,7 @@ async function handleText(
     secrets: string[];
     deps?: IngestDeps;
     outstandingProbe: () => number | null;
+    outstandingKeepalive: () => number | null;
     onEvidence: (slot?: number) => void;
     onRejectEnhanced: () => void;
   },
@@ -399,6 +421,15 @@ async function handleText(
     input.onEvidence(slotNote);
     await recordFrame(input.repo, bytes, 0n);
     return;
+  }
+  const keepalive = input.outstandingKeepalive();
+  if (keepalive !== null) {
+    const reply = rpcReply(message, keepalive);
+    if (reply.matched) {
+      input.onEvidence(reply.slot ?? undefined);
+      await recordFrame(input.repo, bytes, 0n);
+      return;
+    }
   }
   const probe = input.outstandingProbe();
   if (probe !== null) {
@@ -585,10 +616,10 @@ export async function backfillProgram(input: {
   paused: boolean;
   seen?: SignatureWindow;
   meter?: RpcMeter;
-  gap?: { gapSeconds: number | null; gapSlots: number | null };
+  gap?: ReconnectGap;
   deps?: IngestDeps;
 }): Promise<void> {
-  const gap = input.gap ?? { gapSeconds: null, gapSlots: null };
+  const gap = input.gap ?? { gapSeconds: null, gapSlots: null, untilSlot: null };
   const seen = input.seen ?? new SignatureWindow();
   const meter = input.meter ?? makeMeter(input.repo, input.logger);
   if (input.paused) return;
@@ -619,8 +650,10 @@ export async function backfillProgram(input: {
     pages += 1;
     const page = await getSignatures(input, input.programId, before, meter);
     const step = planBackfillPage({
-      newestFirst: page.map((row) => row.signature),
+      newestFirst: page,
       checkpoint: checkpoint.signature,
+      checkpointSlot: checkpoint.slot,
+      untilSlot: gap.untilSlot,
       pageWasFull: page.length >= 100,
       pagesFetched: pages,
       maxPages: pageCap,
@@ -638,9 +671,11 @@ export async function backfillProgram(input: {
     }
   }
   const selected = signaturesToRecover({ missingNewestFirst: missing, txCap });
+  const known = await input.repo.knownSignatures(selected.signatures);
   let eventsRecovered = 0;
   let transactionsFetched = 0;
   for (const signature of selected.signatures) {
+    if (known.has(signature)) continue;
     try {
       const result = await callRpc({ env: input.env, meter, deps: input.deps }, "getTransaction", [
         signature,
@@ -691,7 +726,7 @@ async function getSignatures(
   programId: string,
   before: string | undefined,
   meter: RpcMeter,
-): Promise<Array<{ signature: string }>> {
+): Promise<Array<{ signature: string; slot: number | null }>> {
   const config: Record<string, unknown> = { limit: 100, commitment: "confirmed" };
   if (before) config["before"] = before;
   const result = await callRpc(
@@ -704,12 +739,15 @@ async function getSignatures(
     .map((row) => {
       const record =
         typeof row === "object" && row !== null
-          ? (row as { signature?: unknown; err?: unknown })
+          ? (row as { signature?: unknown; slot?: unknown; err?: unknown })
           : null;
       if (!record || typeof record.signature !== "string" || record.err != null) return null;
-      return { signature: record.signature };
+      return {
+        signature: record.signature,
+        slot: typeof record.slot === "number" ? record.slot : null,
+      };
     })
-    .filter((row): row is { signature: string } => row !== null);
+    .filter((row): row is { signature: string; slot: number | null } => row !== null);
 }
 
 function subscribe(ws: SocketLike, method: ResolvedWsMethod): void {
@@ -760,7 +798,7 @@ async function readGap(
     deps?: IngestDeps;
   },
   meter: RpcMeter,
-): Promise<{ gapSeconds: number | null; gapSlots: number | null }> {
+): Promise<ReconnectGap> {
   const now = input.deps?.now ?? Date.now;
   const lastLiveAtMs = input.live.atMs;
   const lastSlot = input.live.slot;
@@ -848,7 +886,58 @@ function openSocket(input: {
 }): SocketLike {
   const url = websocketUrlSafe(input.env.HELIUS_API_KEY, input.choice.method);
   if (input.deps?.openSocket) return input.deps.openSocket(url);
-  return new WebSocket(url) as unknown as SocketLike;
+  return wrapWs(new WebSocket(url));
+}
+
+function wrapWs(socket: WebSocket): SocketLike {
+  const wrappers = new Map<(event: { data?: unknown }) => void, (...args: unknown[]) => void>();
+  const emitter = socket as unknown as {
+    on(type: string, listener: (...args: unknown[]) => void): void;
+    off(type: string, listener: (...args: unknown[]) => void): void;
+  };
+  return {
+    get readyState() {
+      return socket.readyState;
+    },
+    send(data: string) {
+      socket.send(data);
+    },
+    close() {
+      socket.close();
+    },
+    ping() {
+      socket.ping();
+    },
+    addEventListener(type, listener, options) {
+      const wrapped = (...args: unknown[]) => {
+        if (type === "message") listener({ data: args[0] });
+        else listener({});
+        if (options?.once) {
+          emitter.off(type, wrapped);
+          wrappers.delete(listener);
+        }
+      };
+      wrappers.set(listener, wrapped);
+      emitter.on(type, wrapped);
+    },
+    removeEventListener(type, listener) {
+      const wrapped = wrappers.get(listener);
+      if (!wrapped) return;
+      emitter.off(type, wrapped);
+      wrappers.delete(listener);
+    },
+  };
+}
+
+function rpcReply(message: unknown, id: number): { matched: boolean; slot: number | null } {
+  if (!isRecord(message) || message["id"] !== id) return { matched: false, slot: null };
+  if (typeof message["result"] === "number") return { matched: true, slot: message["result"] };
+  const result = isRecord(message["result"]) ? message["result"] : null;
+  if (result && typeof result["slot"] === "number") return { matched: true, slot: result["slot"] };
+  if (message["error"] !== undefined || message["result"] !== undefined) {
+    return { matched: true, slot: null };
+  }
+  return { matched: false, slot: null };
 }
 
 function websocketUrlSafe(apiKey: string, method: ResolvedWsMethod): string {
@@ -896,7 +985,7 @@ async function backfillOnConnect(input: {
   logger: Logger;
   seen: SignatureWindow;
   meter: RpcMeter;
-  gap: { gapSeconds: number | null; gapSlots: number | null };
+  gap: ReconnectGap;
   deps?: IngestDeps;
 }): Promise<void> {
   const month = await input.repo.monthUsage(new Date());

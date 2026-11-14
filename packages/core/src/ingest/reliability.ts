@@ -147,7 +147,7 @@ export function measureReconnectGap(input: {
   lastLiveAtMs: number | null;
   lastSlot: number | null;
   currentSlot: number | null;
-}): { gapSeconds: number | null; gapSlots: number | null } {
+}): { gapSeconds: number | null; gapSlots: number | null; untilSlot: number | null } {
   const gapSeconds =
     input.lastLiveAtMs === null
       ? null
@@ -156,7 +156,7 @@ export function measureReconnectGap(input: {
     input.lastSlot === null || input.currentSlot === null
       ? null
       : Math.max(0, input.currentSlot - input.lastSlot);
-  return { gapSeconds, gapSlots };
+  return { gapSeconds, gapSlots, untilSlot: input.lastSlot };
 }
 
 /** Page cap and getTransaction cap for one program on one reconnect. Each page or tx is 1 credit. */
@@ -172,6 +172,11 @@ export function signaturesToRecover(input: {
     signatures: input.missingNewestFirst.slice(0, cap),
     truncated: input.missingNewestFirst.length > cap,
   };
+}
+
+export interface BackfillSignature {
+  signature: string;
+  slot: number | null;
 }
 
 /**
@@ -198,24 +203,44 @@ export interface BackfillStep {
   gapRemains: boolean;
 }
 
+/**
+ * Stop at the checkpoint signature, or at the first row whose slot is already covered.
+ * Covered means slot <= the last live slot, or slot <= the stored checkpoint slot when
+ * the live cursor is absent. The stored event signature is often far behind the program
+ * tip, so an exact-signature search pages through unrelated history.
+ */
 export function planBackfillPage(input: {
-  newestFirst: readonly string[];
+  newestFirst: readonly (string | BackfillSignature)[];
   checkpoint: string | null;
+  checkpointSlot?: number | null;
+  untilSlot?: number | null;
   pageWasFull: boolean;
   pagesFetched: number;
   maxPages: number;
 }): BackfillStep {
-  const parsed = signaturesNewerThanCheckpoint({
-    newestFirst: input.newestFirst,
-    checkpoint: input.checkpoint,
-  });
-  if (input.checkpoint === null || parsed.reachedCheckpoint) {
-    return { missing: parsed.missing, fetchAnotherPage: false, gapRemains: false };
+  if (input.checkpoint === null && input.untilSlot == null && input.checkpointSlot == null) {
+    return { missing: [], fetchAnotherPage: false, gapRemains: false };
   }
+  const stopSlots = [input.untilSlot, input.checkpointSlot].filter(
+    (slot): slot is number => typeof slot === "number",
+  );
+  const stopSlot = stopSlots.length === 0 ? null : Math.max(...stopSlots);
+  const missing: string[] = [];
+  let reached = false;
+  for (const row of input.newestFirst) {
+    const signature = typeof row === "string" ? row : row.signature;
+    const slot = typeof row === "string" ? null : row.slot;
+    if (input.checkpoint !== null && signature === input.checkpoint) {
+      reached = true;
+      break;
+    }
+    if (slot !== null && stopSlot !== null && slot <= stopSlot) {
+      reached = true;
+      break;
+    }
+    missing.push(signature);
+  }
+  if (reached) return { missing, fetchAnotherPage: false, gapRemains: false };
   const canContinue = input.pageWasFull && input.pagesFetched < input.maxPages;
-  return {
-    missing: parsed.missing,
-    fetchAnotherPage: canContinue,
-    gapRemains: !canContinue,
-  };
+  return { missing, fetchAnotherPage: canContinue, gapRemains: !canContinue };
 }
