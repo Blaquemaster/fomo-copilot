@@ -328,6 +328,7 @@ describe("short backfill", () => {
         tipSlot: fixture.untilSlot + 6,
       },
       deps: {
+        scanHistory: () => Promise.reject(new Error("offline")),
         callRpc: (method, params) => {
           methods.push(method);
           if (method === "getSignaturesForAddress") {
@@ -386,6 +387,7 @@ describe("short backfill", () => {
       gap: { gapSeconds: 2, gapSlots: 6, untilSlot: fixture.untilSlot, tipSlot: fixture.untilSlot },
       deps: {
         txCap: 1,
+        scanHistory: () => Promise.reject(new Error("offline")),
         callRpc: (method) => {
           if (method === "getSignaturesForAddress") {
             return Promise.resolve(fixture.page.map((row) => ({ ...row, err: null })));

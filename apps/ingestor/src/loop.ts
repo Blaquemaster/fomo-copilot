@@ -717,9 +717,9 @@ export async function backfillProgram(input: {
     });
     return;
   }
-  if (liveStop !== null && isHighVolumeProgram(input.programId)) {
-    await backfillByScan({ ...input, seen, gap, liveStop, gapFromSlot });
-    return;
+  if (liveStop !== null && parsedNamesForProgram(input.programId).length > 0) {
+    const handled = await backfillByScan({ ...input, seen, gap, liveStop, gapFromSlot });
+    if (handled) return;
   }
   let before: string | undefined;
   let pages = 0;
@@ -900,7 +900,7 @@ async function backfillByScan(input: {
   liveStop: number;
   gapFromSlot: number;
   deps?: IngestDeps;
-}): Promise<void> {
+}): Promise<boolean> {
   const names = parsedNamesForProgram(input.programId);
   const scan = input.deps?.scanHistory ?? scanInstructionHistory;
   let scanned: Awaited<ReturnType<typeof scanInstructionHistory>>;
@@ -913,6 +913,13 @@ async function backfillByScan(input: {
       slotLte: input.gap.tipSlot,
     });
   } catch (error) {
+    if (!isHighVolumeProgram(input.programId)) {
+      input.logger.warn(
+        { err: error, programId: input.programId },
+        "parsed history scan failed; using signature backfill",
+      );
+      return false;
+    }
     input.logger.warn(
       {
         err: error,
@@ -939,7 +946,7 @@ async function backfillByScan(input: {
       gapToSlot: input.gap.tipSlot,
       reason: "high_volume_skipped",
     });
-    return;
+    return true;
   }
   await input.repo.addUsage({
     now: new Date(),
@@ -1028,6 +1035,7 @@ async function backfillByScan(input: {
     gapToSlot,
     reason,
   });
+  return true;
 }
 
 async function getSignatures(
