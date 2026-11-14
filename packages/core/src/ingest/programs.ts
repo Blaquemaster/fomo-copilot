@@ -58,6 +58,10 @@ export const DISC = {
   ixDlmmInit2: bytes(73, 59, 36, 120, 237, 83, 108, 198),
   ixDlmmInitCustom: bytes(46, 39, 41, 135, 111, 183, 200, 64),
   ixDlmmInitCustom2: bytes(243, 73, 129, 126, 51, 19, 241, 107),
+  /** sha256("global:swap")[..8], and the swap2 variants. Used to read base_mint, not stored. */
+  ixDbcSwap: bytes(248, 198, 158, 145, 225, 117, 135, 200),
+  ixDbcSwap2: bytes(65, 75, 63, 76, 235, 91, 91, 136),
+  ixDbcSwap2Hook: bytes(183, 93, 153, 40, 24, 230, 194, 151),
 } as const;
 
 /**
@@ -78,15 +82,264 @@ export const ANCHOR_EVENT_DISC = bytes(0xe4, 0x45, 0xa5, 0x2e, 0x51, 0xcb, 0x9a,
 export interface InstructionLayout {
   kind: EventKind;
   poolType: PoolType;
-  pool: number;
-  mintA: number;
-  mintB: number | null;
-  creator: number | null;
-  virtualPool: number | null;
-  quoteMint: number | null;
+  /** IDL account names in instruction order. Fields below are these names, not indexes. */
+  accountNames: readonly string[];
+  instructionName: string;
+  pool: string;
+  mintA: string;
+  mintB: string | null;
+  creator: string | null;
+  virtualPool: string | null;
+  quoteMint: string | null;
 }
 
-/** Account positions from the published IDLs. DBC inits share the same prefix. */
+/** IDL account order. DBC 0.2.2 initialize_virtual_pool_with_spl_token. */
+export const DBC_INIT_SPL_ACCOUNTS = [
+  "config",
+  "pool_authority",
+  "creator",
+  "base_mint",
+  "quote_mint",
+  "pool",
+  "base_vault",
+  "quote_vault",
+  "mint_metadata",
+  "metadata_program",
+  "payer",
+  "token_quote_program",
+  "token_program",
+  "system_program",
+  "event_authority",
+  "program",
+] as const;
+
+/** initialize_virtual_pool_with_token2022. base_mint and pool stay at the same names. */
+export const DBC_INIT_TOKEN2022_ACCOUNTS = [
+  "config",
+  "pool_authority",
+  "creator",
+  "base_mint",
+  "quote_mint",
+  "pool",
+  "base_vault",
+  "quote_vault",
+  "payer",
+  "token_quote_program",
+  "token_program",
+  "system_program",
+  "event_authority",
+  "program",
+] as const;
+
+/** initialize_virtual_pool_with_token2022_transfer_hook adds transfer_hook_program. */
+export const DBC_INIT_TOKEN2022_HOOK_ACCOUNTS = [
+  "config",
+  "pool_authority",
+  "creator",
+  "base_mint",
+  "quote_mint",
+  "pool",
+  "base_vault",
+  "quote_vault",
+  "transfer_hook_program",
+  "payer",
+  "token_quote_program",
+  "token_program",
+  "system_program",
+  "event_authority",
+  "program",
+] as const;
+
+export const DBC_MIGRATION_DAMM_V2_ACCOUNTS = [
+  "virtual_pool",
+  "migration_metadata",
+  "config",
+  "pool_authority",
+  "pool",
+  "first_position_nft_mint",
+  "first_position_nft_account",
+  "first_position",
+  "second_position_nft_mint",
+  "second_position_nft_account",
+  "second_position",
+  "damm_pool_authority",
+  "amm_program",
+  "base_mint",
+  "quote_mint",
+  "token_a_vault",
+  "token_b_vault",
+  "base_vault",
+  "quote_vault",
+  "payer",
+  "token_base_program",
+  "token_quote_program",
+  "token_2022_program",
+  "damm_event_authority",
+  "system_program",
+] as const;
+
+/** swap / swap2 / swap2_with_transfer_hook. base_mint is how a curve-complete event gets a mint. */
+export const DBC_SWAP_ACCOUNTS = [
+  "pool_authority",
+  "config",
+  "pool",
+  "input_token_account",
+  "output_token_account",
+  "base_vault",
+  "quote_vault",
+  "base_mint",
+  "quote_mint",
+  "payer",
+  "token_base_program",
+  "token_quote_program",
+  "referral_token_account",
+  "event_authority",
+  "program",
+] as const;
+
+export const DAMM_INIT_CUSTOM_ACCOUNTS = [
+  "creator",
+  "position_nft_mint",
+  "position_nft_account",
+  "payer",
+  "pool_authority",
+  "pool",
+  "position",
+  "token_a_mint",
+  "token_b_mint",
+  "token_a_vault",
+  "token_b_vault",
+  "payer_token_a",
+  "payer_token_b",
+  "token_a_program",
+  "token_b_program",
+  "token_2022_program",
+  "system_program",
+  "event_authority",
+  "program",
+] as const;
+
+export const DAMM_INIT_POOL_ACCOUNTS = [
+  "creator",
+  "position_nft_mint",
+  "position_nft_account",
+  "payer",
+  "config",
+  "pool_authority",
+  "pool",
+  "position",
+  "token_a_mint",
+  "token_b_mint",
+  "token_a_vault",
+  "token_b_vault",
+  "payer_token_a",
+  "payer_token_b",
+  "token_a_program",
+  "token_b_program",
+  "token_2022_program",
+  "system_program",
+  "event_authority",
+  "program",
+] as const;
+
+export const DAMM_INIT_DYNAMIC_ACCOUNTS = [
+  "creator",
+  "position_nft_mint",
+  "position_nft_account",
+  "payer",
+  "pool_creator_authority",
+  "config",
+  "pool_authority",
+  "pool",
+  "position",
+  "token_a_mint",
+  "token_b_mint",
+  "token_a_vault",
+  "token_b_vault",
+  "payer_token_a",
+  "payer_token_b",
+  "token_a_program",
+  "token_b_program",
+  "token_2022_program",
+  "system_program",
+  "event_authority",
+  "program",
+] as const;
+
+export const DLMM_INIT_ACCOUNTS = [
+  "lb_pair",
+  "bin_array_bitmap_extension",
+  "token_mint_x",
+  "token_mint_y",
+  "reserve_x",
+  "reserve_y",
+  "oracle",
+  "preset_parameter",
+  "funder",
+  "token_program",
+  "system_program",
+  "rent",
+  "event_authority",
+  "program",
+] as const;
+
+export const DLMM_INIT2_ACCOUNTS = [
+  "lb_pair",
+  "bin_array_bitmap_extension",
+  "token_mint_x",
+  "token_mint_y",
+  "reserve_x",
+  "reserve_y",
+  "oracle",
+  "preset_parameter",
+  "funder",
+  "token_badge_x",
+  "token_badge_y",
+  "token_program_x",
+  "token_program_y",
+  "system_program",
+  "event_authority",
+  "program",
+] as const;
+
+export const DLMM_INIT_CUSTOM_ACCOUNTS = [
+  "lb_pair",
+  "bin_array_bitmap_extension",
+  "token_mint_x",
+  "token_mint_y",
+  "reserve_x",
+  "reserve_y",
+  "oracle",
+  "user_token_x",
+  "funder",
+  "token_program",
+  "system_program",
+  "user_token_y",
+  "event_authority",
+  "program",
+] as const;
+
+export const DLMM_INIT_CUSTOM2_ACCOUNTS = [
+  "lb_pair",
+  "bin_array_bitmap_extension",
+  "token_mint_x",
+  "token_mint_y",
+  "reserve_x",
+  "reserve_y",
+  "oracle",
+  "user_token_x",
+  "funder",
+  "token_badge_x",
+  "token_badge_y",
+  "token_program_x",
+  "token_program_y",
+  "system_program",
+  "user_token_y",
+  "event_authority",
+  "program",
+] as const;
+
+/** Account names from the published IDLs. Extraction is by name, not by a bare index. */
 export const INSTRUCTION_LAYOUTS: ReadonlyArray<{
   programId: string;
   disc: Uint8Array;
@@ -95,57 +348,204 @@ export const INSTRUCTION_LAYOUTS: ReadonlyArray<{
   {
     programId: DBC_PROGRAM_ID,
     disc: DISC.ixDbcInitSpl,
-    layout: layout("dbc_initialize", "dbc", 5, 3, null, 2, null, 4),
+    layout: layout(
+      "dbc_initialize",
+      "dbc",
+      DBC_INIT_SPL_ACCOUNTS,
+      "initialize_virtual_pool_with_spl_token",
+      "pool",
+      "base_mint",
+      null,
+      "creator",
+      null,
+      "quote_mint",
+    ),
   },
   {
     programId: DBC_PROGRAM_ID,
     disc: DISC.ixDbcInitToken2022,
-    layout: layout("dbc_initialize", "dbc", 5, 3, null, 2, null, 4),
+    layout: layout(
+      "dbc_initialize",
+      "dbc",
+      DBC_INIT_TOKEN2022_ACCOUNTS,
+      "initialize_virtual_pool_with_token2022",
+      "pool",
+      "base_mint",
+      null,
+      "creator",
+      null,
+      "quote_mint",
+    ),
   },
   {
     programId: DBC_PROGRAM_ID,
     disc: DISC.ixDbcInitToken2022Hook,
-    layout: layout("dbc_initialize", "dbc", 5, 3, null, 2, null, 4),
+    layout: layout(
+      "dbc_initialize",
+      "dbc",
+      DBC_INIT_TOKEN2022_HOOK_ACCOUNTS,
+      "initialize_virtual_pool_with_token2022_transfer_hook",
+      "pool",
+      "base_mint",
+      null,
+      "creator",
+      null,
+      "quote_mint",
+    ),
   },
   {
     programId: DBC_PROGRAM_ID,
     disc: DISC.ixMigrationDammV2,
-    layout: layout("dbc_migration_damm_v2", "damm_v2", 4, 13, null, 19, 0, 14),
+    layout: layout(
+      "dbc_migration_damm_v2",
+      "damm_v2",
+      DBC_MIGRATION_DAMM_V2_ACCOUNTS,
+      "migration_damm_v2",
+      "pool",
+      "base_mint",
+      null,
+      "payer",
+      "virtual_pool",
+      "quote_mint",
+    ),
   },
   {
     programId: DAMM_V2_PROGRAM_ID,
     disc: DISC.ixDammInitCustom,
-    layout: layout("damm_v2_initialize", "damm_v2", 5, 7, 8, 0, null, null),
+    layout: layout(
+      "damm_v2_initialize",
+      "damm_v2",
+      DAMM_INIT_CUSTOM_ACCOUNTS,
+      "initialize_customizable_pool",
+      "pool",
+      "token_a_mint",
+      "token_b_mint",
+      "creator",
+      null,
+      null,
+    ),
   },
   {
     programId: DAMM_V2_PROGRAM_ID,
     disc: DISC.ixDammInitPool,
-    layout: layout("damm_v2_initialize", "damm_v2", 6, 8, 9, 0, null, null),
+    layout: layout(
+      "damm_v2_initialize",
+      "damm_v2",
+      DAMM_INIT_POOL_ACCOUNTS,
+      "initialize_pool",
+      "pool",
+      "token_a_mint",
+      "token_b_mint",
+      "creator",
+      null,
+      null,
+    ),
   },
   {
     programId: DAMM_V2_PROGRAM_ID,
     disc: DISC.ixDammInitDynamic,
-    layout: layout("damm_v2_initialize", "damm_v2", 7, 9, 10, 0, null, null),
+    layout: layout(
+      "damm_v2_initialize",
+      "damm_v2",
+      DAMM_INIT_DYNAMIC_ACCOUNTS,
+      "initialize_pool_with_dynamic_config",
+      "pool",
+      "token_a_mint",
+      "token_b_mint",
+      "creator",
+      null,
+      null,
+    ),
   },
   {
     programId: DLMM_PROGRAM_ID,
     disc: DISC.ixDlmmInit,
-    layout: layout("dlmm_initialize", "dlmm", 0, 2, 3, null, null, null),
+    layout: layout(
+      "dlmm_initialize",
+      "dlmm",
+      DLMM_INIT_ACCOUNTS,
+      "initialize_lb_pair",
+      "lb_pair",
+      "token_mint_x",
+      "token_mint_y",
+      null,
+      null,
+      null,
+    ),
   },
   {
     programId: DLMM_PROGRAM_ID,
     disc: DISC.ixDlmmInit2,
-    layout: layout("dlmm_initialize", "dlmm", 0, 2, 3, null, null, null),
+    layout: layout(
+      "dlmm_initialize",
+      "dlmm",
+      DLMM_INIT2_ACCOUNTS,
+      "initialize_lb_pair2",
+      "lb_pair",
+      "token_mint_x",
+      "token_mint_y",
+      null,
+      null,
+      null,
+    ),
   },
   {
     programId: DLMM_PROGRAM_ID,
     disc: DISC.ixDlmmInitCustom,
-    layout: layout("dlmm_initialize", "dlmm", 0, 2, 3, null, null, null),
+    layout: layout(
+      "dlmm_initialize",
+      "dlmm",
+      DLMM_INIT_CUSTOM_ACCOUNTS,
+      "initialize_customizable_permissionless_lb_pair",
+      "lb_pair",
+      "token_mint_x",
+      "token_mint_y",
+      null,
+      null,
+      null,
+    ),
   },
   {
     programId: DLMM_PROGRAM_ID,
     disc: DISC.ixDlmmInitCustom2,
-    layout: layout("dlmm_initialize", "dlmm", 0, 2, 3, null, null, null),
+    layout: layout(
+      "dlmm_initialize",
+      "dlmm",
+      DLMM_INIT_CUSTOM2_ACCOUNTS,
+      "initialize_customizable_permissionless_lb_pair2",
+      "lb_pair",
+      "token_mint_x",
+      "token_mint_y",
+      null,
+      null,
+      null,
+    ),
+  },
+];
+
+export const SWAP_LAYOUTS: ReadonlyArray<{
+  programId: string;
+  disc: Uint8Array;
+  accountNames: readonly string[];
+  instructionName: string;
+}> = [
+  {
+    programId: DBC_PROGRAM_ID,
+    disc: DISC.ixDbcSwap,
+    accountNames: DBC_SWAP_ACCOUNTS,
+    instructionName: "swap",
+  },
+  {
+    programId: DBC_PROGRAM_ID,
+    disc: DISC.ixDbcSwap2,
+    accountNames: DBC_SWAP_ACCOUNTS,
+    instructionName: "swap2",
+  },
+  {
+    programId: DBC_PROGRAM_ID,
+    disc: DISC.ixDbcSwap2Hook,
+    accountNames: DBC_SWAP_ACCOUNTS,
+    instructionName: "swap2_with_transfer_hook",
   },
 ];
 
@@ -170,14 +570,27 @@ export const PARSED_INSTRUCTION_NAMES = [
 function layout(
   kind: EventKind,
   poolType: PoolType,
-  pool: number,
-  mintA: number,
-  mintB: number | null,
-  creator: number | null,
-  virtualPool: number | null,
-  quoteMint: number | null,
+  accountNames: readonly string[],
+  instructionName: string,
+  pool: string,
+  mintA: string,
+  mintB: string | null,
+  creator: string | null,
+  virtualPool: string | null,
+  quoteMint: string | null,
 ): InstructionLayout {
-  return { kind, poolType, pool, mintA, mintB, creator, virtualPool, quoteMint };
+  return {
+    kind,
+    poolType,
+    accountNames,
+    instructionName,
+    pool,
+    mintA,
+    mintB,
+    creator,
+    virtualPool,
+    quoteMint,
+  };
 }
 
 function bytes(...values: number[]): Uint8Array {

@@ -1,5 +1,19 @@
 # Decision log
 
+## 2026-11-14 — Soak follow-ups
+
+The 24.7h soak on the filtered parsed stream reconnected about once per 24 minutes because 60 seconds without an ingest event closed the socket. Quiet stretches of that length are normal. Reconnects now require missed WebSocket pongs and stalled slots (`slotSubscribe`, then one `getSlot` probe). A warning is logged first. The socket closes only at the critical threshold. Telegram is sent when the following open fails, once per outage, not when a routine reconnect succeeds.
+
+The live listener is attached before signature backfill. Backfill pages `getSignaturesForAddress` until the checkpoint or 40 calls, then fetches up to 60 of those signatures with `getTransaction` instead of skipping the whole gap. Each reconnect records gap seconds, gap slots, and events recovered in `ingest_backfill`. Decode failures (signature, program, instruction name, error, slot) go to `decode_failure` instead of being dropped. Instruction accounts are read by IDL name.
+
+The two transfer-hook creates at slots 468993762 and 468993810 already decode to `dbc_initialize` with mint and pool. `PARSED_INSTRUCTION_NAMES` already contains `initialize_virtual_pool_with_token2022_transfer_hook`, which normalizes the same way as the log line `InitializeVirtualPoolWithToken2022TransferHook`. Those misses were the stream: a silence reconnect whose backfill then skipped `getTransaction`. Replay fixtures cover both transactions and a plain Token-2022 initialize.
+
+`EvtCurveComplete` has pool, config, and reserves, and no mint. The swap in the same transaction names `base_mint` (IDL index of that name). The two curve fixtures (`2iUSeVV…` and `2C58UAP…`) fill `dbc_curve_complete.mint` from that account. A curve event with no swap and no initialize in the transaction still has a null mint, because the event payload does not carry one and `getTransaction` does not include virtual-pool account bytes.
+
+Day 1 (2026-11-13, 1.26 GB, 103,197 messages, 28,939 credits) matches the pre-#11 byte meter. Commit `8ed6530` (#11, 2026-11-13 13:59 UTC) switched the default off `transactionSubscribe`. The earlier 11.5 minute firehose in this log was about 1.06 GB and 21k credits, which is the LaserStream rate of 2 credits per 0.1 MB (`1_060_000_000 / 50_000 = 21_200`). Day 2 (36 MB, 4,890 messages, 5,242 credits) matches the parsed meter: 1 credit per delivered event plus RPC. `getSlot`, `getTransaction`, and `getSignaturesForAddress` are 1 credit on the current Helius credits page. That page does not list a socket-open fee, so opens are recorded with zero credits. Liveness probes and backfill calls are metered the same way.
+
+Process memory moved 38 → 58 MiB and was 49 MiB later the same morning, which fits the allocator holding onto a heap it has already freed. The structures that could grow without a visit from the collector were the module-level notification set and socket timers retained if a session threw after arming them. The set is capped. Each socket's timers and listeners live in a bag that is cleared when the socket ends. The signature dedupe window was already capped at 5,000 and now drops every extra entry, with a test that the size stays at the cap.
+
 ## 2026-11-13 — Ingest cost and decode fix
 
 The first dry-run on fomo-1 used `transactionSubscribe` with `accountInclude` set to the three program ids. That is every swap, not just launches. About 1.06 GB and 21,381 credits arrived in 11.5 minutes, which projects to roughly 79M credits over 30 days against a 10M Developer allowance.

@@ -7,7 +7,7 @@ import {
   utcMonth,
   type HeliusPlan,
 } from "../ingest/budget.js";
-import type { Observation } from "../ingest/decode.js";
+import type { DecodeFailure, Observation } from "../ingest/decode.js";
 import {
   monthUsedPercent,
   formatIngestStatus,
@@ -95,6 +95,35 @@ create table if not exists ingest_checkpoint (
 
 alter table ingest_status add column if not exists soak_started_at timestamptz;
 alter table ingest_status add column if not exists credits_since_start bigint not null default 0;
+
+create table if not exists decode_failure (
+  id bigserial primary key,
+  signature text not null,
+  slot bigint not null,
+  program_id text not null,
+  instruction_name text not null default '',
+  error text not null,
+  observed_at timestamptz not null default now(),
+  unique (signature, slot, program_id, instruction_name, error)
+);
+
+create index if not exists decode_failure_observed_idx on decode_failure (observed_at desc);
+
+create table if not exists ingest_backfill (
+  id bigserial primary key,
+  observed_at timestamptz not null,
+  program_id text not null,
+  gap_seconds integer,
+  gap_slots bigint,
+  events_recovered integer not null,
+  pages_fetched integer not null,
+  signatures_seen integer not null,
+  transactions_fetched integer not null,
+  reached_checkpoint boolean not null,
+  credit_cap_hit boolean not null
+);
+
+create index if not exists ingest_backfill_observed_idx on ingest_backfill (observed_at desc);
 `;
 
 export function createPool(databaseUrl: string): pg.Pool {
@@ -114,6 +143,10 @@ export async function migrate(pool: pg.Pool): Promise<void> {
     await client.query(
       "insert into schema_migrations (id) values ($1) on conflict (id) do nothing",
       ["001_ingest"],
+    );
+    await client.query(
+      "insert into schema_migrations (id) values ($1) on conflict (id) do nothing",
+      ["002_liveness_backfill"],
     );
     await client.query("commit");
   } catch (error) {
@@ -323,6 +356,57 @@ export class IngestRepository {
         input.lastSlot,
         input.lastError,
         input.now.toISOString(),
+      ],
+    );
+  }
+
+  async insertDecodeFailure(failure: DecodeFailure, observedAt: Date): Promise<void> {
+    const error = failure.error.slice(0, 500);
+    const instructionName = (failure.instructionName ?? "").slice(0, 200);
+    await this.pool.query(
+      `insert into decode_failure
+        (signature, slot, program_id, instruction_name, error, observed_at)
+       values ($1,$2,$3,$4,$5,$6)
+       on conflict (signature, slot, program_id, instruction_name, error) do nothing`,
+      [
+        failure.signature,
+        failure.slot,
+        failure.programId,
+        instructionName,
+        error,
+        observedAt.toISOString(),
+      ],
+    );
+  }
+
+  async insertBackfill(input: {
+    observedAt: Date;
+    programId: string;
+    gapSeconds: number | null;
+    gapSlots: number | null;
+    eventsRecovered: number;
+    pagesFetched: number;
+    signaturesSeen: number;
+    transactionsFetched: number;
+    reachedCheckpoint: boolean;
+    creditCapHit: boolean;
+  }): Promise<void> {
+    await this.pool.query(
+      `insert into ingest_backfill
+        (observed_at, program_id, gap_seconds, gap_slots, events_recovered, pages_fetched,
+         signatures_seen, transactions_fetched, reached_checkpoint, credit_cap_hit)
+       values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)`,
+      [
+        input.observedAt.toISOString(),
+        input.programId,
+        input.gapSeconds,
+        input.gapSlots,
+        input.eventsRecovered,
+        input.pagesFetched,
+        input.signaturesSeen,
+        input.transactionsFetched,
+        input.reachedCheckpoint,
+        input.creditCapHit,
       ],
     );
   }

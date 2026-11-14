@@ -10,8 +10,6 @@ export function backoffDelayMs(attempt: number, random: () => number = Math.rand
   return Math.round(exponential + jitter);
 }
 
-export const SILENCE_MS = 60_000;
-
 /** Helius/Solana -32015 means the client asked for a transaction version it did not accept. */
 export function nextTransactionVersion(code: number | null, attempt: number): number | null {
   if (code === -32015 && attempt === 0) return 1;
@@ -24,27 +22,156 @@ export class SignatureWindow {
 
   constructor(private readonly max = 5_000) {}
 
+  get size(): number {
+    return this.seen.size;
+  }
+
   /** Returns false when this signature and event index were already seen. */
   add(signature: string, eventIndex: number): boolean {
     const key = `${signature}:${eventIndex.toString()}`;
     if (this.seen.has(key)) return false;
     this.seen.add(key);
-    if (this.seen.size > this.max) {
+    while (this.seen.size > this.max) {
       const oldest = this.seen.values().next().value;
-      if (typeof oldest === "string") this.seen.delete(oldest);
+      if (typeof oldest !== "string") break;
+      this.seen.delete(oldest);
     }
     return true;
   }
 }
 
-export function silenceExceeded(input: {
-  lastMessageAtMs: number;
+/**
+ * Insertion-ordered set that forgets the oldest entry past `max`.
+ * Used for one-time log notes so a long process cannot grow without a bound.
+ */
+export class BoundedSet {
+  private readonly items = new Set<string>();
+
+  constructor(private readonly max: number) {}
+
+  get size(): number {
+    return this.items.size;
+  }
+
+  /** Returns true the first time `value` is added. */
+  add(value: string): boolean {
+    if (this.items.has(value)) return false;
+    this.items.add(value);
+    while (this.items.size > this.max) {
+      const oldest = this.items.values().next().value;
+      if (typeof oldest !== "string") break;
+      this.items.delete(oldest);
+    }
+    return true;
+  }
+}
+
+/** Clears intervals and runs listener cleanups. One bag per socket. */
+export class DisposableBag {
+  private timers: Array<ReturnType<typeof setInterval>> = [];
+  private cleanups: Array<() => void> = [];
+  private disposed = false;
+
+  interval(fn: () => void, ms: number): ReturnType<typeof setInterval> {
+    const timer = setInterval(fn, ms);
+    if (this.disposed) {
+      clearInterval(timer);
+      return timer;
+    }
+    this.timers.push(timer);
+    return timer;
+  }
+
+  add(cleanup: () => void): void {
+    if (this.disposed) {
+      cleanup();
+      return;
+    }
+    this.cleanups.push(cleanup);
+  }
+
+  dispose(): void {
+    if (this.disposed) return;
+    this.disposed = true;
+    for (const timer of this.timers) clearInterval(timer);
+    this.timers = [];
+    for (const cleanup of this.cleanups) cleanup();
+    this.cleanups = [];
+  }
+
+  get pending(): number {
+    return this.timers.length + this.cleanups.length;
+  }
+}
+
+export const LIVENESS_WARN_MS = 30_000;
+export const LIVENESS_CRITICAL_MS = 90_000;
+
+export type LivenessLevel = "ok" | "warn" | "critical";
+
+/**
+ * Dead-connection check. Evidence is a WebSocket pong or an advancing slot,
+ * not an ingest event. A quiet program is not a dead socket.
+ */
+export function livenessLevel(input: {
   nowMs: number;
-  alreadyAlerted: boolean;
-  thresholdMs?: number;
-}): boolean {
-  if (input.alreadyAlerted) return false;
-  return input.nowMs - input.lastMessageAtMs > (input.thresholdMs ?? SILENCE_MS);
+  connectedAtMs: number;
+  lastEvidenceAtMs: number | null;
+  warnMs?: number;
+  criticalMs?: number;
+}): LivenessLevel {
+  const warnMs = input.warnMs ?? LIVENESS_WARN_MS;
+  const criticalMs = input.criticalMs ?? LIVENESS_CRITICAL_MS;
+  const latest = Math.max(input.connectedAtMs, input.lastEvidenceAtMs ?? input.connectedAtMs);
+  const age = input.nowMs - latest;
+  if (age >= criticalMs) return "critical";
+  if (age >= warnMs) return "warn";
+  return "ok";
+}
+
+/**
+ * Telegram only when a reconnect fails to open, once per outage.
+ * A socket that opened and then went quiet-dead is a routine reconnect.
+ */
+export function nextReconnectAlert(input: { opened: boolean; outageAlerted: boolean }): {
+  alert: boolean;
+  outageAlerted: boolean;
+} {
+  if (input.opened) return { alert: false, outageAlerted: false };
+  if (input.outageAlerted) return { alert: false, outageAlerted: true };
+  return { alert: true, outageAlerted: true };
+}
+
+export function measureReconnectGap(input: {
+  nowMs: number;
+  lastLiveAtMs: number | null;
+  lastSlot: number | null;
+  currentSlot: number | null;
+}): { gapSeconds: number | null; gapSlots: number | null } {
+  const gapSeconds =
+    input.lastLiveAtMs === null
+      ? null
+      : Math.max(0, Math.round((input.nowMs - input.lastLiveAtMs) / 1000));
+  const gapSlots =
+    input.lastSlot === null || input.currentSlot === null
+      ? null
+      : Math.max(0, input.currentSlot - input.lastSlot);
+  return { gapSeconds, gapSlots };
+}
+
+/** Page cap and getTransaction cap for one program on one reconnect. Each page or tx is 1 credit. */
+export const BACKFILL_PAGE_CAP = 40;
+export const BACKFILL_TX_CAP = 60;
+
+export function signaturesToRecover(input: {
+  missingNewestFirst: readonly string[];
+  txCap: number;
+}): { signatures: string[]; truncated: boolean } {
+  const cap = Math.max(0, Math.floor(input.txCap));
+  return {
+    signatures: input.missingNewestFirst.slice(0, cap),
+    truncated: input.missingNewestFirst.length > cap,
+  };
 }
 
 /**

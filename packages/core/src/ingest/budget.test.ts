@@ -2,9 +2,12 @@ import { describe, expect, it } from "vitest";
 
 import { planCandidateWrites, tokenIsYoung } from "./apply.js";
 import {
+  MICROS_PER_CREDIT,
   allowanceCredits,
   budgetLevel,
+  parsedEventMicros,
   projectMonthlyCredits,
+  rpcCreditMicros,
   selectWsMethod,
   usageMicros,
 } from "./budget.js";
@@ -24,11 +27,20 @@ describe("helius method selection", () => {
 });
 
 describe("budget", () => {
-  it("meters bytes at 20 credits per million and pauses non-essential calls at 90%", () => {
+  it("meters laserstream bytes, parsed events, and documented rpc methods", () => {
     expect(usageMicros({ streamedBytes: 1_000_000n, rpcCalls: 0, socketOpens: 0 })).toBe(
       20_000_000n,
     );
-    expect(usageMicros({ streamedBytes: 0n, rpcCalls: 2, socketOpens: 1 })).toBe(3_000_000n);
+    expect(usageMicros({ streamedBytes: 100_000n, rpcCalls: 0 })).toBe(2n * MICROS_PER_CREDIT);
+    expect(usageMicros({ streamedBytes: 0n, rpcCalls: 2, socketOpens: 1 })).toBe(2_000_000n);
+    expect(parsedEventMicros(1)).toBe(MICROS_PER_CREDIT);
+    expect(rpcCreditMicros("getTransaction")).toBe(MICROS_PER_CREDIT);
+    expect(rpcCreditMicros("getSignaturesForAddress")).toBe(MICROS_PER_CREDIT);
+    expect(rpcCreditMicros("getSlot")).toBe(MICROS_PER_CREDIT);
+    const firehoseBytes = 1_060_000_000n;
+    expect(usageMicros({ streamedBytes: firehoseBytes, rpcCalls: 0 }) / MICROS_PER_CREDIT).toBe(
+      firehoseBytes / 50_000n,
+    );
     const allowance = 100n;
     expect(budgetLevel(59n * 1_000_000n, allowance)).toBe("ok");
     expect(budgetLevel(60n * 1_000_000n, allowance)).toBe("warn60");

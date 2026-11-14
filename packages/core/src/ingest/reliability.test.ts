@@ -1,11 +1,16 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
 import {
+  BoundedSet,
+  DisposableBag,
+  SignatureWindow,
   backoffDelayMs,
+  livenessLevel,
+  measureReconnectGap,
+  nextReconnectAlert,
   nextTransactionVersion,
   planBackfillPage,
-  silenceExceeded,
-  SignatureWindow,
+  signaturesToRecover,
 } from "./reliability.js";
 
 describe("backoff", () => {
@@ -18,17 +23,67 @@ describe("backoff", () => {
   });
 });
 
-describe("silence", () => {
-  it("alerts once after 60 seconds without a socket message", () => {
-    expect(silenceExceeded({ lastMessageAtMs: 0, nowMs: 60_000, alreadyAlerted: false })).toBe(
-      false,
-    );
-    expect(silenceExceeded({ lastMessageAtMs: 0, nowMs: 60_001, alreadyAlerted: false })).toBe(
-      true,
-    );
-    expect(silenceExceeded({ lastMessageAtMs: 0, nowMs: 120_000, alreadyAlerted: true })).toBe(
-      false,
-    );
+describe("liveness", () => {
+  it("stays healthy through a quiet event stream when slots or pongs are fresh", () => {
+    expect(
+      livenessLevel({
+        nowMs: 120_000,
+        connectedAtMs: 0,
+        lastEvidenceAtMs: 119_000,
+      }),
+    ).toBe("ok");
+  });
+
+  it("warns and then goes critical when neither pongs nor slots arrive", () => {
+    expect(
+      livenessLevel({ nowMs: 29_999, connectedAtMs: 0, lastEvidenceAtMs: null, warnMs: 30_000 }),
+    ).toBe("ok");
+    expect(
+      livenessLevel({ nowMs: 30_000, connectedAtMs: 0, lastEvidenceAtMs: null, warnMs: 30_000 }),
+    ).toBe("warn");
+    expect(
+      livenessLevel({
+        nowMs: 90_000,
+        connectedAtMs: 0,
+        lastEvidenceAtMs: 0,
+        warnMs: 30_000,
+        criticalMs: 90_000,
+      }),
+    ).toBe("critical");
+  });
+
+  it("alerts only the first failed reconnect of an outage", () => {
+    expect(nextReconnectAlert({ opened: true, outageAlerted: false })).toEqual({
+      alert: false,
+      outageAlerted: false,
+    });
+    expect(nextReconnectAlert({ opened: false, outageAlerted: false })).toEqual({
+      alert: true,
+      outageAlerted: true,
+    });
+    expect(nextReconnectAlert({ opened: false, outageAlerted: true })).toEqual({
+      alert: false,
+      outageAlerted: true,
+    });
+  });
+
+  it("measures the reconnect gap in seconds and slots", () => {
+    expect(
+      measureReconnectGap({
+        nowMs: 10_500,
+        lastLiveAtMs: 5_000,
+        lastSlot: 100,
+        currentSlot: 140,
+      }),
+    ).toEqual({ gapSeconds: 6, gapSlots: 40 });
+    expect(
+      measureReconnectGap({
+        nowMs: 1,
+        lastLiveAtMs: null,
+        lastSlot: null,
+        currentSlot: 3,
+      }),
+    ).toEqual({ gapSeconds: null, gapSlots: null });
   });
 });
 
@@ -84,5 +139,75 @@ describe("dedupe", () => {
     expect(window.add("sig", 1)).toBe(true);
     expect(window.add("other", 0)).toBe(true);
     expect(window.add("sig", 1)).toBe(false);
+  });
+
+  it("never grows past its cap", () => {
+    const window = new SignatureWindow(3);
+    for (let index = 0; index < 20; index += 1) {
+      window.add(`sig-${index.toString()}`, 0);
+      expect(window.size).toBeLessThanOrEqual(3);
+    }
+    expect(window.size).toBe(3);
+    expect(window.add("sig-19", 0)).toBe(false);
+    expect(window.add("sig-0", 0)).toBe(true);
+  });
+});
+
+describe("bounded notes", () => {
+  it("forgets the oldest notification name past the cap", () => {
+    const notes = new BoundedSet(2);
+    expect(notes.add("slotNotification")).toBe(true);
+    expect(notes.add("slotNotification")).toBe(false);
+    notes.add("other");
+    notes.add("third");
+    expect(notes.size).toBe(2);
+    expect(notes.add("slotNotification")).toBe(true);
+  });
+});
+
+describe("disposables", () => {
+  it("stops timers and runs listener cleanups once", () => {
+    vi.useFakeTimers();
+    try {
+      const bag = new DisposableBag();
+      let ticks = 0;
+      let cleaned = 0;
+      bag.interval(() => {
+        ticks += 1;
+      }, 10);
+      bag.add(() => {
+        cleaned += 1;
+      });
+      vi.advanceTimersByTime(25);
+      expect(ticks).toBe(2);
+      bag.dispose();
+      bag.dispose();
+      vi.advanceTimersByTime(50);
+      expect(ticks).toBe(2);
+      expect(cleaned).toBe(1);
+      expect(bag.pending).toBe(0);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+});
+
+describe("backfill recovery", () => {
+  it("still returns the signatures it already found when the page cap is hit", () => {
+    const exhausted = planBackfillPage({
+      newestFirst: ["d", "c"],
+      checkpoint: "a",
+      pageWasFull: true,
+      pagesFetched: 3,
+      maxPages: 3,
+    });
+    expect(exhausted.gapRemains).toBe(true);
+    const recovered = signaturesToRecover({
+      missingNewestFirst: ["e", "d", "c"],
+      txCap: 2,
+    });
+    expect(recovered.signatures).toEqual(["e", "d"]);
+    expect(recovered.truncated).toBe(true);
+    expect(signaturesToRecover({ missingNewestFirst: ["e"], txCap: 5 }).truncated).toBe(false);
   });
 });

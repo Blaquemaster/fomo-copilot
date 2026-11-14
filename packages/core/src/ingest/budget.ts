@@ -22,14 +22,46 @@ export function allowanceCredits(plan: HeliusPlan, override: number | undefined)
   return PLAN_CREDITS[plan];
 }
 
+/**
+ * Documented Helius costs (https://www.helius.dev/docs/billing/credits):
+ * standard RPC, including getSlot, getTransaction, and getSignaturesForAddress, is 1 credit.
+ * Methods listed separately on that page (getProgramAccounts, DAS, and so on) are not called here.
+ * The credits page does not bill a socket-open fee. LaserStream data is 2 credits per 0.1 MB,
+ * which is BYTES_PER_CREDIT. Parsed streams are 1 credit per delivered event, not per byte.
+ */
+export const RPC_CREDITS: Readonly<Record<string, number>> = {
+  getSlot: 1,
+  getTransaction: 1,
+  getSignaturesForAddress: 1,
+  getBlock: 1,
+  getBlockTime: 1,
+  getSignatureStatuses: 1,
+};
+
+export function rpcCredits(method: string): number {
+  return RPC_CREDITS[method] ?? 1;
+}
+
+export function rpcCreditMicros(method: string, calls = 1): bigint {
+  return BigInt(rpcCredits(method) * calls) * MICROS_PER_CREDIT;
+}
+
+export function parsedEventMicros(events: number): bigint {
+  return BigInt(events) * MICROS_PER_CREDIT;
+}
+
 export function usageMicros(input: {
   streamedBytes: bigint;
   rpcCalls: number;
-  socketOpens: number;
+  /** Accepted for older call sites. The credits page does not bill opening a socket. */
+  socketOpens?: number;
+  rpcMethod?: string;
 }): bigint {
+  void input.socketOpens;
+  const perCall = rpcCredits(input.rpcMethod ?? "getTransaction");
   return (
     input.streamedBytes * (MICROS_PER_CREDIT / BYTES_PER_CREDIT) +
-    BigInt(input.rpcCalls + input.socketOpens) * MICROS_PER_CREDIT
+    BigInt(input.rpcCalls * perCall) * MICROS_PER_CREDIT
   );
 }
 
