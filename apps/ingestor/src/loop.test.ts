@@ -400,7 +400,110 @@ describe("short backfill", () => {
         unrecovered: true,
         gapFromSlot: fixture.untilSlot,
         gapToSlot: fixture.page[0]?.slot,
+        reason: "cap_hit",
       }),
+    );
+  });
+
+  it("scans DAMM initialize instructions instead of fetching every swap", async () => {
+    const methods: string[] = [];
+    const fetched: string[] = [];
+    const scanned: Array<{ instructionNames: readonly string[]; slotGt: number }> = [];
+    await backfillProgram({
+      env,
+      logger: logger(),
+      repo: repo({
+        checkpoint: vi.fn(async () => ({ signature: "checkpoint", slot: 100 })),
+      }),
+      programId: "cpamdpZCGKUy5JxQXB4dcpGPiikHawvSWAd6mEn1sGG",
+      paused: false,
+      gap: { gapSeconds: 28, gapSlots: 82, untilSlot: 200, tipSlot: 282 },
+      deps: {
+        scanHistory: (request) => {
+          scanned.push({ instructionNames: request.instructionNames, slotGt: request.slotGt });
+          return Promise.resolve({
+            matches: [{ signature: "init-1", slot: 250 }],
+            creditsCharged: 12,
+            complete: true,
+          });
+        },
+        callRpc: (method, params) => {
+          methods.push(method);
+          if (method === "getTransaction") fetched.push(String(params[0]));
+          return Promise.resolve(null);
+        },
+      },
+    });
+    expect(methods).not.toContain("getSignaturesForAddress");
+    expect(fetched).toEqual(["init-1"]);
+    expect(scanned[0]?.instructionNames).toEqual([
+      "initialize_pool",
+      "initialize_customizable_pool",
+      "initialize_pool_with_dynamic_config",
+    ]);
+    expect(scanned[0]?.slotGt).toBe(200);
+  });
+
+  it("records high_volume_skipped when the parsed scan is unavailable", async () => {
+    const methods: string[] = [];
+    const inserted = vi.fn(async () => undefined);
+    await backfillProgram({
+      env,
+      logger: logger(),
+      repo: repo({
+        checkpoint: vi.fn(async () => ({ signature: "checkpoint", slot: 100 })),
+        insertBackfill: inserted,
+      }),
+      programId: "LBUZKhRxPF3XUpBCjp4YzTKgLccjZhTSDM9YuVaPwxo",
+      paused: false,
+      gap: { gapSeconds: 28, gapSlots: 82, untilSlot: 200, tipSlot: 282 },
+      deps: {
+        scanHistory: () => Promise.reject(new Error("scan down")),
+        callRpc: (method) => {
+          methods.push(method);
+          return Promise.resolve(null);
+        },
+      },
+    });
+    expect(methods).toEqual([]);
+    expect(inserted).toHaveBeenCalledWith(
+      expect.objectContaining({
+        unrecovered: true,
+        reason: "high_volume_skipped",
+        transactionsFetched: 0,
+      }),
+    );
+  });
+
+  it("does not list DAMM signatures when the persisted slot is too old", async () => {
+    const methods: string[] = [];
+    const inserted = vi.fn(async () => undefined);
+    await backfillProgram({
+      env,
+      logger: logger(),
+      repo: repo({
+        checkpoint: vi.fn(async () => ({ signature: "checkpoint", slot: 100 })),
+        insertBackfill: inserted,
+      }),
+      programId: "cpamdpZCGKUy5JxQXB4dcpGPiikHawvSWAd6mEn1sGG",
+      paused: false,
+      gap: {
+        gapSeconds: null,
+        gapSlots: null,
+        untilSlot: null,
+        tipSlot: 1_000_000,
+        staleFromSlot: 100,
+      },
+      deps: {
+        callRpc: (method) => {
+          methods.push(method);
+          return Promise.resolve(null);
+        },
+      },
+    });
+    expect(methods).toEqual([]);
+    expect(inserted).toHaveBeenCalledWith(
+      expect.objectContaining({ unrecovered: true, reason: "too_old", gapFromSlot: 100 }),
     );
   });
 });

@@ -128,6 +128,7 @@ create index if not exists ingest_backfill_observed_idx on ingest_backfill (obse
 alter table ingest_backfill add column if not exists unrecovered boolean not null default false;
 alter table ingest_backfill add column if not exists gap_from_slot bigint;
 alter table ingest_backfill add column if not exists gap_to_slot bigint;
+alter table ingest_backfill add column if not exists reason text;
 
 create table if not exists ingest_heap_sample (
   id bigserial primary key,
@@ -172,6 +173,10 @@ export async function migrate(pool: pg.Pool): Promise<void> {
     await client.query(
       "insert into schema_migrations (id) values ($1) on conflict (id) do nothing",
       ["004_heap_sample"],
+    );
+    await client.query(
+      "insert into schema_migrations (id) values ($1) on conflict (id) do nothing",
+      ["005_backfill_reason"],
     );
     await client.query("commit");
   } catch (error) {
@@ -418,13 +423,14 @@ export class IngestRepository {
     unrecovered: boolean;
     gapFromSlot: number | null;
     gapToSlot: number | null;
+    reason: string | null;
   }): Promise<void> {
     await this.pool.query(
       `insert into ingest_backfill
         (observed_at, program_id, gap_seconds, gap_slots, events_recovered, pages_fetched,
          signatures_seen, transactions_fetched, reached_checkpoint, credit_cap_hit,
-         unrecovered, gap_from_slot, gap_to_slot)
-       values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)`,
+         unrecovered, gap_from_slot, gap_to_slot, reason)
+       values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)`,
       [
         input.observedAt.toISOString(),
         input.programId,
@@ -439,6 +445,7 @@ export class IngestRepository {
         input.unrecovered,
         input.gapFromSlot,
         input.gapToSlot,
+        input.reason,
       ],
     );
   }
