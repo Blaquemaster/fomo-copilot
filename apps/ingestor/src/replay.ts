@@ -6,6 +6,7 @@ import {
   decodeRpcTransaction,
   loadEnv,
   planReplayPage,
+  replayListingContinues,
   withinCreditCap,
   type BackfillSignature,
 } from "@fomo/core";
@@ -21,6 +22,9 @@ interface ReplayArgs {
   programs: string[];
   schema: string;
   creditCap: number;
+  before: string | null;
+  until: string | null;
+  anchorSignature: string | null;
 }
 
 export function parseReplayArgs(argv: readonly string[]): ReplayArgs {
@@ -29,6 +33,9 @@ export function parseReplayArgs(argv: readonly string[]): ReplayArgs {
   const programs: string[] = [];
   let schema = DEFAULT_SCHEMA;
   let creditCap = DEFAULT_CAP;
+  let before: string | null = null;
+  let until: string | null = null;
+  let anchorSignature: string | null = null;
   for (let index = 0; index < argv.length; index += 1) {
     const flag = argv[index];
     const value = argv[index + 1];
@@ -36,7 +43,10 @@ export function parseReplayArgs(argv: readonly string[]): ReplayArgs {
       flag === "--from-slot" ||
       flag === "--to-slot" ||
       flag === "--schema" ||
-      flag === "--credit-cap"
+      flag === "--credit-cap" ||
+      flag === "--before" ||
+      flag === "--until" ||
+      flag === "--anchor-signature"
     ) {
       if (value === undefined) throw new Error(`${flag} needs a value`);
       index += 1;
@@ -45,6 +55,9 @@ export function parseReplayArgs(argv: readonly string[]): ReplayArgs {
     else if (flag === "--to-slot") toSlot = strictSlot(value ?? "");
     else if (flag === "--schema") schema = assertSchema(value ?? "");
     else if (flag === "--credit-cap") creditCap = strictCap(value ?? "");
+    else if (flag === "--before") before = strictSignature(value ?? "");
+    else if (flag === "--until") until = strictSignature(value ?? "");
+    else if (flag === "--anchor-signature") anchorSignature = strictSignature(value ?? "");
     else if (flag === "--programs") {
       if (value === undefined) throw new Error("--programs needs a value");
       index += 1;
@@ -60,7 +73,23 @@ export function parseReplayArgs(argv: readonly string[]): ReplayArgs {
     throw new Error("--from-slot and --to-slot are required");
   if (fromSlot > toSlot) throw new Error("--from-slot must be <= --to-slot");
   if (programs.length === 0) throw new Error("--programs is required");
-  return { fromSlot, toSlot, programs, schema: assertSchema(schema), creditCap };
+  return {
+    fromSlot,
+    toSlot,
+    programs,
+    schema: assertSchema(schema),
+    creditCap,
+    before,
+    until,
+    anchorSignature,
+  };
+}
+
+function strictSignature(value: string): string {
+  if (!/^[1-9A-HJ-NP-Za-km-z]{32,88}$/.test(value)) {
+    throw new Error("signature must be base58");
+  }
+  return value;
 }
 
 function strictSlot(value: string): number {
@@ -88,28 +117,33 @@ async function signaturePage(
   apiKey: string,
   programId: string,
   before: string | undefined,
+  until: string | null,
   onCall: () => void,
-): Promise<BackfillSignature[]> {
+): Promise<{ rawLength: number; oldestSignature: string | null; rows: BackfillSignature[] }> {
   const config: Record<string, unknown> = { limit: 100, commitment: "confirmed" };
   if (before) config["before"] = before;
+  if (until) config["until"] = until;
   onCall();
   const result = await heliusRpc({
     apiKey,
     method: "getSignaturesForAddress",
     params: [programId, config],
   });
-  if (!Array.isArray(result)) return [];
+  if (!Array.isArray(result)) return { rawLength: 0, oldestSignature: null, rows: [] };
   const rows: BackfillSignature[] = [];
+  let oldestSignature: string | null = null;
   for (const row of result) {
     if (typeof row !== "object" || row === null) continue;
     const record = row as { signature?: unknown; slot?: unknown; err?: unknown };
-    if (typeof record.signature !== "string" || record.err != null) continue;
+    if (typeof record.signature !== "string") continue;
+    oldestSignature = record.signature;
     rows.push({
       signature: record.signature,
       slot: typeof record.slot === "number" ? record.slot : null,
+      failed: record.err != null,
     });
   }
-  return rows;
+  return { rawLength: result.length, oldestSignature, rows };
 }
 
 async function main(): Promise<void> {
@@ -139,27 +173,32 @@ async function main(): Promise<void> {
         )`,
       );
       for (const programId of args.programs) {
-        let before: string | undefined;
-        let reached = false;
+        let before: string | undefined = args.before ?? args.anchorSignature ?? undefined;
         const wanted: BackfillSignature[] = [];
-        while (!reached && !capHit) {
+        while (!capHit) {
           if (!withinCreditCap(credits, 1, args.creditCap)) {
             capHit = true;
             break;
           }
-          const page = await signaturePage(env.HELIUS_API_KEY, programId, before, () => {
-            credits += 1;
-          });
-          if (page.length === 0) break;
+          const page = await signaturePage(
+            env.HELIUS_API_KEY,
+            programId,
+            before,
+            args.until,
+            () => {
+              credits += 1;
+            },
+          );
+          if (page.rawLength === 0) break;
           const step = planReplayPage({
-            newestFirst: page,
+            newestFirst: page.rows,
             fromSlot: args.fromSlot,
             toSlot: args.toSlot,
           });
           wanted.push(...step.inWindow);
-          reached = step.reachedFrom || page.length < 100;
-          before = page.at(-1)?.signature;
-          if (!before) break;
+          if (!replayListingContinues(page.rawLength, step.reachedFrom)) break;
+          if (!page.oldestSignature) break;
+          before = page.oldestSignature;
         }
         for (const row of wanted) {
           if (!withinCreditCap(credits, 1, args.creditCap)) {
@@ -212,6 +251,9 @@ async function main(): Promise<void> {
         fromSlot: args.fromSlot,
         toSlot: args.toSlot,
         programs: args.programs,
+        before: args.before,
+        until: args.until,
+        anchorSignature: args.anchorSignature,
         creditsUsed: credits,
         creditCap: args.creditCap,
         capHit,

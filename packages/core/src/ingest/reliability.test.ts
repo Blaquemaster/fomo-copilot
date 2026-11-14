@@ -16,6 +16,9 @@ import {
   persistedSlotIsUsable,
   planBackfillPage,
   planReplayPage,
+  replayListingContinues,
+  selectBackfillTxCap,
+  shouldSkipListedSignature,
   signaturesToRecover,
   withinCreditCap,
 } from "./reliability.js";
@@ -252,6 +255,35 @@ describe("short reconnect gaps", () => {
   });
 });
 
+describe("startup transaction cap", () => {
+  it("raises the cap only when the window is the persisted live slot", () => {
+    expect(selectBackfillTxCap({ fromPersistedSlot: false })).toBe(60);
+    expect(selectBackfillTxCap({ fromPersistedSlot: true })).toBe(400);
+    expect(selectBackfillTxCap({ fromPersistedSlot: true, override: 12 })).toBe(12);
+  });
+
+  it("does not skip a signature listing that has no instruction names", () => {
+    expect(
+      shouldSkipListedSignature({
+        instructionNames: null,
+        watchedNames: ["initialize_virtual_pool_with_token2022"],
+      }),
+    ).toBe(false);
+    expect(
+      shouldSkipListedSignature({
+        instructionNames: ["swap"],
+        watchedNames: ["initialize_virtual_pool_with_token2022"],
+      }),
+    ).toBe(true);
+    expect(
+      shouldSkipListedSignature({
+        instructionNames: ["InitializeVirtualPoolWithToken2022"],
+        watchedNames: ["initialize_virtual_pool_with_token2022"],
+      }),
+    ).toBe(false);
+  });
+});
+
 describe("replay window", () => {
   it("keeps signatures inside the slot window and stops once it passes the start", () => {
     const step = planReplayPage({
@@ -268,6 +300,44 @@ describe("replay window", () => {
     expect(step.reachedFrom).toBe(true);
     expect(withinCreditCap(149, 1, 150)).toBe(true);
     expect(withinCreditCap(150, 1, 150)).toBe(false);
+  });
+
+  it("reaches a historical window from an anchor without treating a filtered page as the end", () => {
+    const fromSlot = 468993762;
+    const toSlot = 468993810;
+    const pages = [
+      {
+        rawLength: 100,
+        rows: [{ signature: "tip-success", slot: 500_000_000 }],
+      },
+      {
+        rawLength: 100,
+        rows: [
+          { signature: "HhWvvx", slot: toSlot },
+          { signature: "4QpMm", slot: fromSlot },
+          { signature: "older", slot: fromSlot - 1 },
+        ],
+      },
+    ];
+    const collected: string[] = [];
+    let calls = 0;
+    let credits = 0;
+    let reachedFrom = false;
+    for (const page of pages) {
+      expect(withinCreditCap(credits, 1, 150)).toBe(true);
+      credits += 1;
+      calls += 1;
+      const step = planReplayPage({ newestFirst: page.rows, fromSlot, toSlot });
+      collected.push(...step.inWindow.map((row) => row.signature));
+      reachedFrom = step.reachedFrom;
+      if (!replayListingContinues(page.rawLength, step.reachedFrom)) break;
+    }
+    expect(calls).toBe(2);
+    expect(credits).toBe(2);
+    expect(reachedFrom).toBe(true);
+    expect(collected).toEqual(["HhWvvx", "4QpMm"]);
+    expect(replayListingContinues(100, false)).toBe(true);
+    expect(replayListingContinues(80, false)).toBe(false);
   });
 });
 
