@@ -160,6 +160,30 @@ sudoedit /etc/fomo-healthcheck.env
 
 The file mode stays `0600` and the owner stays `root:root`. The cron line appends to `/var/log/fomo-healthcheck.log`.
 
+## Measuring the stream
+
+On the droplet:
+
+```bash
+cd /opt/fomo-copilot
+scripts/event-gaps.sh 24
+docker exec -i fomo-copilot-postgres-1 sh -c 'psql -U "$POSTGRES_USER" -d "$POSTGRES_DB"' \
+  < scripts/unrecovered-gaps.sql
+```
+
+`event-gaps.sh` prints the p50, p95, p99, and max seconds between stored events, overall and per program. The unrecovered query counts backfills that stopped before the slot window was covered.
+
+Replay one historical window into a scratch schema (default credit cap 150). This does not write `public` tables:
+
+```bash
+cd /opt/fomo-copilot
+docker compose --env-file .env -f infra/docker-compose.yml exec -T ingestor \
+  node apps/ingestor/dist/replay.js \
+  --from-slot 468993762 --to-slot 468993810 \
+  --programs dbcij3LWUppWqq96dh6gJWwBifmcGfLSB5D4DuSMaqN \
+  --schema scratch_replay --credit-cap 150
+```
+
 ## 7. Test /ping
 
 From your phone, open the bot and send:

@@ -124,6 +124,23 @@ create table if not exists ingest_backfill (
 );
 
 create index if not exists ingest_backfill_observed_idx on ingest_backfill (observed_at desc);
+
+alter table ingest_backfill add column if not exists unrecovered boolean not null default false;
+alter table ingest_backfill add column if not exists gap_from_slot bigint;
+alter table ingest_backfill add column if not exists gap_to_slot bigint;
+
+create table if not exists ingest_heap_sample (
+  id bigserial primary key,
+  sampled_at timestamptz not null,
+  uptime_sec integer not null,
+  rss_bytes bigint not null,
+  heap_total_bytes bigint not null,
+  heap_used_bytes bigint not null,
+  external_bytes bigint not null,
+  array_buffers_bytes bigint not null
+);
+
+create index if not exists ingest_heap_sample_uptime_idx on ingest_heap_sample (uptime_sec);
 `;
 
 export function createPool(databaseUrl: string): pg.Pool {
@@ -147,6 +164,14 @@ export async function migrate(pool: pg.Pool): Promise<void> {
     await client.query(
       "insert into schema_migrations (id) values ($1) on conflict (id) do nothing",
       ["002_liveness_backfill"],
+    );
+    await client.query(
+      "insert into schema_migrations (id) values ($1) on conflict (id) do nothing",
+      ["003_unrecovered_gap"],
+    );
+    await client.query(
+      "insert into schema_migrations (id) values ($1) on conflict (id) do nothing",
+      ["004_heap_sample"],
     );
     await client.query("commit");
   } catch (error) {
@@ -390,12 +415,16 @@ export class IngestRepository {
     transactionsFetched: number;
     reachedCheckpoint: boolean;
     creditCapHit: boolean;
+    unrecovered: boolean;
+    gapFromSlot: number | null;
+    gapToSlot: number | null;
   }): Promise<void> {
     await this.pool.query(
       `insert into ingest_backfill
         (observed_at, program_id, gap_seconds, gap_slots, events_recovered, pages_fetched,
-         signatures_seen, transactions_fetched, reached_checkpoint, credit_cap_hit)
-       values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)`,
+         signatures_seen, transactions_fetched, reached_checkpoint, credit_cap_hit,
+         unrecovered, gap_from_slot, gap_to_slot)
+       values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)`,
       [
         input.observedAt.toISOString(),
         input.programId,
@@ -407,6 +436,44 @@ export class IngestRepository {
         input.transactionsFetched,
         input.reachedCheckpoint,
         input.creditCapHit,
+        input.unrecovered,
+        input.gapFromSlot,
+        input.gapToSlot,
+      ],
+    );
+  }
+
+  async lastLiveSlot(): Promise<number | null> {
+    const result = await this.pool.query<{ last_slot: string | null }>(
+      "select last_slot from ingest_status where id = 1",
+    );
+    const value = result.rows[0]?.last_slot;
+    if (value == null) return null;
+    const slot = Number(value);
+    return Number.isFinite(slot) ? slot : null;
+  }
+
+  async insertHeapSample(input: {
+    sampledAt: Date;
+    uptimeSec: number;
+    rssBytes: number;
+    heapTotalBytes: number;
+    heapUsedBytes: number;
+    externalBytes: number;
+    arrayBuffersBytes: number;
+  }): Promise<void> {
+    await this.pool.query(
+      `insert into ingest_heap_sample
+        (sampled_at, uptime_sec, rss_bytes, heap_total_bytes, heap_used_bytes, external_bytes, array_buffers_bytes)
+       values ($1,$2,$3,$4,$5,$6,$7)`,
+      [
+        input.sampledAt.toISOString(),
+        input.uptimeSec,
+        input.rssBytes,
+        input.heapTotalBytes,
+        input.heapUsedBytes,
+        input.externalBytes,
+        input.arrayBuffersBytes,
       ],
     );
   }

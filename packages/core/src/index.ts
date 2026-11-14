@@ -37,8 +37,10 @@ export {
 export {
   accountsByName,
   applyCurveMints,
+  canonicalEvents,
   decodeProgramData,
   decodeRpcTransaction,
+  normalizeRpcToParsedNotification,
   observationsFromLogs,
   observationsFromTransaction,
   isPersistable,
@@ -48,6 +50,7 @@ export {
   parseSlotNotification,
   parseSlotResponse,
   parseTransactionNotification,
+  type CanonicalEvent,
   type DecodeFailure,
   type Observation,
 } from "./ingest/decode.js";
@@ -61,6 +64,7 @@ export {
   WATCHED_PROGRAMS,
 } from "./ingest/programs.js";
 export {
+  BACKFILL_MAX_SLOT_SPAN,
   BACKFILL_PAGE_CAP,
   BACKFILL_TX_CAP,
   BoundedSet,
@@ -69,12 +73,18 @@ export {
   LIVENESS_WARN_MS,
   SignatureWindow,
   backoffDelayMs,
+  backfillStopSlot,
+  type BackfillSignature,
+  isUnrecoveredGap,
   livenessLevel,
   measureReconnectGap,
   nextReconnectAlert,
   nextTransactionVersion,
+  persistedSlotIsUsable,
   planBackfillPage,
+  planReplayPage,
   signaturesToRecover,
+  withinCreditCap,
 } from "./ingest/reliability.js";
 export { formatIngestStatus, formatSpotCheck } from "./ingest/statusText.js";
 export { IngestRepository, createPool, migrate } from "./db/ingest.js";

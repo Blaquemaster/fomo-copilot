@@ -33,6 +33,8 @@ export const envSchema = z.object({
   HELIUS_WS_MODE: z.enum(["auto", "standard", "enhanced"]).default("auto"),
   INGEST_MODE: z.enum(["dry-run", "continuous"]).default("dry-run"),
   HELIUS_MONTHLY_CREDITS: z.coerce.number().int().positive().max(1_000_000_000).optional(),
+  /** Slots kept behind the last live slot when backfill decides it has caught up. */
+  BACKFILL_SLOT_MARGIN: z.coerce.number().int().min(0).max(10_000).default(16),
 });
 
 export type Env = z.infer<typeof envSchema>;

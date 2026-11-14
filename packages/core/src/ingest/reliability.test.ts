@@ -7,12 +7,17 @@ import {
   DisposableBag,
   SignatureWindow,
   backoffDelayMs,
+  backfillStopSlot,
+  isUnrecoveredGap,
   livenessLevel,
   measureReconnectGap,
   nextReconnectAlert,
   nextTransactionVersion,
+  persistedSlotIsUsable,
   planBackfillPage,
+  planReplayPage,
   signaturesToRecover,
+  withinCreditCap,
 } from "./reliability.js";
 
 describe("backoff", () => {
@@ -77,7 +82,7 @@ describe("liveness", () => {
         lastSlot: 100,
         currentSlot: 140,
       }),
-    ).toEqual({ gapSeconds: 6, gapSlots: 40, untilSlot: 100 });
+    ).toEqual({ gapSeconds: 6, gapSlots: 40, untilSlot: 100, tipSlot: 140 });
     expect(
       measureReconnectGap({
         nowMs: 1,
@@ -85,7 +90,7 @@ describe("liveness", () => {
         lastSlot: null,
         currentSlot: 3,
       }),
-    ).toEqual({ gapSeconds: null, gapSlots: null, untilSlot: null });
+    ).toEqual({ gapSeconds: null, gapSlots: null, untilSlot: null, tipSlot: 3 });
   });
 });
 
@@ -216,6 +221,53 @@ describe("short reconnect gaps", () => {
     expect(step.fetchAnotherPage).toBe(false);
     expect(step.gapRemains).toBe(false);
     expect(fixture.page.map((row) => row.signature)).not.toContain(fixture.checkpoint.signature);
+
+    const margined = planBackfillPage({
+      newestFirst: fixture.page,
+      checkpoint: null,
+      untilSlot: backfillStopSlot(fixture.untilSlot, 16),
+      pageWasFull: true,
+      pagesFetched: 1,
+      maxPages: 40,
+    });
+    expect(backfillStopSlot(fixture.untilSlot, 16)).toBe(fixture.untilSlot - 16);
+    expect(margined.missing).toEqual(["gap-1", "gap-2", "boundary", "older-1"]);
+    expect(margined.fetchAnotherPage).toBe(false);
+    expect(margined.gapRemains).toBe(false);
+  });
+
+  it("treats a cap hit or a fetch error as an unrecovered gap", () => {
+    expect(isUnrecoveredGap({ reachedStop: true, truncated: false, errored: false })).toBe(false);
+    expect(isUnrecoveredGap({ reachedStop: false, truncated: false, errored: false })).toBe(true);
+    expect(isUnrecoveredGap({ reachedStop: true, truncated: true, errored: false })).toBe(true);
+    expect(isUnrecoveredGap({ reachedStop: true, truncated: false, errored: true })).toBe(true);
+  });
+
+  it("uses a persisted live slot only when the tip is still within the cap", () => {
+    expect(persistedSlotIsUsable({ persistedSlot: null, tipSlot: 1_000, margin: 16 })).toBe(false);
+    expect(persistedSlotIsUsable({ persistedSlot: 1_000, tipSlot: 1_020, margin: 16 })).toBe(true);
+    expect(
+      persistedSlotIsUsable({ persistedSlot: 1_000, tipSlot: 2_000, margin: 16, maxSpan: 600 }),
+    ).toBe(false);
+  });
+});
+
+describe("replay window", () => {
+  it("keeps signatures inside the slot window and stops once it passes the start", () => {
+    const step = planReplayPage({
+      newestFirst: [
+        { signature: "newer", slot: 50 },
+        { signature: "hi", slot: 40 },
+        { signature: "lo", slot: 30 },
+        { signature: "before", slot: 20 },
+      ],
+      fromSlot: 30,
+      toSlot: 40,
+    });
+    expect(step.inWindow.map((row) => row.signature)).toEqual(["hi", "lo"]);
+    expect(step.reachedFrom).toBe(true);
+    expect(withinCreditCap(149, 1, 150)).toBe(true);
+    expect(withinCreditCap(150, 1, 150)).toBe(false);
   });
 });
 

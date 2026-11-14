@@ -30,6 +30,7 @@ describe("loadEnv", () => {
     expect(env.TELEGRAM_ADMIN_CHAT_ID).toBe("424242");
     expect(env.POSTGRES_USER).toBe("fomo");
     expect(env.THRESHOLDS_PATH).toBeUndefined();
+    expect(env.BACKFILL_SLOT_MARGIN).toBe(16);
   });
 
   it("defaults NODE_ENV and LOG_LEVEL when they are absent", () => {

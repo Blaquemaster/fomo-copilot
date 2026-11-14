@@ -4,7 +4,7 @@ import { Writable } from "node:stream";
 import { createLogger, sendTelegramMessage, type Env, type IngestRepository } from "@fomo/core";
 import { describe, expect, it, vi } from "vitest";
 
-import { backfillProgram, runIngestLoop, type SocketLike } from "./loop.js";
+import { backfillProgram, recordHeapSample, runIngestLoop, type SocketLike } from "./loop.js";
 
 vi.mock("@fomo/core", async () => {
   const actual = await vi.importActual<typeof import("@fomo/core")>("@fomo/core");
@@ -24,6 +24,7 @@ const env: Env = {
   HELIUS_PLAN: "developer",
   HELIUS_WS_MODE: "auto",
   INGEST_MODE: "dry-run",
+  BACKFILL_SLOT_MARGIN: 0,
 };
 
 class FakeSocket extends EventTarget {
@@ -93,6 +94,8 @@ function repo(overrides: Partial<IngestRepository> = {}): IngestRepository {
     insertDecodeFailure: vi.fn(async () => undefined),
     insertBackfill: vi.fn(async () => undefined),
     knownSignatures: vi.fn(async () => new Set<string>()),
+    lastLiveSlot: vi.fn(async () => null),
+    insertHeapSample: vi.fn(async () => undefined),
   };
   return { ...base, ...overrides } as unknown as IngestRepository;
 }
@@ -318,7 +321,12 @@ describe("short backfill", () => {
       }),
       programId: "dbcij3LWUppWqq96dh6gJWwBifmcGfLSB5D4DuSMaqN",
       paused: false,
-      gap: { gapSeconds: 2, gapSlots: 6, untilSlot: fixture.untilSlot },
+      gap: {
+        gapSeconds: 2,
+        gapSlots: 6,
+        untilSlot: fixture.untilSlot,
+        tipSlot: fixture.untilSlot + 6,
+      },
       deps: {
         callRpc: (method, params) => {
           methods.push(method);
@@ -338,5 +346,90 @@ describe("short backfill", () => {
     ]);
     expect(fetched).toEqual(["gap-2"]);
     expect(methods.filter((method) => method === "getTransaction")).toHaveLength(1);
+  });
+
+  it("records an unrecovered gap when the transaction cap stops before the slot bound", async () => {
+    const fixture = JSON.parse(
+      readFileSync(
+        new URL("../../../packages/core/src/ingest/fixtures/backfill-gap-1s.json", import.meta.url),
+        "utf8",
+      ),
+    ) as {
+      untilSlot: number;
+      checkpoint: { signature: string; slot: number };
+      page: Array<{ signature: string; slot: number }>;
+    };
+    const inserted = vi.fn(async () => undefined);
+    const warns: string[] = [];
+    await backfillProgram({
+      env,
+      logger: {
+        debug() {
+          return undefined;
+        },
+        info() {
+          return undefined;
+        },
+        warn(first: string | Record<string, unknown>, message?: string) {
+          warns.push(typeof first === "string" ? first : (message ?? ""));
+        },
+        error() {
+          return undefined;
+        },
+      },
+      repo: repo({
+        checkpoint: vi.fn(async () => fixture.checkpoint),
+        insertBackfill: inserted,
+      }),
+      programId: "dbcij3LWUppWqq96dh6gJWwBifmcGfLSB5D4DuSMaqN",
+      paused: false,
+      gap: { gapSeconds: 2, gapSlots: 6, untilSlot: fixture.untilSlot, tipSlot: fixture.untilSlot },
+      deps: {
+        txCap: 1,
+        callRpc: (method) => {
+          if (method === "getSignaturesForAddress") {
+            return Promise.resolve(fixture.page.map((row) => ({ ...row, err: null })));
+          }
+          return Promise.resolve(null);
+        },
+      },
+    });
+    expect(warns).toContain("backfill unrecovered gap");
+    expect(inserted).toHaveBeenCalledWith(
+      expect.objectContaining({
+        unrecovered: true,
+        gapFromSlot: fixture.untilSlot,
+        gapToSlot: fixture.page[0]?.slot,
+      }),
+    );
+  });
+});
+
+describe("heap sample", () => {
+  it("logs heapUsed and stores the process age", async () => {
+    const inserted = vi.fn(async () => undefined);
+    const lines: string[] = [];
+    await recordHeapSample(repo({ insertHeapSample: inserted }), {
+      debug() {
+        return undefined;
+      },
+      info(first: string | Record<string, unknown>, message?: string) {
+        lines.push(typeof first === "string" ? first : (message ?? ""));
+      },
+      warn() {
+        return undefined;
+      },
+      error() {
+        return undefined;
+      },
+    });
+    expect(lines).toEqual(["ingest heap sample"]);
+    expect(inserted).toHaveBeenCalledWith(
+      expect.objectContaining({
+        heapUsedBytes: expect.any(Number),
+        rssBytes: expect.any(Number),
+        uptimeSec: expect.any(Number),
+      }),
+    );
   });
 });
