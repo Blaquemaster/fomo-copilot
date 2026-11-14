@@ -11,9 +11,13 @@ import {
   backoffDelayMs,
   backfillStopSlot,
   budgetLevel,
+  backfillGapReason,
   decodeRpcTransaction,
+  isHighVolumeProgram,
+  parsedNamesForProgram,
   livenessLevel,
   measureReconnectGap,
+  MICROS_PER_CREDIT,
   isUnrecoveredGap,
   nextReconnectAlert,
   parsedEventMicros,
@@ -45,7 +49,13 @@ import {
 
 import WebSocket from "ws";
 
-import { getSlot, getTransaction, heliusRpc, type RpcMeter } from "./helius.js";
+import {
+  getSlot,
+  getTransaction,
+  heliusRpc,
+  scanInstructionHistory,
+  type RpcMeter,
+} from "./helius.js";
 
 const MAX_FRAME_CHARS = 100_000;
 const MAX_QUEUED_FRAMES = 2;
@@ -92,6 +102,7 @@ export interface IngestDeps {
   pingMs?: number;
   /** Heap sample interval. Default 5 minutes. Zero disables it. */
   heapSampleMs?: number;
+  scanHistory?: typeof scanInstructionHistory;
 }
 
 interface LiveCursor {
@@ -666,6 +677,7 @@ export async function backfillProgram(input: {
       unrecovered: false,
       gapFromSlot: null,
       gapToSlot: null,
+      reason: null,
     });
     return;
   }
@@ -677,6 +689,38 @@ export async function backfillProgram(input: {
   const liveStop =
     gap.untilSlot === null ? null : backfillStopSlot(gap.untilSlot, input.env.BACKFILL_SLOT_MARGIN);
   const gapFromSlot = liveStop ?? checkpoint.slot;
+  if (isHighVolumeProgram(input.programId) && gap.staleFromSlot != null && liveStop === null) {
+    input.logger.warn(
+      {
+        programId: input.programId,
+        gapFromSlot: gap.staleFromSlot,
+        gapToSlot: gap.tipSlot,
+        reason: "too_old",
+      },
+      "backfill unrecovered gap",
+    );
+    await input.repo.insertBackfill({
+      observedAt: new Date(),
+      programId: input.programId,
+      gapSeconds: gap.gapSeconds,
+      gapSlots: gap.gapSlots,
+      eventsRecovered: 0,
+      pagesFetched: 0,
+      signaturesSeen: 0,
+      transactionsFetched: 0,
+      reachedCheckpoint: false,
+      creditCapHit: false,
+      unrecovered: true,
+      gapFromSlot: gap.staleFromSlot,
+      gapToSlot: gap.tipSlot,
+      reason: "too_old",
+    });
+    return;
+  }
+  if (liveStop !== null && parsedNamesForProgram(input.programId).length > 0) {
+    const handled = await backfillByScan({ ...input, seen, gap, liveStop, gapFromSlot });
+    if (handled) return;
+  }
   let before: string | undefined;
   let pages = 0;
   const missing: string[] = [];
@@ -737,6 +781,14 @@ export async function backfillProgram(input: {
       unrecovered: true,
       gapFromSlot,
       gapToSlot,
+      reason: backfillGapReason({
+        unrecovered: true,
+        errored: true,
+        truncated: false,
+        reachedStop: false,
+        tooOld: gap.staleFromSlot != null,
+        highVolumeSkipped: false,
+      }),
     });
     return;
   }
@@ -827,7 +879,163 @@ export async function backfillProgram(input: {
     unrecovered,
     gapFromSlot: gapFromSlotReported,
     gapToSlot,
+    reason: backfillGapReason({
+      unrecovered,
+      errored,
+      truncated: selected.truncated,
+      reachedStop: reached,
+      tooOld: gap.staleFromSlot != null,
+      highVolumeSkipped: false,
+    }),
   });
+}
+
+async function backfillByScan(input: {
+  env: Env;
+  repo: IngestRepository;
+  logger: Logger;
+  programId: string;
+  seen: SignatureWindow;
+  gap: ReconnectGap;
+  liveStop: number;
+  gapFromSlot: number;
+  deps?: IngestDeps;
+}): Promise<boolean> {
+  const names = parsedNamesForProgram(input.programId);
+  const scan = input.deps?.scanHistory ?? scanInstructionHistory;
+  let scanned: Awaited<ReturnType<typeof scanInstructionHistory>>;
+  try {
+    scanned = await scan({
+      apiKey: input.env.HELIUS_API_KEY,
+      programId: input.programId,
+      instructionNames: names,
+      slotGt: input.liveStop,
+      slotLte: input.gap.tipSlot,
+    });
+  } catch (error) {
+    if (!isHighVolumeProgram(input.programId)) {
+      input.logger.warn(
+        { err: error, programId: input.programId },
+        "parsed history scan failed; using signature backfill",
+      );
+      return false;
+    }
+    input.logger.warn(
+      {
+        err: error,
+        programId: input.programId,
+        gapFromSlot: input.gap.staleFromSlot ?? input.gapFromSlot,
+        gapToSlot: input.gap.tipSlot,
+        reason: "high_volume_skipped",
+      },
+      "backfill unrecovered gap",
+    );
+    await input.repo.insertBackfill({
+      observedAt: new Date(),
+      programId: input.programId,
+      gapSeconds: input.gap.gapSeconds,
+      gapSlots: input.gap.gapSlots,
+      eventsRecovered: 0,
+      pagesFetched: 0,
+      signaturesSeen: 0,
+      transactionsFetched: 0,
+      reachedCheckpoint: false,
+      creditCapHit: false,
+      unrecovered: true,
+      gapFromSlot: input.gap.staleFromSlot ?? input.gapFromSlot,
+      gapToSlot: input.gap.tipSlot,
+      reason: "high_volume_skipped",
+    });
+    return true;
+  }
+  await input.repo.addUsage({
+    now: new Date(),
+    streamedBytes: 0n,
+    messages: 0,
+    storedEvents: 0,
+    creditMicros: BigInt(scanned.creditsCharged) * MICROS_PER_CREDIT,
+  });
+  const known = await input.repo.knownSignatures(scanned.matches.map((match) => match.signature));
+  let eventsRecovered = 0;
+  let transactionsFetched = 0;
+  let errored = false;
+  for (const match of scanned.matches) {
+    if (known.has(match.signature)) continue;
+    try {
+      const result = await callRpc(
+        { env: input.env, deps: input.deps, meter: makeMeter(input.repo, input.logger) },
+        "getTransaction",
+        [match.signature],
+      );
+      transactionsFetched += 1;
+      if (result == null) continue;
+      const decoded = decodeRpcTransaction(result, match.signature);
+      eventsRecovered += await persistDecoded(
+        { repo: input.repo, logger: input.logger, seen: input.seen },
+        decoded,
+        0,
+      );
+    } catch (error) {
+      errored = true;
+      input.logger.warn({ err: error }, "backfill getTransaction failed");
+    }
+  }
+  const unrecovered = !scanned.complete || errored || input.gap.staleFromSlot != null;
+  const reason = backfillGapReason({
+    unrecovered,
+    errored,
+    truncated: !scanned.complete,
+    reachedStop: scanned.complete,
+    tooOld: input.gap.staleFromSlot != null,
+    highVolumeSkipped: false,
+  });
+  const gapFromSlot = input.gap.staleFromSlot ?? input.gapFromSlot;
+  const gapToSlot = input.gap.tipSlot;
+  if (unrecovered) {
+    input.logger.warn(
+      {
+        programId: input.programId,
+        gapFromSlot,
+        gapToSlot,
+        eventsRecovered,
+        transactionsFetched,
+        creditsCharged: scanned.creditsCharged,
+        reason,
+      },
+      "backfill unrecovered gap",
+    );
+  }
+  input.logger.info(
+    {
+      programId: input.programId,
+      gapSeconds: input.gap.gapSeconds,
+      gapSlots: input.gap.gapSlots,
+      eventsRecovered,
+      transactionsFetched,
+      signaturesSeen: scanned.matches.length,
+      creditsCharged: scanned.creditsCharged,
+      unrecovered,
+      reason,
+    },
+    "backfill finished",
+  );
+  await input.repo.insertBackfill({
+    observedAt: new Date(),
+    programId: input.programId,
+    gapSeconds: input.gap.gapSeconds,
+    gapSlots: input.gap.gapSlots,
+    eventsRecovered,
+    pagesFetched: 0,
+    signaturesSeen: scanned.matches.length,
+    transactionsFetched,
+    reachedCheckpoint: scanned.complete,
+    creditCapHit: !scanned.complete,
+    unrecovered,
+    gapFromSlot,
+    gapToSlot,
+    reason,
+  });
+  return true;
 }
 
 async function getSignatures(

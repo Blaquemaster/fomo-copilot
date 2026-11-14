@@ -50,6 +50,31 @@ export function parsedEventMicros(events: number): bigint {
   return BigInt(events) * MICROS_PER_CREDIT;
 }
 
+/**
+ * Parsed Events scan is 10 credits per request plus 1 per history page of up to 1,000
+ * transactions. https://www.helius.dev/docs/api-reference/parsed-events/scan
+ * One scanned transaction is one page (11). Two thousand scanned transactions are two pages (12).
+ */
+export function parsedScanCredits(transactionsScanned: number): number {
+  const safe = Number.isFinite(transactionsScanned)
+    ? Math.max(0, Math.floor(transactionsScanned))
+    : 0;
+  const pages = Math.ceil(safe / 1000);
+  return 10 + pages;
+}
+
+/** Scan cost for each program window, plus one getTransaction credit per matched signature. */
+export function startupScanCredits(input: {
+  transactionsInWindow: readonly number[];
+  matches: number;
+}): number {
+  const scans = input.transactionsInWindow.reduce(
+    (sum, count) => sum + parsedScanCredits(count),
+    0,
+  );
+  return scans + Math.max(0, Math.floor(input.matches));
+}
+
 export function usageMicros(input: {
   streamedBytes: bigint;
   rpcCalls: number;

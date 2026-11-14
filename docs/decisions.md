@@ -1,5 +1,15 @@
 # Decision log
 
+## 2026-11-14 — Parsed history scan for high-volume programs
+
+An 82-slot deploy gap recovered DBC (134 transactions, 3 events) and then hit the 400-transaction startup cap on DAMM v2 (1,495 signatures listed, 399 fetched) and DLMM (1,992 listed, 400 fetched). Those programs list about 13–20 signatures per slot, almost all swaps. The restart spent about 1,290 credits and stored no DAMM or DLMM events.
+
+Helius Parsed Events scan (`POST /v1/parsed-events/scan`, documented at https://www.helius.dev/docs/api-reference/parsed-events/scan) walks one address in pages of 1,000 transactions and keeps only the instruction names we send. It is on every plan. The charge is 10 credits per request plus 1 credit per page scanned, returned as `scan.creditsCharged`. The same 82-slot window is 11 + 12 + 12 = 35 scan credits, plus one `getTransaction` per matched initialize. `getTransactionsForAddress` can bound by slot but cannot filter by instruction name, so it would still return the swaps. The DBC event authority also appears on swaps, so listing a narrower account does not isolate initializes.
+
+When a restart or reconnect has a live slot, all three programs scan their initialize and migration names with `slot.gt` at the margin-adjusted live slot. DBC names are the three virtual-pool initializes plus `migration_damm_v2`. DAMM v2 names are `initialize_pool`, `initialize_customizable_pool`, and `initialize_pool_with_dynamic_config`. DLMM names are `initialize_lb_pair`, `initialize_lb_pair2`, and the two customizable permissionless pair names. If the scan request fails, DAMM v2 and DLMM record `reason = high_volume_skipped` and do not fall back to fetching hundreds of swaps. DBC falls back to the signature walk, which already covered its 134-transaction window. `dbc_curve_complete` from a Swap2 is still filled when that full transaction is decoded. The live subscription does not include swap or swap2, so the scan does not look for them either.
+
+`ingest_backfill.reason` is nullable text (`005_backfill_reason`): `cap_hit`, `error`, `high_volume_skipped`, or `too_old`. A covered gap stores null.
+
 ## 2026-11-14 — Replay anchor, startup cap, Postgres env
 
 The replay walked from the chain tip and treated a page as finished when fewer than 100 signatures remained after dropping failed transactions. `getSignaturesForAddress` pages are full at 100 rows before that filter. Historical windows also need a `before` cursor: `--anchor-signature` is a signature strictly above `--to-slot` (a later `raw_events` row, or any signature from `getBlock` of `--to-slot + 1`, which costs 1 credit). `--before` and `--until` pass through. Listing calls count toward the credit cap.

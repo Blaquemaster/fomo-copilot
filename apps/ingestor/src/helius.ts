@@ -1,4 +1,4 @@
-import { nextTransactionVersion } from "@fomo/core";
+import { nextTransactionVersion, parsedScanCredits } from "@fomo/core";
 
 export class HeliusRpcError extends Error {
   readonly code: number | null;
@@ -100,4 +100,111 @@ export async function getSlot(apiKey: string, meter?: RpcMeter): Promise<number 
 
 export function websocketUrl(apiKey: string): string {
   return `wss://mainnet.helius-rpc.com/?api-key=${encodeURIComponent(apiKey)}`;
+}
+
+export interface ScanMatch {
+  signature: string;
+  slot: number;
+}
+
+/**
+ * Parsed Events scan. Filters one program's history to instruction names and a slot window.
+ * https://www.helius.dev/docs/api-reference/parsed-events/scan
+ * Cost is creditsCharged on the response (10 per request plus 1 per 1,000-transaction page).
+ */
+export async function scanInstructionHistory(input: {
+  apiKey: string;
+  programId: string;
+  instructionNames: readonly string[];
+  slotGt: number;
+  slotLte: number | null;
+  fetchImpl?: typeof fetch;
+}): Promise<{ matches: ScanMatch[]; creditsCharged: number; complete: boolean }> {
+  const matches: ScanMatch[] = [];
+  let creditsCharged = 0;
+  let paginationToken: string | undefined;
+  let complete = false;
+  for (let page = 0; page < 4; page += 1) {
+    const slot: Record<string, number> = { gt: input.slotGt };
+    if (input.slotLte !== null) slot["lte"] = input.slotLte;
+    const body: Record<string, unknown> = {
+      address: input.programId,
+      match: {
+        programs: [
+          {
+            programId: input.programId,
+            instructions: [...input.instructionNames],
+            scope: "transaction",
+          },
+        ],
+      },
+      returnShape: "signatures",
+      sortOrder: "desc",
+      commitment: "confirmed",
+      slot,
+      budget: { maxScannedTransactions: 10_000 },
+    };
+    if (paginationToken) body["paginationToken"] = paginationToken;
+    const url = `https://mainnet.helius-rpc.com/v1/parsed-events/scan?api-key=${encodeURIComponent(input.apiKey)}`;
+    let response: Response;
+    try {
+      response = await (input.fetchImpl ?? fetch)(url, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(body),
+        signal: AbortSignal.timeout(30_000),
+      });
+    } catch {
+      throw new Error("helius parsed-events scan request failed");
+    }
+    if (!response.ok) {
+      throw new Error(`helius parsed-events scan HTTP ${response.status}`);
+    }
+    let payload: unknown;
+    try {
+      payload = await response.json();
+    } catch {
+      throw new Error("helius parsed-events scan returned invalid JSON");
+    }
+    const record =
+      typeof payload === "object" && payload !== null ? (payload as Record<string, unknown>) : {};
+    if (typeof record["error"] === "string") {
+      throw new Error("helius parsed-events scan rejected the filter");
+    }
+    const scan =
+      typeof record["scan"] === "object" && record["scan"] !== null
+        ? (record["scan"] as Record<string, unknown>)
+        : {};
+    const scanned =
+      typeof scan["scannedTransactions"] === "number" ? scan["scannedTransactions"] : 0;
+    creditsCharged +=
+      typeof scan["creditsCharged"] === "number"
+        ? scan["creditsCharged"]
+        : parsedScanCredits(scanned);
+    const data = Array.isArray(record["data"]) ? record["data"] : [];
+    for (const row of data) {
+      if (typeof row !== "object" || row === null) continue;
+      const item = row as { signature?: unknown; slot?: unknown };
+      if (typeof item.signature === "string" && typeof item.slot === "number") {
+        matches.push({ signature: item.signature, slot: item.slot });
+      }
+    }
+    const stopped = typeof scan["stoppedOn"] === "string" ? scan["stoppedOn"] : "";
+    const through =
+      typeof scan["scannedThrough"] === "object" && scan["scannedThrough"] !== null
+        ? (scan["scannedThrough"] as { slot?: unknown }).slot
+        : undefined;
+    paginationToken =
+      typeof record["paginationToken"] === "string" ? record["paginationToken"] : undefined;
+    const covered =
+      stopped === "windowEnd" ||
+      (typeof through === "number" && through <= input.slotGt) ||
+      paginationToken === undefined;
+    if (covered) {
+      complete = true;
+      break;
+    }
+  }
+  if (!complete && paginationToken === undefined) complete = true;
+  return { matches, creditsCharged, complete };
 }

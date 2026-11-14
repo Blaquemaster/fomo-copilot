@@ -207,6 +207,24 @@ export function isUnrecoveredGap(input: {
   return input.errored || input.truncated || !input.reachedStop;
 }
 
+export type BackfillGapReason = "cap_hit" | "error" | "high_volume_skipped" | "too_old";
+
+export function backfillGapReason(input: {
+  unrecovered: boolean;
+  errored: boolean;
+  truncated: boolean;
+  reachedStop: boolean;
+  tooOld: boolean;
+  highVolumeSkipped: boolean;
+}): BackfillGapReason | null {
+  if (input.highVolumeSkipped) return "high_volume_skipped";
+  if (!input.unrecovered && !input.tooOld) return null;
+  if (input.tooOld) return "too_old";
+  if (input.errored) return "error";
+  if (input.truncated || !input.reachedStop) return "cap_hit";
+  return null;
+}
+
 export function signaturesToRecover(input: {
   missingNewestFirst: readonly string[];
   txCap: number;

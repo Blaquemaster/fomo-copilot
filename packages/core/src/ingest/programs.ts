@@ -553,19 +553,45 @@ export const SWAP_LAYOUTS: ReadonlyArray<{
  * Names sent to parsedTransactionSubscribe. Helius matches these
  * case- and separator-insensitively against its catalog.
  */
-export const PARSED_INSTRUCTION_NAMES = [
+export const DBC_PARSED_INSTRUCTION_NAMES = [
   "initialize_virtual_pool_with_spl_token",
   "initialize_virtual_pool_with_token2022",
   "initialize_virtual_pool_with_token2022_transfer_hook",
   "migration_damm_v2",
+] as const;
+
+export const DAMM_PARSED_INSTRUCTION_NAMES = [
   "initialize_pool",
   "initialize_customizable_pool",
   "initialize_pool_with_dynamic_config",
+] as const;
+
+export const DLMM_PARSED_INSTRUCTION_NAMES = [
   "initialize_lb_pair",
   "initialize_lb_pair2",
   "initialize_customizable_permissionless_lb_pair",
   "initialize_customizable_permissionless_lb_pair2",
 ] as const;
+
+export const PARSED_INSTRUCTION_NAMES = [
+  ...DBC_PARSED_INSTRUCTION_NAMES,
+  ...DAMM_PARSED_INSTRUCTION_NAMES,
+  ...DLMM_PARSED_INSTRUCTION_NAMES,
+] as const;
+
+/** DAMM v2 and DLMM list mostly swaps. Startup backfill scans these by instruction name. */
+export const HIGH_VOLUME_PROGRAM_IDS = [DAMM_V2_PROGRAM_ID, DLMM_PROGRAM_ID] as const;
+
+export function parsedNamesForProgram(programId: string): readonly string[] {
+  if (programId === DBC_PROGRAM_ID) return DBC_PARSED_INSTRUCTION_NAMES;
+  if (programId === DAMM_V2_PROGRAM_ID) return DAMM_PARSED_INSTRUCTION_NAMES;
+  if (programId === DLMM_PROGRAM_ID) return DLMM_PARSED_INSTRUCTION_NAMES;
+  return [];
+}
+
+export function isHighVolumeProgram(programId: string): boolean {
+  return (HIGH_VOLUME_PROGRAM_IDS as readonly string[]).includes(programId);
+}
 
 function layout(
   kind: EventKind,
