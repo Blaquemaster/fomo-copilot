@@ -21,7 +21,7 @@ import {
   MAX_FRAME_CHARS,
   OverflowLog,
   type OverflowSpan,
-  parsedNamesForProgram,
+  scanNamesForProgram,
   QUEUE_DEPTH_ALERT_BYTES,
   QUEUE_DEPTH_ALERT_MS,
   SUBSCRIBE_CONFIRM_MS,
@@ -983,7 +983,7 @@ export async function backfillProgram(input: {
     });
     return;
   }
-  if (liveStop !== null && parsedNamesForProgram(input.programId).length > 0) {
+  if (liveStop !== null && scanNamesForProgram(input.programId).length > 0) {
     const handled = await backfillByScan({ ...input, seen, gap, liveStop, gapFromSlot });
     if (handled) return;
   }
@@ -1168,7 +1168,7 @@ async function backfillByScan(input: {
   gapFromSlot: number;
   deps?: IngestDeps;
 }): Promise<boolean> {
-  const names = parsedNamesForProgram(input.programId);
+  const names = scanNamesForProgram(input.programId);
   const scan = input.deps?.scanHistory ?? scanInstructionHistory;
   let scanned: Awaited<ReturnType<typeof scanInstructionHistory>>;
   try {
@@ -1680,13 +1680,13 @@ async function recoverOverflow(input: {
     let recovered = 0;
     let fetched = 0;
     let failed = tooWide;
-    if (!tooWide && parsedNamesForProgram(span.programId).length > 0) {
+    if (!tooWide && scanNamesForProgram(span.programId).length > 0) {
       try {
         const scan = input.deps?.scanHistory ?? scanInstructionHistory;
         const scanned = await scan({
           apiKey: input.env.HELIUS_API_KEY,
           programId: span.programId,
-          instructionNames: parsedNamesForProgram(span.programId),
+          instructionNames: scanNamesForProgram(span.programId),
           slotGt: Math.max(0, span.fromSlot - 1),
           slotLte: span.toSlot,
         });

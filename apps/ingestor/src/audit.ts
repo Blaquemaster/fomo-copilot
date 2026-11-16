@@ -9,7 +9,7 @@ import {
   createPool,
   decodeRpcTransaction,
   migrate,
-  parsedNamesForProgram,
+  scanNamesForProgram,
   planAuditWindow,
   recallShouldAlert,
   sendTelegramMessage,
@@ -22,6 +22,12 @@ import {
 import { getSlot, getTransaction, scanInstructionHistory } from "./helius.js";
 
 const AUDIT_PAGES = 8;
+
+export function auditScanErrorReason(error: unknown): string {
+  const message = error instanceof Error ? error.message : "";
+  if (message.includes("HTTP 400")) return "scan_rejected";
+  return "scan_failed";
+}
 
 /**
  * One 15-minute window per watched program. Meant to be `docker compose run --rm`,
@@ -64,19 +70,47 @@ export async function runRecallAudit(input: {
     input.fetchTransaction ??
     ((signature: string) => getTransaction(input.env.HELIUS_API_KEY, signature));
   let windowMissed = 0;
+  const scanErrors: Array<{ programId: string; reason: string }> = [];
   for (const programId of WATCHED_PROGRAMS) {
     const window = planAuditWindow({ nowMs: now(), tipSlot: tip, programId });
     if (window.toSlot - window.fromSlot > BACKFILL_MAX_SLOT_SPAN * 20) {
       input.logger.warn({ programId, window }, "recall window is unexpectedly wide");
     }
-    const scanned = await scan({
-      apiKey: input.env.HELIUS_API_KEY,
-      programId,
-      instructionNames: parsedNamesForProgram(programId),
-      slotGt: window.fromSlot - 1,
-      slotLte: window.toSlot,
-      maxPages: AUDIT_PAGES,
-    });
+    let scanned: Awaited<ReturnType<typeof scan>>;
+    try {
+      scanned = await scan({
+        apiKey: input.env.HELIUS_API_KEY,
+        programId,
+        instructionNames: scanNamesForProgram(programId),
+        slotGt: window.fromSlot - 1,
+        slotLte: window.toSlot,
+        maxPages: AUDIT_PAGES,
+      });
+    } catch (error) {
+      const reason = auditScanErrorReason(error);
+      scanErrors.push({ programId, reason });
+      input.logger.error({ err: error, programId, reason }, "recall scan failed");
+      try {
+        await input.repo.insertRecall({
+          ranAt: new Date(now()),
+          programId,
+          windowStartSlot: window.fromSlot,
+          windowEndSlot: window.toSlot,
+          expected: 0,
+          matched: 0,
+          missed: 0,
+          recovered: 0,
+          decodeFailed: 0,
+          credits: 0,
+          incomplete: false,
+          errored: true,
+          errorReason: reason,
+        });
+      } catch (writeError) {
+        input.logger.error({ err: writeError, programId }, "failed to record recall scan error");
+      }
+      continue;
+    }
     await input.repo.addUsage({
       now: new Date(),
       streamedBytes: 0n,
@@ -97,6 +131,8 @@ export async function runRecallAudit(input: {
         decodeFailed: 0,
         credits: scanned.creditsCharged,
         incomplete: true,
+        errored: false,
+        errorReason: null,
       });
       input.logger.warn(
         { programId, credits: scanned.creditsCharged },
@@ -159,6 +195,8 @@ export async function runRecallAudit(input: {
       decodeFailed,
       credits: scanned.creditsCharged + diff.missed.length,
       incomplete: false,
+      errored: false,
+      errorReason: null,
     });
     input.logger.info(
       {
@@ -184,14 +222,16 @@ export async function runRecallAudit(input: {
     { unseen, windows: week.windows, missed: week.missed, expected: week.expected },
     "creation unseen",
   );
-  if (alert.window || alert.week) {
+  if (scanErrors.length > 0 || alert.window || alert.week) {
     const loss =
       week.expected === 0 ? "n/a" : `${((week.missed / week.expected) * 100).toFixed(2)}%`;
+    const failed = scanErrors.map((row) => `${row.programId} ${row.reason}`).join(", ");
     await sendTelegramMessage({
       token: input.env.TELEGRAM_BOT_TOKEN,
       chatId: input.env.TELEGRAM_ADMIN_CHAT_ID,
       text: [
         "FOMO copilot recall audit",
+        `scan errors: ${scanErrors.length === 0 ? "none" : failed}`,
         `misses this run: ${windowMissed.toString()}`,
         `7 day loss: ${loss} (${week.missed.toString()}/${week.expected.toString()})`,
         `creation unseen: ${unseen.toString()}`,
