@@ -171,7 +171,22 @@ docker exec -i fomo-copilot-postgres-1 sh -c 'psql -U "$POSTGRES_USER" -d "$POST
   < scripts/unrecovered-gaps.sql
 ```
 
-`event-gaps.sh` prints the p50, p95, p99, and max seconds between stored events, overall and per program. The unrecovered query counts backfills that stopped before the slot window was covered.
+`event-gaps.sh` prints the p50, p95, p99, and max seconds between stored events, overall and per program. The unrecovered query counts backfills that stopped before the slot window was covered and shows `reason` (`cap_hit`, `error`, `high_volume_skipped`, `too_old`, `queue_overflow`). Slot-bounded backfill recovers initializes through the parsed-events scan (about 11 credits plus one page per extra 1,000 transactions, then one `getTransaction` per match) instead of fetching every swap. DAMM v2 and DLMM do not fall back to a signature listing when that scan fails.
+
+`scripts/soak-report.sql` prints dropped transaction frames, handler time, queue depth, slot gaps, the shadow-counter rate, audit windows, and creation-unseen. `scripts/hook-initializes.sql` counts stored transfer-hook initializes per day. `scripts/creation-unseen.sql` lists migrations and curve completions with no initialize.
+
+The recall audit is not part of `docker compose up`. Install it once, as root:
+
+```bash
+install -m 0644 infra/fomo-audit.cron /etc/cron.d/fomo-audit
+touch /var/log/fomo-audit.log
+```
+
+The cron line runs every 6 hours from `/opt/fomo-copilot`:
+
+```bash
+docker compose --env-file .env -f infra/docker-compose.yml --profile audit run --rm audit
+```
 
 Replay one historical window into a scratch schema (default credit cap 150, and listing calls count toward it). This does not write `public` tables. `getSignaturesForAddress` walks newest-first, so a window from the previous day needs `--anchor-signature`: a transaction at a slot strictly above `--to-slot`. The RPC `before` parameter excludes that signature, which is why it must sit just after the window.
 

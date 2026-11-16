@@ -6,9 +6,11 @@ import {
   allowanceCredits,
   budgetLevel,
   parsedEventMicros,
+  parsedScanCredits,
   projectMonthlyCredits,
   rpcCreditMicros,
   selectWsMethod,
+  startupScanCredits,
   usageMicros,
 } from "./budget.js";
 import type { Observation } from "./decode.js";
@@ -37,6 +39,11 @@ describe("budget", () => {
     expect(rpcCreditMicros("getTransaction")).toBe(MICROS_PER_CREDIT);
     expect(rpcCreditMicros("getSignaturesForAddress")).toBe(MICROS_PER_CREDIT);
     expect(rpcCreditMicros("getSlot")).toBe(MICROS_PER_CREDIT);
+    expect(parsedScanCredits(1)).toBe(11);
+    expect(parsedScanCredits(2000)).toBe(12);
+    expect(startupScanCredits({ transactionsInWindow: [134, 1495, 1992], matches: 3 })).toBe(
+      11 + 12 + 12 + 3,
+    );
     const firehoseBytes = 1_060_000_000n;
     expect(usageMicros({ streamedBytes: firehoseBytes, rpcCalls: 0 }) / MICROS_PER_CREDIT).toBe(
       firehoseBytes / 50_000n,

@@ -8,7 +8,7 @@ await startApp({
     if (process.argv.includes("--crash-test")) {
       throw new Error("intentional crash test");
     }
-    const pool = createPool(env.DATABASE_URL);
+    const pool = createPool(env.DATABASE_URL, { synchronousCommitOff: true });
     const repo = new IngestRepository(pool);
     try {
       await migrate(pool);

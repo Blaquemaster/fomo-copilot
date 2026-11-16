@@ -109,6 +109,21 @@ describe("mainnet transaction fixtures", () => {
     }
   });
 
+  it("stores the swap2 curve completion from slot 468993768 with its base mint", () => {
+    const fixture = load("dbc-curve-swap2.json");
+    const found = parseRpcTransaction(fixture.result, fixture.signature);
+    expect(found).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          kind: "dbc_curve_complete",
+          slot: 468993768,
+          mint: expect.stringMatching(/^EVsLgrw6/),
+        }),
+      ]),
+    );
+    expect(found.every(isPersistable)).toBe(true);
+  });
+
   it("keeps a plain Token-2022 mint and fills dbc_curve_complete from the swap base_mint", () => {
     const first = load("dbc-curve-1.json");
     const firstObs = parseRpcTransaction(first.result, first.signature);

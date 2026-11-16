@@ -8,6 +8,7 @@ import {
   SignatureWindow,
   backoffDelayMs,
   backfillStopSlot,
+  backfillGapReason,
   isUnrecoveredGap,
   livenessLevel,
   measureReconnectGap,
@@ -22,6 +23,51 @@ import {
   signaturesToRecover,
   withinCreditCap,
 } from "./reliability.js";
+
+describe("backfill reasons", () => {
+  it("names the gap that was not covered", () => {
+    expect(
+      backfillGapReason({
+        unrecovered: false,
+        errored: false,
+        truncated: false,
+        reachedStop: true,
+        tooOld: false,
+        highVolumeSkipped: false,
+      }),
+    ).toBeNull();
+    expect(
+      backfillGapReason({
+        unrecovered: true,
+        errored: false,
+        truncated: true,
+        reachedStop: false,
+        tooOld: false,
+        highVolumeSkipped: false,
+      }),
+    ).toBe("cap_hit");
+    expect(
+      backfillGapReason({
+        unrecovered: true,
+        errored: true,
+        truncated: false,
+        reachedStop: false,
+        tooOld: true,
+        highVolumeSkipped: false,
+      }),
+    ).toBe("too_old");
+    expect(
+      backfillGapReason({
+        unrecovered: true,
+        errored: false,
+        truncated: false,
+        reachedStop: false,
+        tooOld: false,
+        highVolumeSkipped: true,
+      }),
+    ).toBe("high_volume_skipped");
+  });
+});
 
 describe("backoff", () => {
   it("doubles until the cap and adds jitter", () => {

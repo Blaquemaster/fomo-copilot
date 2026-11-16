@@ -102,6 +102,40 @@ services:
         max-size: "10m"
         max-file: "3"
 
+  # One-shot recall audit. `docker compose up` does not start it.
+  # Cron runs: docker compose --env-file .env -f infra/docker-compose.yml --profile audit run --rm audit
+  audit:
+    profiles: ["audit"]
+    build:
+      context: ..
+      dockerfile: apps/ingestor/Dockerfile
+    restart: "no"
+    command: ["node", "apps/ingestor/dist/audit.js"]
+    env_file:
+      - path: ../.env
+        required: false
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks:
+      - internal
+    init: true
+    read_only: true
+    tmpfs:
+      - /tmp:size=32m
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    deploy:
+      resources:
+        limits:
+          memory: 128M
+    logging:
+      options:
+        max-size: "10m"
+        max-file: "3"
+
   alerter:
     build:
       context: ..
