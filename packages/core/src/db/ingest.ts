@@ -1,6 +1,12 @@
 import pg from "pg";
 
 import {
+  planCandidateWrites,
+  type CandidateDraft,
+  type CurveMark,
+  type GraduationMark,
+} from "../ingest/apply.js";
+import {
   allowanceCredits,
   formatCredits,
   projectMonthlyCredits,
@@ -8,13 +14,13 @@ import {
   type HeliusPlan,
 } from "../ingest/budget.js";
 import type { DecodeFailure, Observation } from "../ingest/decode.js";
+import type { FrameHourRow } from "../ingest/frameStats.js";
 import {
   monthUsedPercent,
   formatIngestStatus,
   formatSpotCheck,
   type SpotCheckRow,
 } from "../ingest/statusText.js";
-import type { CandidateDraft, CurveMark, GraduationMark } from "../ingest/apply.js";
 
 const MIGRATION = `
 create table if not exists schema_migrations (
@@ -142,14 +148,55 @@ create table if not exists ingest_heap_sample (
 );
 
 create index if not exists ingest_heap_sample_uptime_idx on ingest_heap_sample (uptime_sec);
+
+alter table raw_events add column if not exists source text not null default 'stream';
+alter table candidates add column if not exists source text not null default 'stream';
+
+create table if not exists ingest_frame_hourly (
+  hour timestamptz not null,
+  kind text not null,
+  drop_reason text not null default '',
+  received integer not null default 0,
+  queued integer not null default 0,
+  dropped integer not null default 0,
+  shadow_dropped integer not null default 0,
+  bytes bigint not null default 0,
+  max_queue_depth integer not null default 0,
+  max_handle_ms integer not null default 0,
+  p99_handle_ms integer not null default 0,
+  slots_seen integer not null default 0,
+  slot_gaps integer not null default 0,
+  primary key (hour, kind, drop_reason)
+);
+
+create table if not exists ingest_recall_audit (
+  id bigserial primary key,
+  ran_at timestamptz not null,
+  program_id text not null,
+  window_start_slot bigint not null,
+  window_end_slot bigint not null,
+  expected integer not null,
+  matched integer not null,
+  missed integer not null,
+  recovered integer not null,
+  decode_failed integer not null,
+  credits integer not null,
+  incomplete boolean not null default false
+);
+
+create index if not exists ingest_recall_audit_ran_idx on ingest_recall_audit (ran_at desc);
 `;
 
-export function createPool(databaseUrl: string): pg.Pool {
+export function createPool(
+  databaseUrl: string,
+  options?: { synchronousCommitOff?: boolean },
+): pg.Pool {
   return new pg.Pool({
     connectionString: databaseUrl,
     max: 2,
     idleTimeoutMillis: 10_000,
     statement_timeout: 10_000,
+    options: options?.synchronousCommitOff ? "-c synchronous_commit=off" : undefined,
   });
 }
 
@@ -178,6 +225,18 @@ export async function migrate(pool: pg.Pool): Promise<void> {
       "insert into schema_migrations (id) values ($1) on conflict (id) do nothing",
       ["005_backfill_reason"],
     );
+    await client.query(
+      "insert into schema_migrations (id) values ($1) on conflict (id) do nothing",
+      ["006_frame_hourly"],
+    );
+    await client.query(
+      "insert into schema_migrations (id) values ($1) on conflict (id) do nothing",
+      ["007_event_source"],
+    );
+    await client.query(
+      "insert into schema_migrations (id) values ($1) on conflict (id) do nothing",
+      ["008_recall_audit"],
+    );
     await client.query("commit");
   } catch (error) {
     await client.query("rollback");
@@ -194,11 +253,12 @@ export class IngestRepository {
     observation: Observation,
     byteLength: number,
     receivedAt: Date,
+    source: "stream" | "audit" = "stream",
   ): Promise<boolean> {
     const result = await this.pool.query(
       `insert into raw_events
-        (signature, event_index, slot, program_id, event_kind, mint, pool, payload, byte_length, received_at)
-       values ($1,$2,$3,$4,$5,$6,$7,$8::jsonb,$9,$10)
+        (signature, event_index, slot, program_id, event_kind, mint, pool, payload, byte_length, received_at, source)
+       values ($1,$2,$3,$4,$5,$6,$7,$8::jsonb,$9,$10,$11)
        on conflict (signature, event_index) do nothing`,
       [
         observation.signature,
@@ -208,20 +268,132 @@ export class IngestRepository {
         observation.kind,
         observation.mint,
         observation.pool,
-        JSON.stringify({
-          kind: observation.kind,
-          poolType: observation.poolType,
-          mint: observation.mint,
-          pool: observation.pool,
-          creatorWallet: observation.creatorWallet,
-          virtualPool: observation.virtualPool,
-          quoteMint: observation.quoteMint,
-        }),
+        JSON.stringify(eventPayload(observation)),
         byteLength,
         receivedAt.toISOString(),
+        source,
       ],
     );
     return result.rowCount === 1;
+  }
+
+  /**
+   * One transaction for the raw row, the candidate side effects, and the checkpoint.
+   * The checkpoint cannot move ahead of the row. source 'audit' is stored and is not
+   * a tradable or alertable launch.
+   */
+  async persistEvent(input: {
+    observation: Observation;
+    byteLength: number;
+    receivedAt: Date;
+    source: "stream" | "audit";
+  }): Promise<boolean> {
+    const client = await this.pool.connect();
+    try {
+      await client.query("begin");
+      const inserted = await client.query(
+        `insert into raw_events
+          (signature, event_index, slot, program_id, event_kind, mint, pool, payload, byte_length, received_at, source)
+         values ($1,$2,$3,$4,$5,$6,$7,$8::jsonb,$9,$10,$11)
+         on conflict (signature, event_index) do nothing`,
+        [
+          input.observation.signature,
+          input.observation.eventIndex,
+          input.observation.slot,
+          input.observation.programId,
+          input.observation.kind,
+          input.observation.mint,
+          input.observation.pool,
+          JSON.stringify(eventPayload(input.observation)),
+          input.byteLength,
+          input.receivedAt.toISOString(),
+          input.source,
+        ],
+      );
+      if (inserted.rowCount !== 1) {
+        await client.query("commit");
+        return false;
+      }
+      const seenAt = input.observation.blockTimeMs ?? input.receivedAt.getTime();
+      let earliest: number | null = null;
+      if (input.observation.mint) {
+        const prior = await client.query<{ first_seen_at: Date }>(
+          `select c.first_seen_at
+           from candidates c
+           where c.mint = $1
+           order by c.first_seen_at asc
+           limit 1`,
+          [input.observation.mint],
+        );
+        const value = prior.rows[0]?.first_seen_at;
+        earliest = value ? new Date(value).getTime() : null;
+      }
+      const plan = planCandidateWrites({
+        observation: input.observation,
+        nowMs: seenAt,
+        earliestFirstSeenMs: earliest,
+      });
+      if (plan.candidate) {
+        await client.query(
+          `insert into candidates
+            (mint, pool, pool_type, creator_wallet, first_seen_slot, first_seen_at, source_signature, source)
+           values ($1,$2,$3,$4,$5,$6,$7,$8)
+           on conflict (pool) do nothing`,
+          [
+            plan.candidate.mint,
+            plan.candidate.pool,
+            plan.candidate.poolType,
+            plan.candidate.creatorWallet,
+            plan.candidate.firstSeenSlot,
+            new Date(plan.candidate.firstSeenAtMs).toISOString(),
+            plan.candidate.sourceSignature,
+            input.source,
+          ],
+        );
+      }
+      if (plan.curve) {
+        await client.query(
+          `update candidates
+           set curve_completed_slot = $2, curve_completed_at = $3
+           where pool = $1 and curve_completed_slot is null`,
+          [plan.curve.pool, plan.curve.slot, new Date(plan.curve.atMs).toISOString()],
+        );
+      }
+      if (plan.graduation) {
+        await client.query(
+          `update candidates
+           set graduated_pool = $2, graduated_at = $3
+           where pool = $1 and graduated_pool is null`,
+          [
+            plan.graduation.virtualPool,
+            plan.graduation.graduatedPool,
+            new Date(plan.graduation.atMs).toISOString(),
+          ],
+        );
+      }
+      await client.query(
+        `insert into ingest_checkpoint (program_id, signature, slot, updated_at)
+         values ($1,$2,$3,$4)
+         on conflict (program_id) do update set
+           signature = excluded.signature,
+           slot = excluded.slot,
+           updated_at = excluded.updated_at
+         where excluded.slot >= ingest_checkpoint.slot`,
+        [
+          input.observation.programId,
+          input.observation.signature,
+          input.observation.slot,
+          input.receivedAt.toISOString(),
+        ],
+      );
+      await client.query("commit");
+      return true;
+    } catch (error) {
+      await client.query("rollback");
+      throw error;
+    } finally {
+      client.release();
+    }
   }
 
   async insertCandidate(candidate: CandidateDraft): Promise<void> {
@@ -310,6 +482,101 @@ export class IngestRepository {
          soak_started_at = coalesce(ingest_status.soak_started_at, excluded.soak_started_at)`,
       [input.creditMicros.toString(), input.now.toISOString()],
     );
+  }
+
+  async flushAccounting(input: {
+    now: Date;
+    streamedBytes: bigint;
+    messages: number;
+    storedEvents: number;
+    creditMicros: bigint;
+    frames: readonly FrameHourRow[];
+  }): Promise<void> {
+    const client = await this.pool.connect();
+    try {
+      await client.query("begin");
+      const day = input.now.toISOString().slice(0, 10);
+      const month = utcMonth(input.now);
+      if (
+        input.streamedBytes !== 0n ||
+        input.messages !== 0 ||
+        input.storedEvents !== 0 ||
+        input.creditMicros !== 0n
+      ) {
+        await client.query(
+          `insert into ingest_daily (day, streamed_bytes, messages, stored_events, credit_micros)
+           values ($1,$2,$3,$4,$5)
+           on conflict (day) do update set
+             streamed_bytes = ingest_daily.streamed_bytes + excluded.streamed_bytes,
+             messages = ingest_daily.messages + excluded.messages,
+             stored_events = ingest_daily.stored_events + excluded.stored_events,
+             credit_micros = ingest_daily.credit_micros + excluded.credit_micros`,
+          [
+            day,
+            input.streamedBytes.toString(),
+            input.messages,
+            input.storedEvents,
+            input.creditMicros.toString(),
+          ],
+        );
+        await client.query(
+          `insert into ingest_month (month, credit_micros)
+           values ($1,$2)
+           on conflict (month) do update set
+             credit_micros = ingest_month.credit_micros + excluded.credit_micros`,
+          [month, input.creditMicros.toString()],
+        );
+        await client.query(
+          `insert into ingest_status
+            (id, state, ws_method, plan, mode, soak_started_at, credits_since_start, updated_at)
+           values (1, 'starting', 'parsed', 'developer', 'dry-run', $2, $1, $2)
+           on conflict (id) do update set
+             credits_since_start = ingest_status.credits_since_start + excluded.credits_since_start,
+             soak_started_at = coalesce(ingest_status.soak_started_at, excluded.soak_started_at)`,
+          [input.creditMicros.toString(), input.now.toISOString()],
+        );
+      }
+      for (const row of input.frames) {
+        await client.query(
+          `insert into ingest_frame_hourly
+            (hour, kind, drop_reason, received, queued, dropped, shadow_dropped, bytes,
+             max_queue_depth, max_handle_ms, p99_handle_ms, slots_seen, slot_gaps)
+           values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)
+           on conflict (hour, kind, drop_reason) do update set
+             received = ingest_frame_hourly.received + excluded.received,
+             queued = ingest_frame_hourly.queued + excluded.queued,
+             dropped = ingest_frame_hourly.dropped + excluded.dropped,
+             shadow_dropped = ingest_frame_hourly.shadow_dropped + excluded.shadow_dropped,
+             bytes = ingest_frame_hourly.bytes + excluded.bytes,
+             max_queue_depth = greatest(ingest_frame_hourly.max_queue_depth, excluded.max_queue_depth),
+             max_handle_ms = greatest(ingest_frame_hourly.max_handle_ms, excluded.max_handle_ms),
+             p99_handle_ms = greatest(ingest_frame_hourly.p99_handle_ms, excluded.p99_handle_ms),
+             slots_seen = ingest_frame_hourly.slots_seen + excluded.slots_seen,
+             slot_gaps = ingest_frame_hourly.slot_gaps + excluded.slot_gaps`,
+          [
+            row.hour,
+            row.kind,
+            row.dropReason,
+            row.received,
+            row.queued,
+            row.dropped,
+            row.shadowDropped,
+            row.bytes.toString(),
+            row.maxQueueDepth,
+            row.maxHandleMs,
+            row.p99HandleMs,
+            row.slotsSeen,
+            row.slotGaps,
+          ],
+        );
+      }
+      await client.query("commit");
+    } catch (error) {
+      await client.query("rollback");
+      throw error;
+    } finally {
+      client.release();
+    }
   }
 
   async monthUsage(now: Date): Promise<{
@@ -545,7 +812,7 @@ export class IngestRepository {
     }));
   }
 
-  async statusReport(input: {
+  private async statusBody(input: {
     plan: HeliusPlan;
     allowanceOverride: number | undefined;
     now: Date;
@@ -599,7 +866,137 @@ export class IngestRepository {
     });
   }
 
+  async statusReport(input: {
+    plan: HeliusPlan;
+    allowanceOverride: number | undefined;
+    now: Date;
+  }): Promise<string> {
+    const base = await this.statusBody(input);
+    const since = new Date(input.now.getTime() - 7 * 24 * 60 * 60 * 1000);
+    const week = await this.recallTotals(since);
+    const unseen = await this.creationUnseen();
+    const loss =
+      week.expected === 0 ? "n/a" : `${((week.missed / week.expected) * 100).toFixed(2)}%`;
+    return [
+      base,
+      `recall loss 7d: ${loss} (${week.missed.toString()}/${week.expected.toString()})`,
+      `creation unseen: ${unseen.toString()}`,
+    ].join("\n");
+  }
+
   async spotCheckText(limit = 20): Promise<string> {
     return formatSpotCheck(await this.recentEvents(limit));
   }
+
+  async insertRecall(input: {
+    ranAt: Date;
+    programId: string;
+    windowStartSlot: number;
+    windowEndSlot: number;
+    expected: number;
+    matched: number;
+    missed: number;
+    recovered: number;
+    decodeFailed: number;
+    credits: number;
+    incomplete: boolean;
+  }): Promise<void> {
+    await this.pool.query(
+      `insert into ingest_recall_audit
+        (ran_at, program_id, window_start_slot, window_end_slot, expected, matched, missed,
+         recovered, decode_failed, credits, incomplete)
+       values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)`,
+      [
+        input.ranAt.toISOString(),
+        input.programId,
+        input.windowStartSlot,
+        input.windowEndSlot,
+        input.expected,
+        input.matched,
+        input.missed,
+        input.recovered,
+        input.decodeFailed,
+        input.credits,
+        input.incomplete,
+      ],
+    );
+  }
+
+  async recallTotals(since: Date): Promise<{ missed: number; expected: number; windows: number }> {
+    const result = await this.pool.query<{
+      missed: string;
+      expected: string;
+      windows: string;
+    }>(
+      `select coalesce(sum(missed), 0)::text as missed,
+              coalesce(sum(expected), 0)::text as expected,
+              count(*)::text as windows
+       from ingest_recall_audit
+       where ran_at >= $1 and incomplete = false`,
+      [since.toISOString()],
+    );
+    const row = result.rows[0];
+    return {
+      missed: Number(row?.missed ?? 0),
+      expected: Number(row?.expected ?? 0),
+      windows: Number(row?.windows ?? 0),
+    };
+  }
+
+  /** Migrations and curve completions whose mint has no initialize row. */
+  async creationUnseen(): Promise<number> {
+    const result = await this.pool.query<{ unseen: string }>(
+      `select count(*)::text as unseen
+       from raw_events later
+       where later.event_kind in ('dbc_migration_damm_v2', 'dbc_curve_complete')
+         and later.mint is not null
+         and not exists (
+           select 1 from raw_events init
+           where init.mint = later.mint and init.event_kind = 'dbc_initialize'
+         )`,
+    );
+    return Number(result.rows[0]?.unseen ?? 0);
+  }
+
+  async alertableCandidates(limit: number): Promise<
+    Array<{
+      mint: string;
+      pool: string;
+      source: string;
+      firstSeenAt: Date;
+    }>
+  > {
+    const result = await this.pool.query<{
+      mint: string;
+      pool: string;
+      source: string;
+      first_seen_at: Date;
+    }>(
+      `select mint, pool, source, first_seen_at
+       from candidates
+       where source <> 'audit'
+       order by first_seen_at desc
+       limit $1`,
+      [limit],
+    );
+    return result.rows.map((row) => ({
+      mint: row.mint,
+      pool: row.pool,
+      source: row.source,
+      firstSeenAt: new Date(row.first_seen_at),
+    }));
+  }
+}
+
+function eventPayload(observation: Observation): Record<string, unknown> {
+  return {
+    kind: observation.kind,
+    poolType: observation.poolType,
+    mint: observation.mint,
+    pool: observation.pool,
+    creatorWallet: observation.creatorWallet,
+    virtualPool: observation.virtualPool,
+    quoteMint: observation.quoteMint,
+    instructionName: observation.instructionName ?? null,
+  };
 }

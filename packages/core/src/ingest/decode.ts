@@ -29,6 +29,7 @@ export interface Observation {
   virtualPool: string | null;
   quoteMint: string | null;
   blockTimeMs: number | null;
+  instructionName?: string | null;
 }
 
 export interface DecodeFailure {
@@ -205,6 +206,7 @@ export function parseParsedNotification(
       eventIndex: found.length,
     });
     if (built) {
+      built.instructionName = instructionName;
       found.push(built);
       continue;
     }
@@ -634,6 +636,7 @@ function observationFromLayout(
     creatorWallet: layout.creator === null ? null : (named.get(layout.creator) ?? null),
     virtualPool: layout.virtualPool === null ? null : (named.get(layout.virtualPool) ?? null),
     quoteMint: layout.quoteMint === null ? null : (named.get(layout.quoteMint) ?? null),
+    instructionName: layout.instructionName,
   };
 }
 

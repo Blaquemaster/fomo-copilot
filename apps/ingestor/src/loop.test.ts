@@ -96,6 +96,12 @@ function repo(overrides: Partial<IngestRepository> = {}): IngestRepository {
     knownSignatures: vi.fn(async () => new Set<string>()),
     lastLiveSlot: vi.fn(async () => null),
     insertHeapSample: vi.fn(async () => undefined),
+    flushAccounting: vi.fn(async () => undefined),
+    persistEvent: vi.fn(async () => true),
+    insertRecall: vi.fn(async () => undefined),
+    recallTotals: vi.fn(async () => ({ missed: 0, expected: 0, windows: 0 })),
+    creationUnseen: vi.fn(async () => 0),
+    alertableCandidates: vi.fn(async () => []),
   };
   return { ...base, ...overrides } as unknown as IngestRepository;
 }
@@ -140,7 +146,7 @@ describe("ingest loop", () => {
     });
     const order: string[] = [];
     const store = repo({
-      insertRaw: vi.fn(async () => {
+      persistEvent: vi.fn(async () => {
         order.push("insert");
         return true;
       }),
@@ -204,6 +210,11 @@ describe("ingest loop", () => {
     await vi.waitFor(() => {
       expect(socket.readyState).toBe(1);
     });
+    socket.dispatchEvent(
+      new MessageEvent("message", {
+        data: JSON.stringify({ jsonrpc: "2.0", id: 1, result: 11 }),
+      }),
+    );
     const beats = setInterval(() => {
       slot += 1;
       socket.dispatchEvent(
@@ -293,6 +304,176 @@ describe("ingest loop", () => {
     });
     expect(socket.sent.some((frame) => frame.includes('"method":"ping"'))).toBe(true);
     expect(socket.readyState).toBe(1);
+    controller.abort();
+    await done;
+  });
+
+  it("keeps every transaction in a 50-frame burst against a slow database", async () => {
+    const socket = new FakeSocket();
+    const stored = vi.fn(async () => {
+      await delay(500);
+      return true;
+    });
+    const flushed = vi.fn(async () => undefined);
+    const controller = new AbortController();
+    const done = runIngestLoop({
+      env,
+      logger: logger(),
+      repo: repo({ persistEvent: stored, flushAccounting: flushed }),
+      signal: controller.signal,
+      deps: {
+        openSocket: () => asSocket(socket),
+        warnMs: 60_000,
+        criticalMs: 120_000,
+        livenessTickMs: 60_000,
+        usageFlushMs: 60_000,
+        confirmTimeoutMs: 60_000,
+        callRpc: (method) =>
+          Promise.resolve(
+            method === "getSlot" ? 20 : method === "getSignaturesForAddress" ? [] : null,
+          ),
+      },
+    });
+    await vi.waitFor(() => {
+      expect(socket.readyState).toBe(1);
+    });
+    for (let index = 0; index < 50; index += 1) {
+      const frame = liveFrame.replaceAll("live-sig", `burst-${index.toString()}`);
+      socket.dispatchEvent(new MessageEvent("message", { data: frame }));
+    }
+    await vi.waitFor(
+      () => {
+        expect(stored).toHaveBeenCalledTimes(50);
+      },
+      { timeout: 40_000 },
+    );
+    controller.abort();
+    await done;
+    const frames = (
+      flushed.mock.calls as unknown as Array<
+        [
+          {
+            frames: Array<{
+              kind: string;
+              dropReason: string;
+              received: number;
+              dropped: number;
+              shadowDropped: number;
+            }>;
+          },
+        ]
+      >
+    ).flatMap((call) => call[0].frames);
+    const dropped = frames
+      .filter((row) => row.kind === "tx" && row.dropReason === "queue_overflow")
+      .reduce((sum, row) => sum + row.dropped, 0);
+    const shadow = frames
+      .filter((row) => row.kind === "meta")
+      .reduce((sum, row) => sum + row.shadowDropped, 0);
+    const received = frames
+      .filter((row) => row.kind === "tx" && row.dropReason === "")
+      .reduce((sum, row) => sum + row.received, 0);
+    expect(dropped).toBe(0);
+    expect(received).toBe(50);
+    expect(shadow).toBeGreaterThan(0);
+  }, 45_000);
+
+  it("reconnects and alerts when the transaction subscription is not confirmed", async () => {
+    const socket = new FakeSocket();
+    const controller = new AbortController();
+    const done = runIngestLoop({
+      env,
+      logger: logger(),
+      repo: repo(),
+      signal: controller.signal,
+      deps: {
+        openSocket: () => asSocket(socket),
+        confirmTimeoutMs: 40,
+        warnMs: 60_000,
+        criticalMs: 120_000,
+        livenessTickMs: 10,
+        usageFlushMs: 60_000,
+        callRpc: () => Promise.resolve([]),
+      },
+    });
+    await vi.waitFor(() => {
+      expect(socket.readyState).toBe(3);
+    });
+    expect(sendTelegramMessage).toHaveBeenCalled();
+    controller.abort();
+    await done;
+  });
+
+  it("reconnects and alerts when the subscription is rejected", async () => {
+    const socket = new FakeSocket();
+    const controller = new AbortController();
+    const done = runIngestLoop({
+      env,
+      logger: logger(),
+      repo: repo(),
+      signal: controller.signal,
+      deps: {
+        openSocket: () => asSocket(socket),
+        confirmTimeoutMs: 60_000,
+        warnMs: 60_000,
+        criticalMs: 120_000,
+        livenessTickMs: 60_000,
+        usageFlushMs: 60_000,
+        callRpc: () => Promise.resolve([]),
+      },
+    });
+    await vi.waitFor(() => {
+      expect(socket.readyState).toBe(1);
+    });
+    socket.dispatchEvent(
+      new MessageEvent("message", {
+        data: JSON.stringify({
+          jsonrpc: "2.0",
+          id: 1,
+          error: { code: -32000, message: "subscription rejected" },
+        }),
+      }),
+    );
+    await vi.waitFor(() => {
+      expect(socket.readyState).toBe(3);
+    });
+    expect(sendTelegramMessage).toHaveBeenCalled();
+    controller.abort();
+    await done;
+  });
+
+  it("fetches an oversized transaction instead of discarding it", async () => {
+    const socket = new FakeSocket();
+    const signature = "2".repeat(64);
+    const methods: string[] = [];
+    const controller = new AbortController();
+    const done = runIngestLoop({
+      env,
+      logger: logger(),
+      repo: repo(),
+      signal: controller.signal,
+      deps: {
+        openSocket: () => asSocket(socket),
+        warnMs: 60_000,
+        criticalMs: 120_000,
+        livenessTickMs: 60_000,
+        usageFlushMs: 60_000,
+        confirmTimeoutMs: 60_000,
+        callRpc: (method) => {
+          methods.push(method);
+          return Promise.resolve(null);
+        },
+      },
+    });
+    await vi.waitFor(() => {
+      expect(socket.readyState).toBe(1);
+    });
+    const signatureJson = `"signature":"${signature}"`;
+    const frame = `{${signatureJson},"method":"parsedTransactionNotification","slot":5}${" ".repeat(100_001)}`;
+    socket.dispatchEvent(new MessageEvent("message", { data: frame }));
+    await vi.waitFor(() => {
+      expect(methods).toContain("getTransaction");
+    });
     controller.abort();
     await done;
   });

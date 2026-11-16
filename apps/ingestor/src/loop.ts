@@ -12,9 +12,21 @@ import {
   backfillStopSlot,
   budgetLevel,
   backfillGapReason,
+  BUDGET_CACHE_MS,
   decodeRpcTransaction,
+  extractSignature,
+  extractSlot,
+  FrameStats,
   isHighVolumeProgram,
+  MAX_FRAME_CHARS,
+  OverflowLog,
+  type OverflowSpan,
   parsedNamesForProgram,
+  QUEUE_DEPTH_ALERT_BYTES,
+  QUEUE_DEPTH_ALERT_MS,
+  SUBSCRIBE_CONFIRM_MS,
+  admitTxBytes,
+  UsageLedger,
   livenessLevel,
   measureReconnectGap,
   MICROS_PER_CREDIT,
@@ -29,7 +41,6 @@ import {
   parseSlotResponse,
   planBackfillPage,
   PARSED_INSTRUCTION_NAMES,
-  planCandidateWrites,
   selectBackfillTxCap,
   shouldSkipListedSignature,
   redactString,
@@ -57,9 +68,8 @@ import {
   type RpcMeter,
 } from "./helius.js";
 
-const MAX_FRAME_CHARS = 100_000;
-const MAX_QUEUED_FRAMES = 2;
 const STATUS_MS = 15_000;
+const USAGE_FLUSH_MS = 15_000;
 /** Helius drops a parsed-stream socket the client has not written to for 5 minutes. */
 const KEEPALIVE_MS = 60_000;
 const LIVENESS_TICK_MS = 5_000;
@@ -102,6 +112,10 @@ export interface IngestDeps {
   pingMs?: number;
   /** Heap sample interval. Default 5 minutes. Zero disables it. */
   heapSampleMs?: number;
+  /** Usage and frame-counter flush. Default 15 seconds. */
+  usageFlushMs?: number;
+  /** How long to wait for a subscribe result before alerting. Default 10 seconds. */
+  confirmTimeoutMs?: number;
   scanHistory?: typeof scanInstructionHistory;
 }
 
@@ -206,6 +220,7 @@ async function runSocket(input: {
   let outstandingProbe: number | null = null;
   let keepaliveId: number | null = null;
   let connectedAtMs = 0;
+  let flushOnClose: () => Promise<void> = async () => undefined;
 
   const touch = (slot?: number): void => {
     lastEvidenceAtMs = now();
@@ -244,19 +259,78 @@ async function runSocket(input: {
   try {
     await opened;
     input.onOpen();
+    const stats = new FrameStats();
+    const usage = new UsageLedger();
+    const overflow = new OverflowLog();
+    const pendingSubs = new Map<number, { method: string; programs: readonly string[] }>();
+    let txConfirmed = false;
+    let handlerBusy = false;
+    let queuedBytes = 0;
+    let depthHighSince: number | null = null;
+    let depthAlerted = false;
+    const txQueue: Array<{ text: string; bytes: number; rpcSignature: string | null }> = [];
     let chain = Promise.resolve();
-    let queued = 0;
-    const onMessage = (event: { data?: unknown }): void => {
-      if (queued >= MAX_QUEUED_FRAMES) return;
-      queued += 1;
+    const queueDepth = (): number => txQueue.length + (handlerBusy ? 1 : 0);
+    const flushAccounting = async (): Promise<void> => {
+      const frames = stats.drain(new Date());
+      const spent = usage.drain();
+      if (
+        frames.length === 0 &&
+        spent.messages === 0 &&
+        spent.storedEvents === 0 &&
+        spent.streamedBytes === 0n &&
+        spent.creditMicros === 0n
+      ) {
+        return;
+      }
+      try {
+        await input.repo.flushAccounting({ now: new Date(), ...spent, frames });
+      } catch (error) {
+        usage.add(spent);
+        stats.restore(frames);
+        input.logger.error({ err: error }, "failed to flush ingest counters");
+        return;
+      }
+      if (!overflow.empty) {
+        await recoverOverflow({
+          env: input.env,
+          repo: input.repo,
+          logger: input.logger,
+          seen,
+          deps: input.deps,
+          spans: overflow.drain(),
+        }).catch((error: unknown) => {
+          input.logger.error({ err: error }, "failed to record queue overflow");
+        });
+      }
+    };
+    const pump = (): void => {
+      if (handlerBusy) return;
+      const next = txQueue.shift();
+      if (!next) return;
+      queuedBytes -= next.bytes;
+      if (queuedBytes < 0) queuedBytes = 0;
+      handlerBusy = true;
+      const started = now();
       chain = chain
-        .then(() => onFrame(event))
+        .then(async () => {
+          if (next.rpcSignature) {
+            await fetchBySignature(next.rpcSignature);
+            return;
+          }
+          await handleText(next.text, frameInput());
+        })
         .catch((error: unknown) => {
           input.logger.error({ err: error }, "failed to handle helius frame");
         })
         .finally(() => {
-          queued -= 1;
+          handlerBusy = false;
+          stats.noteHandleMs(now() - started, new Date());
+          pump();
         });
+    };
+    const onMessage = (event: { data?: unknown }): void => {
+      void acceptFrame(event);
     };
     ws.addEventListener("message", onMessage);
     bag.add(() => {
@@ -269,24 +343,22 @@ async function runSocket(input: {
     bag.add(() => {
       ws.removeEventListener("pong", onPong);
     });
-    subscribe(ws, method);
+    for (const request of subscribe(ws, method)) {
+      pendingSubs.set(request.id, request);
+      input.logger.info(
+        { method: request.method, programs: request.programs, request: request.id },
+        "subscription requested",
+      );
+    }
+    flushOnClose = flushAccounting;
     const gap = await readGap(input, meter);
     connectedAtMs = now();
     touch();
-    await input.repo.addUsage({
-      now: new Date(),
-      streamedBytes: 0n,
-      messages: 0,
-      storedEvents: 0,
-      creditMicros: 0n,
-    });
-    for (const programId of WATCHED_PROGRAMS) {
-      input.logger.info({ method, programId }, "subscription requested");
-    }
     input.logger.info(
       { method, plan: input.env.HELIUS_PLAN, mode: input.env.INGEST_MODE },
       "helius subscription started",
     );
+    const confirmMs = input.deps?.confirmTimeoutMs ?? SUBSCRIBE_CONFIRM_MS;
     startTimers({
       ws,
       input,
@@ -294,14 +366,258 @@ async function runSocket(input: {
       now,
       method,
       connectedAtMs: () => connectedAtMs,
-      lastEvidence: () => lastEvidenceAtMs,
+      lastEvidence: () => (txConfirmed ? lastEvidenceAtMs : null),
       lastSlot: () => lastSlot,
       sendProbe,
       sendKeepalive,
       markDead: () => {
         dead = true;
       },
+      flushMs: input.deps?.usageFlushMs ?? USAGE_FLUSH_MS,
+      flush: () => {
+        void flushAccounting();
+      },
+      confirm: () => {
+        if (txConfirmed || dead) return;
+        if (now() - connectedAtMs < confirmMs) return;
+        txConfirmed = false;
+        dead = true;
+        input.logger.error({ confirmMs }, "helius subscription was not confirmed");
+        void notify(
+          input,
+          input.secrets,
+          "FOMO copilot ingest subscription was not confirmed; reconnecting",
+        ).finally(() => {
+          ws.close();
+        });
+      },
+      depth: () => {
+        const high = queuedBytes >= QUEUE_DEPTH_ALERT_BYTES || queueDepth() >= 32;
+        if (!high) {
+          depthHighSince = null;
+          depthAlerted = false;
+          return;
+        }
+        const since = depthHighSince ?? now();
+        depthHighSince = since;
+        if (depthAlerted || now() - since < QUEUE_DEPTH_ALERT_MS) return;
+        depthAlerted = true;
+        input.logger.error({ queuedBytes, depth: queueDepth() }, "ingest queue depth stayed high");
+        void notify(
+          input,
+          input.secrets,
+          "FOMO copilot ingest queue is backed up. Transaction frames are being held for scan backfill.",
+        );
+      },
     });
+    function frameInput(): {
+      env: Env;
+      logger: Logger;
+      repo: IngestRepository;
+      method: ResolvedWsMethod;
+      seen: SignatureWindow;
+      meter: RpcMeter;
+      secrets: string[];
+      deps?: IngestDeps;
+      outstandingProbe: () => number | null;
+      outstandingKeepalive: () => number | null;
+      onEvidence: (slot?: number) => void;
+      onRejectEnhanced: () => void;
+      stats: FrameStats;
+      usage: UsageLedger;
+      overflow: OverflowLog;
+      onSubscription: (id: number, result: number) => void;
+      onRpcError: (id: number, message: string) => void;
+    } {
+      return {
+        ...input,
+        method,
+        seen,
+        meter,
+        outstandingProbe: () => outstandingProbe,
+        outstandingKeepalive: () => keepaliveId,
+        onEvidence: touch,
+        stats,
+        usage,
+        overflow,
+        onSubscription: (id, result) => {
+          const request = pendingSubs.get(id);
+          pendingSubs.delete(id);
+          if (id === 1) txConfirmed = true;
+          input.logger.info(
+            {
+              subscription: result,
+              request: id,
+              method: request?.method ?? "unknown",
+              programs: request?.programs ?? [],
+            },
+            "subscription confirmed",
+          );
+          stats.noteReceived("confirm", 0, new Date());
+        },
+        onRejectEnhanced: () => {
+          input.choice.method = "parsed";
+          input.logger.warn(
+            {},
+            "enhanced subscription rejected; reconnecting with the filtered stream",
+          );
+          dead = true;
+          ws.close();
+        },
+        onRpcError: (id, message) => {
+          pendingSubs.delete(id);
+          dead = true;
+          input.logger.error({ request: id, message }, "helius subscription rejected");
+          void notify(
+            input,
+            input.secrets,
+            `FOMO copilot ingest subscription rejected\n${redactString(message, input.secrets)}`,
+          ).finally(() => {
+            ws.close();
+          });
+        },
+      };
+    }
+
+    async function fetchBySignature(signature: string): Promise<void> {
+      const decoded = await enrichFromRpc(
+        { env: input.env, repo: input.repo, logger: input.logger, meter, deps: input.deps },
+        signature,
+      );
+      await persistDecoded(
+        { repo: input.repo, logger: input.logger, seen, usage, overflow },
+        decoded,
+        0,
+        "stream",
+      );
+    }
+
+    async function acceptFrame(event: { data?: unknown }): Promise<void> {
+      const text = await frameText(event.data);
+      const bytes = Buffer.byteLength(text);
+      const at = new Date();
+      stats.noteShadow(queueDepth(), at);
+      stats.noteQueueDepth(queueDepth(), at);
+      if (text.length > MAX_FRAME_CHARS) {
+        const signature = extractSignature(text);
+        stats.noteReceived("tx", bytes, at);
+        if (!signature) {
+          if (stats.noteDropped("tx", "oversize", bytes, at)) {
+            input.logger.warn({ bytes }, "dropped oversized helius frame");
+          }
+          return;
+        }
+        input.logger.warn({ bytes, signature }, "oversized helius frame; fetching the transaction");
+        enqueueTx("", 0, signature);
+        return;
+      }
+      let message: unknown;
+      try {
+        message = JSON.parse(text) as unknown;
+      } catch {
+        stats.noteReceived("other", bytes, at);
+        if (stats.noteDropped("other", "bad_json", bytes, at)) {
+          input.logger.warn({}, "dropped unparseable helius frame");
+        }
+        return;
+      }
+      const slotNote = parseSlotNotification(message);
+      if (slotNote !== null) {
+        if (txConfirmed) touch(slotNote);
+        stats.noteReceived("slot", bytes, at);
+        stats.noteSlot(slotNote, at);
+        usage.add({ streamedBytes: BigInt(bytes), messages: 1 });
+        return;
+      }
+      const keepalive = keepaliveId;
+      if (keepalive !== null && rpcReply(message, keepalive).matched) {
+        const reply = rpcReply(message, keepalive);
+        touch(reply.slot ?? undefined);
+        stats.noteReceived("rpc_reply", bytes, at);
+        usage.add({ streamedBytes: BigInt(bytes), messages: 1 });
+        return;
+      }
+      if (outstandingProbe !== null) {
+        const probed = parseSlotResponse(message, outstandingProbe);
+        if (probed !== null) {
+          touch(probed);
+          stats.noteReceived("rpc_reply", bytes, at);
+          usage.add({ streamedBytes: BigInt(bytes), messages: 1 });
+          return;
+        }
+      }
+      if (
+        isRecord(message) &&
+        message["error"] !== undefined &&
+        typeof message["id"] === "number"
+      ) {
+        const errorRecord = isRecord(message["error"]) ? message["error"] : {};
+        const errorMessage =
+          typeof errorRecord["message"] === "string" ? errorRecord["message"] : "rejected";
+        if (message["id"] === 1 && method === "enhanced") {
+          input.choice.method = "parsed";
+        }
+        stats.noteReceived("other", bytes, at);
+        frameInput().onRpcError(message["id"], errorMessage);
+        return;
+      }
+      if (
+        isRecord(message) &&
+        typeof message["result"] === "number" &&
+        typeof message["id"] === "number"
+      ) {
+        if (pendingSubs.has(message["id"]) || message["id"] === 1 || message["id"] === 2) {
+          frameInput().onSubscription(message["id"], message["result"]);
+          usage.add({ streamedBytes: BigInt(bytes), messages: 1 });
+          return;
+        }
+      }
+      const frameMethod =
+        isRecord(message) && typeof message["method"] === "string" ? message["method"] : "";
+      const isTx =
+        frameMethod === "parsedTransactionNotification" ||
+        frameMethod === "transactionNotification" ||
+        frameMethod === "logsNotification";
+      if (!isTx) {
+        stats.noteReceived("other", bytes, at);
+        if (frameMethod !== "") noteIgnored(input.logger, frameMethod);
+        return;
+      }
+      stats.noteReceived("tx", bytes, at);
+      usage.add({
+        streamedBytes: BigInt(bytes),
+        messages: 1,
+        creditMicros:
+          method === "parsed" && frameMethod === "parsedTransactionNotification"
+            ? parsedEventMicros(1)
+            : method === "parsed"
+              ? 0n
+              : usageMicros({ streamedBytes: BigInt(bytes), rpcCalls: 0 }),
+      });
+      enqueueTx(text, bytes, null);
+    }
+
+    function enqueueTx(text: string, bytes: number, rpcSignature: string | null): void {
+      const at = new Date();
+      if (rpcSignature === null && admitTxBytes(queuedBytes, bytes) === "overflow") {
+        const slot = extractSlot(text);
+        const programId = watchedProgramIn(text) ?? WATCHED_PROGRAMS[0];
+        if (slot !== null) overflow.note(programId, slot);
+        if (stats.noteDropped("tx", "queue_overflow", bytes, at)) {
+          input.logger.warn(
+            { slot, queuedBytes },
+            "transaction frame overflow; held for scan backfill",
+          );
+        }
+        return;
+      }
+      txQueue.push({ text, bytes, rpcSignature });
+      queuedBytes += bytes;
+      stats.noteQueued("tx", at);
+      stats.noteQueueDepth(queueDepth(), at);
+      pump();
+    }
+
     await backfillOnConnect({
       env: input.env,
       repo: input.repo,
@@ -316,31 +632,13 @@ async function runSocket(input: {
     await Promise.race([closed, abortPromise(input.signal)]);
     if (dead) throw new Error("helius websocket dead");
   } finally {
+    await flushOnClose().catch((error: unknown) => {
+      input.logger.error({ err: error }, "failed to flush ingest counters");
+    });
     bag.dispose();
     if (ws.readyState === 1 || ws.readyState === 0) ws.close();
   }
   if (!input.signal.aborted) throw new Error("helius websocket closed");
-
-  async function onFrame(event: { data?: unknown }): Promise<void> {
-    const text = await frameText(event.data);
-    await handleText(text, {
-      ...input,
-      method,
-      seen,
-      meter,
-      outstandingProbe: () => outstandingProbe,
-      outstandingKeepalive: () => keepaliveId,
-      onEvidence: touch,
-      onRejectEnhanced: () => {
-        input.choice.method = "parsed";
-        input.logger.warn(
-          {},
-          "enhanced subscription rejected; reconnecting with the filtered stream",
-        );
-        ws.close();
-      },
-    });
-  }
 }
 
 function startTimers(input: {
@@ -360,6 +658,10 @@ function startTimers(input: {
   sendProbe: () => void;
   sendKeepalive: () => void;
   markDead: () => void;
+  flushMs?: number;
+  flush?: () => void;
+  confirm?: () => void;
+  depth?: () => void;
 }): void {
   const warnMs = input.input.deps?.warnMs ?? LIVENESS_WARN_MS;
   const criticalMs = input.input.deps?.criticalMs ?? LIVENESS_CRITICAL_MS;
@@ -368,8 +670,15 @@ function startTimers(input: {
   input.bag.interval(() => {
     input.sendKeepalive();
   }, pingMs);
+  if (input.flush) {
+    input.bag.interval(() => {
+      input.flush?.();
+    }, input.flushMs ?? USAGE_FLUSH_MS);
+  }
   let warned = false;
   input.bag.interval(() => {
+    input.confirm?.();
+    input.depth?.();
     const level = livenessLevel({
       nowMs: input.now(),
       connectedAtMs: input.connectedAtMs(),
@@ -429,22 +738,15 @@ async function handleText(
     outstandingKeepalive: () => number | null;
     onEvidence: (slot?: number) => void;
     onRejectEnhanced: () => void;
+    stats: FrameStats;
+    usage: UsageLedger;
+    overflow: OverflowLog;
+    onSubscription: (id: number, result: number) => void;
+    onRpcError: (id: number, message: string) => void;
   },
 ): Promise<void> {
   const bytes = BigInt(Buffer.byteLength(text));
   if (text.length > MAX_FRAME_CHARS) {
-    await input.repo.addUsage({
-      now: new Date(),
-      streamedBytes: bytes,
-      messages: 1,
-      storedEvents: 0,
-      creditMicros:
-        input.method === "parsed" && text.includes("parsedTransactionNotification")
-          ? parsedEventMicros(1)
-          : input.method === "parsed"
-            ? 0n
-            : usageMicros({ streamedBytes: bytes, rpcCalls: 0 }),
-    });
     input.logger.warn({ bytes: bytes.toString() }, "dropped oversized helius frame");
     return;
   }
@@ -452,66 +754,25 @@ async function handleText(
   try {
     message = JSON.parse(text) as unknown;
   } catch {
+    input.stats.noteDropped("tx", "bad_json", Number(bytes), new Date());
     return;
-  }
-  const slotNote = parseSlotNotification(message);
-  if (slotNote !== null) {
-    input.onEvidence(slotNote);
-    await recordFrame(input.repo, bytes, 0n);
-    return;
-  }
-  const keepalive = input.outstandingKeepalive();
-  if (keepalive !== null) {
-    const reply = rpcReply(message, keepalive);
-    if (reply.matched) {
-      input.onEvidence(reply.slot ?? undefined);
-      await recordFrame(input.repo, bytes, 0n);
-      return;
-    }
-  }
-  const probe = input.outstandingProbe();
-  if (probe !== null) {
-    const probed = parseSlotResponse(message, probe);
-    if (probed !== null) {
-      input.onEvidence(probed);
-      await recordFrame(input.repo, bytes, 0n);
-      return;
-    }
-    if (isRecord(message) && message["id"] === probe && message["error"]) {
-      input.onEvidence();
-      await recordFrame(input.repo, bytes, 0n);
-      return;
-    }
   }
   if (isRecord(message) && message["error"] && message["id"] === 1 && input.method === "enhanced") {
     input.onRejectEnhanced();
+    return;
   }
   const frame =
     input.method === "parsed"
       ? parseParsedNotification(message, Number(bytes))
       : (parseTransactionNotification(message, Number(bytes)) ??
         parseLogsNotification(message, Number(bytes)));
-  const parsedEvent = isRecord(message) && message["method"] === "parsedTransactionNotification";
-  await input.repo.addUsage({
-    now: new Date(),
-    streamedBytes: bytes,
-    messages: 1,
-    storedEvents: 0,
-    creditMicros:
-      input.method === "parsed"
-        ? parsedEvent
-          ? parsedEventMicros(1)
-          : 0n
-        : usageMicros({ streamedBytes: bytes, rpcCalls: 0 }),
-  });
   if (!frame) {
-    if (isRecord(message) && typeof message["result"] === "number") {
-      input.logger.info(
-        { subscription: message["result"], request: message["id"] },
-        "subscription confirmed",
-      );
-    } else if (isRecord(message) && typeof message["method"] === "string") {
-      noteIgnored(input.logger, message["method"]);
+    const reason =
+      isRecord(message) && message["method"] === "parsedTransactionNotification"
+        ? "missing_sig_or_slot"
+        : "no_known_instruction";
+    if (input.stats.noteDropped("tx", reason, Number(bytes), new Date())) {
+      input.logger.warn({ reason }, "transaction frame had nothing to store");
     }
     return;
   }
@@ -529,27 +790,24 @@ async function handleText(
     if (enriched.observations.length > 0) observations = enriched.observations;
     failures = [...failures, ...enriched.failures];
   }
-  await persistDecoded(input, { observations, failures }, Number(bytes));
-}
-
-async function recordFrame(
-  repo: IngestRepository,
-  bytes: bigint,
-  creditMicros: bigint,
-): Promise<void> {
-  await repo.addUsage({
-    now: new Date(),
-    streamedBytes: bytes,
-    messages: 1,
-    storedEvents: 0,
-    creditMicros,
-  });
+  if (observations.length === 0 && failures.length > 0) {
+    input.stats.noteDropped("tx", "missing_mint_or_pool", Number(bytes), new Date());
+  }
+  const stored = await persistDecoded(input, { observations, failures }, Number(bytes), "stream");
+  if (stored > 0) input.usage.add({ storedEvents: stored });
 }
 
 async function persistDecoded(
-  input: { repo: IngestRepository; logger: Logger; seen: SignatureWindow },
+  input: {
+    repo: IngestRepository;
+    logger: Logger;
+    seen: SignatureWindow;
+    usage?: UsageLedger;
+    overflow?: OverflowLog;
+  },
   decoded: { observations: Observation[]; failures: DecodeFailure[] },
   byteLength: number,
+  source: "stream" | "audit",
 ): Promise<number> {
   for (const failure of decoded.failures) {
     try {
@@ -561,29 +819,26 @@ async function persistDecoded(
   let stored = 0;
   for (const observation of decoded.observations) {
     if (!input.seen.add(observation.signature, observation.eventIndex)) continue;
-    const inserted = await input.repo.insertRaw(
-      observation,
-      observation.eventIndex === 0 ? byteLength : 0,
-      new Date(),
-    );
-    if (!inserted) continue;
-    stored += 1;
-    await applyOne(input.repo, observation);
-    await input.repo.saveCheckpoint(
-      observation.programId,
-      observation.signature,
-      observation.slot,
-      new Date(),
-    );
+    const receivedAt =
+      source === "audit" && observation.blockTimeMs !== null
+        ? new Date(observation.blockTimeMs)
+        : new Date();
+    try {
+      const inserted = await input.repo.persistEvent({
+        observation,
+        byteLength: observation.eventIndex === 0 ? byteLength : 0,
+        receivedAt,
+        source,
+      });
+      if (!inserted) continue;
+      stored += 1;
+    } catch (error) {
+      input.logger.error({ err: error }, "failed to store ingest event");
+      input.overflow?.note(observation.programId, observation.slot);
+    }
   }
-  if (stored > 0) {
-    await input.repo.addUsage({
-      now: new Date(),
-      streamedBytes: 0n,
-      messages: 0,
-      storedEvents: stored,
-      creditMicros: 0n,
-    });
+  if (stored > 0 && source === "audit") {
+    input.usage?.add({ storedEvents: stored });
   }
   return stored;
 }
@@ -602,25 +857,36 @@ async function enrichFromRpc(
   }
 }
 
-async function applyOne(repo: IngestRepository, observation: Observation): Promise<void> {
-  const nowMs = observation.blockTimeMs ?? Date.now();
-  const earliest = observation.mint ? await repo.earliestFirstSeenMs(observation.mint) : null;
-  const plan = planCandidateWrites({ observation, nowMs, earliestFirstSeenMs: earliest });
-  if (plan.candidate) await repo.insertCandidate(plan.candidate);
-  if (plan.curve) await repo.markCurve(plan.curve);
-  if (plan.graduation) await repo.markGraduation(plan.graduation);
-}
+const budgetCache = new WeakMap<
+  IngestRepository,
+  {
+    atMs: number;
+    month: {
+      creditMicros: bigint;
+      alerted60: boolean;
+      alerted80: boolean;
+      paused: boolean;
+    };
+  }
+>();
 
 async function refreshBudget(input: {
   env: Env;
   repo: IngestRepository;
   secrets: string[];
   logger: Logger;
+  usage?: UsageLedger;
 }): Promise<boolean> {
   const allowance = allowanceCredits(input.env.HELIUS_PLAN, input.env.HELIUS_MONTHLY_CREDITS);
   const now = new Date();
+  const cached = budgetCache.get(input.repo);
+  const pending = input.usage?.creditMicros ?? 0n;
+  if (cached && now.getTime() - cached.atMs < BUDGET_CACHE_MS) {
+    return budgetLevel(cached.month.creditMicros + pending, allowance) === "pause";
+  }
   const month = await input.repo.monthUsage(now);
-  const level = budgetLevel(month.creditMicros, allowance);
+  budgetCache.set(input.repo, { atMs: now.getTime(), month });
+  const level = budgetLevel(month.creditMicros + pending, allowance);
   if (level === "warn60" && !month.alerted60) {
     await input.repo.markBudgetAlert(now, "warn60");
     await notify(
@@ -818,6 +1084,7 @@ export async function backfillProgram(input: {
         { repo: input.repo, logger: input.logger, seen },
         decoded,
         0,
+        "stream",
       );
     } catch (error) {
       errored = true;
@@ -974,6 +1241,7 @@ async function backfillByScan(input: {
         { repo: input.repo, logger: input.logger, seen: input.seen },
         decoded,
         0,
+        "stream",
       );
     } catch (error) {
       errored = true;
@@ -1091,8 +1359,12 @@ async function getSignatures(
   return { rawLength: result.length, oldestSignature, rows };
 }
 
-function subscribe(ws: SocketLike, method: ResolvedWsMethod): void {
-  if (ws.readyState !== 1) return;
+function subscribe(
+  ws: SocketLike,
+  method: ResolvedWsMethod,
+): Array<{ id: number; method: string; programs: readonly string[] }> {
+  if (ws.readyState !== 1) return [];
+  const requests: Array<{ id: number; method: string; programs: readonly string[] }> = [];
   if (method === "enhanced") {
     ws.send(
       JSON.stringify({
@@ -1110,6 +1382,7 @@ function subscribe(ws: SocketLike, method: ResolvedWsMethod): void {
         ],
       }),
     );
+    requests.push({ id: 1, method: "transactionSubscribe", programs: WATCHED_PROGRAMS });
   } else {
     ws.send(
       JSON.stringify({
@@ -1127,8 +1400,15 @@ function subscribe(ws: SocketLike, method: ResolvedWsMethod): void {
         ],
       }),
     );
+    requests.push({
+      id: 1,
+      method: "parsedTransactionSubscribe",
+      programs: WATCHED_PROGRAMS,
+    });
   }
   ws.send(JSON.stringify({ jsonrpc: "2.0", id: 2, method: "slotSubscribe" }));
+  requests.push({ id: 2, method: "slotSubscribe", programs: [] });
+  return requests;
 }
 
 async function readGap(
@@ -1379,6 +1659,98 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 }
 
 export { WATCHED_PROGRAMS };
+
+function watchedProgramIn(text: string): string | null {
+  for (const programId of WATCHED_PROGRAMS) {
+    if (text.includes(programId)) return programId;
+  }
+  return null;
+}
+
+async function recoverOverflow(input: {
+  env: Env;
+  repo: IngestRepository;
+  logger: Logger;
+  seen: SignatureWindow;
+  deps?: IngestDeps;
+  spans: readonly OverflowSpan[];
+}): Promise<void> {
+  for (const span of input.spans) {
+    const tooWide = span.toSlot - span.fromSlot > BACKFILL_MAX_SLOT_SPAN;
+    let recovered = 0;
+    let fetched = 0;
+    let failed = tooWide;
+    if (!tooWide && parsedNamesForProgram(span.programId).length > 0) {
+      try {
+        const scan = input.deps?.scanHistory ?? scanInstructionHistory;
+        const scanned = await scan({
+          apiKey: input.env.HELIUS_API_KEY,
+          programId: span.programId,
+          instructionNames: parsedNamesForProgram(span.programId),
+          slotGt: Math.max(0, span.fromSlot - 1),
+          slotLte: span.toSlot,
+        });
+        await input.repo.addUsage({
+          now: new Date(),
+          streamedBytes: 0n,
+          messages: 0,
+          storedEvents: 0,
+          creditMicros: BigInt(scanned.creditsCharged) * MICROS_PER_CREDIT,
+        });
+        const known = await input.repo.knownSignatures(
+          scanned.matches.map((match) => match.signature),
+        );
+        for (const match of scanned.matches) {
+          if (known.has(match.signature)) continue;
+          const result = await callRpc(
+            { env: input.env, deps: input.deps, meter: makeMeter(input.repo, input.logger) },
+            "getTransaction",
+            [match.signature],
+          );
+          fetched += 1;
+          if (result == null) continue;
+          recovered += await persistDecoded(
+            { repo: input.repo, logger: input.logger, seen: input.seen },
+            decodeRpcTransaction(result, match.signature),
+            0,
+            "stream",
+          );
+        }
+        failed = !scanned.complete;
+      } catch (error) {
+        failed = true;
+        input.logger.warn({ err: error, programId: span.programId }, "overflow scan failed");
+      }
+    }
+    if (failed) {
+      input.logger.warn(
+        {
+          programId: span.programId,
+          gapFromSlot: span.fromSlot,
+          gapToSlot: span.toSlot,
+          reason: "queue_overflow",
+        },
+        "backfill unrecovered gap",
+      );
+    }
+    await input.repo.insertBackfill({
+      observedAt: new Date(),
+      programId: span.programId,
+      gapSeconds: null,
+      gapSlots: span.toSlot - span.fromSlot,
+      eventsRecovered: recovered,
+      pagesFetched: 0,
+      signaturesSeen: span.frames,
+      transactionsFetched: fetched,
+      reachedCheckpoint: !failed,
+      creditCapHit: tooWide,
+      unrecovered: failed,
+      gapFromSlot: span.fromSlot,
+      gapToSlot: span.toSlot,
+      reason: "queue_overflow",
+    });
+  }
+}
 
 async function backfillOnConnect(input: {
   env: Env;

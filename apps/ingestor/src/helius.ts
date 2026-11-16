@@ -118,13 +118,16 @@ export async function scanInstructionHistory(input: {
   instructionNames: readonly string[];
   slotGt: number;
   slotLte: number | null;
+  /** Requests of up to 10,000 transactions. Startup backfill uses 4. */
+  maxPages?: number;
   fetchImpl?: typeof fetch;
 }): Promise<{ matches: ScanMatch[]; creditsCharged: number; complete: boolean }> {
   const matches: ScanMatch[] = [];
   let creditsCharged = 0;
   let paginationToken: string | undefined;
   let complete = false;
-  for (let page = 0; page < 4; page += 1) {
+  const maxPages = input.maxPages ?? 4;
+  for (let page = 0; page < maxPages; page += 1) {
     const slot: Record<string, number> = { gt: input.slotGt };
     if (input.slotLte !== null) slot["lte"] = input.slotLte;
     const body: Record<string, unknown> = {

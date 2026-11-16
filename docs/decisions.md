@@ -1,5 +1,13 @@
 # Decision log
 
+## 2026-11-16 — Queue the transactions, count the drops, audit a sample
+
+The 24h re-soak missed 2 of 214 sampled DBC launches. The handler did a database write for every slot notification, and a third frame that arrived while one was in flight and one was waiting was discarded with no log. Slot notifications and ping replies now update liveness in the socket callback and are not queued. Only transaction frames are queued, up to about 8 MB. Past that, the slot and signature are held in a bounded memory log and written to `ingest_backfill` with reason `queue_overflow` after the database accepts a flush, which runs the same instruction scan. A frame over 100 KB is fetched with `getTransaction` when its signature can be read. `ingest_frame_hourly` records received, queued, and dropped frames, handler time, slot gaps, and a shadow count of frames the old two-deep queue would have dropped.
+
+Usage counters flush every 15 seconds in one transaction. Each stored event writes its raw row, candidate, and checkpoint in one transaction. The ingestor's Postgres connections set `synchronous_commit=off`. The budget read is cached for 60 seconds. A subscribe error, or no confirmation within 10 seconds, alerts and reconnects. Liveness ignores slot progress until the transaction subscription is confirmed.
+
+The recall audit is a one-shot `audit` Compose service, not a loop inside the ingestor. Cron runs one 15-minute window per program every 6 hours. Misses are stored with `source=audit` and `first_seen_at` from the chain block time. Those rows stay out of `alertable` candidate reads. There is no paper-trade writer yet; that filter is the gate. The transfer-hook initialize is counted from stored rows. The scan rejects that instruction name, so there is no daily hook scan.
+
 ## 2026-11-14 — Parsed history scan for high-volume programs
 
 An 82-slot deploy gap recovered DBC (134 transactions, 3 events) and then hit the 400-transaction startup cap on DAMM v2 (1,495 signatures listed, 399 fetched) and DLMM (1,992 listed, 400 fetched). Those programs list about 13–20 signatures per slot, almost all swaps. The restart spent about 1,290 credits and stored no DAMM or DLMM events.
