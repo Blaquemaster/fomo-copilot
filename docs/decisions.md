@@ -1,5 +1,9 @@
 # Decision log
 
+## 2026-11-16 — Scan names are not the live subscription names
+
+Helius's parsed-events scan returns HTTP 400 when the DBC filter includes `initialize_virtual_pool_with_token2022_transfer_hook`, because that name is not in the IDL it scans. The live subscription still sends it. Startup backfill and the recall audit scan `DBC_SCAN_INSTRUCTION_NAMES`, which omits that name. A scan that still fails is recorded on `ingest_recall_audit` as `errored` with `error_reason` (`009_recall_error`). The audit continues with the other programs and sends one summary, instead of exiting and raising a crash alert.
+
 ## 2026-11-16 — Queue the transactions, count the drops, audit a sample
 
 The 24h re-soak missed 2 of 214 sampled DBC launches. The handler did a database write for every slot notification, and a third frame that arrived while one was in flight and one was waiting was discarded with no log. Slot notifications and ping replies now update liveness in the socket callback and are not queued. Only transaction frames are queued, up to about 8 MB. Past that, the slot and signature are held in a bounded memory log and written to `ingest_backfill` with reason `queue_overflow` after the database accepts a flush, which runs the same instruction scan. A frame over 100 KB is fetched with `getTransaction` when its signature can be read. `ingest_frame_hourly` records received, queued, and dropped frames, handler time, slot gaps, and a shadow count of frames the old two-deep queue would have dropped.

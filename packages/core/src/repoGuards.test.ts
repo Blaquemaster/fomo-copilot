@@ -82,6 +82,9 @@ describe("repository guards", () => {
     expect(sql).toContain("006_frame_hourly");
     expect(sql).toContain("007_event_source");
     expect(sql).toContain("008_recall_audit");
+    expect(sql).toContain("009_recall_error");
+    expect(sql).toContain("add column if not exists errored boolean");
+    expect(sql).toContain("add column if not exists error_reason text");
     expect(sql).toContain("create table if not exists ingest_frame_hourly");
     expect(sql).toContain("create table if not exists ingest_recall_audit");
     expect(sql).toContain("source text not null default 'stream'");

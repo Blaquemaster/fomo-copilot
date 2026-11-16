@@ -64,6 +64,8 @@ export {
   HIGH_VOLUME_PROGRAM_IDS,
   isHighVolumeProgram,
   parsedNamesForProgram,
+  scanNamesForProgram,
+  DBC_SCAN_INSTRUCTION_NAMES,
   QUOTE_MINTS,
   TOKEN_MAX_AGE_MS,
   WATCHED_PROGRAMS,

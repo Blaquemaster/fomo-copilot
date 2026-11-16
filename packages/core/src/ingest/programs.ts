@@ -579,6 +579,23 @@ export const PARSED_INSTRUCTION_NAMES = [
   ...DLMM_PARSED_INSTRUCTION_NAMES,
 ] as const;
 
+/**
+ * Names the parsed-events scan accepts. Helius's DBC IDL does not include
+ * initialize_virtual_pool_with_token2022_transfer_hook, and a scan that names
+ * it returns HTTP 400. The live subscription still sends that name.
+ */
+export const DBC_SCAN_INSTRUCTION_NAMES = [
+  "initialize_virtual_pool_with_spl_token",
+  "initialize_virtual_pool_with_token2022",
+  "migration_damm_v2",
+] as const;
+
+export const SCAN_INSTRUCTION_NAMES = [
+  ...DBC_SCAN_INSTRUCTION_NAMES,
+  ...DAMM_PARSED_INSTRUCTION_NAMES,
+  ...DLMM_PARSED_INSTRUCTION_NAMES,
+] as const;
+
 /** DAMM v2 and DLMM list mostly swaps. Startup backfill scans these by instruction name. */
 export const HIGH_VOLUME_PROGRAM_IDS = [DAMM_V2_PROGRAM_ID, DLMM_PROGRAM_ID] as const;
 
@@ -587,6 +604,11 @@ export function parsedNamesForProgram(programId: string): readonly string[] {
   if (programId === DAMM_V2_PROGRAM_ID) return DAMM_PARSED_INSTRUCTION_NAMES;
   if (programId === DLMM_PROGRAM_ID) return DLMM_PARSED_INSTRUCTION_NAMES;
   return [];
+}
+
+export function scanNamesForProgram(programId: string): readonly string[] {
+  if (programId === DBC_PROGRAM_ID) return DBC_SCAN_INSTRUCTION_NAMES;
+  return parsedNamesForProgram(programId);
 }
 
 export function isHighVolumeProgram(programId: string): boolean {

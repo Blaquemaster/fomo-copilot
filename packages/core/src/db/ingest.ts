@@ -184,6 +184,9 @@ create table if not exists ingest_recall_audit (
   incomplete boolean not null default false
 );
 
+alter table ingest_recall_audit add column if not exists errored boolean not null default false;
+alter table ingest_recall_audit add column if not exists error_reason text;
+
 create index if not exists ingest_recall_audit_ran_idx on ingest_recall_audit (ran_at desc);
 `;
 
@@ -236,6 +239,10 @@ export async function migrate(pool: pg.Pool): Promise<void> {
     await client.query(
       "insert into schema_migrations (id) values ($1) on conflict (id) do nothing",
       ["008_recall_audit"],
+    );
+    await client.query(
+      "insert into schema_migrations (id) values ($1) on conflict (id) do nothing",
+      ["009_recall_error"],
     );
     await client.query("commit");
   } catch (error) {
@@ -900,12 +907,14 @@ export class IngestRepository {
     decodeFailed: number;
     credits: number;
     incomplete: boolean;
+    errored: boolean;
+    errorReason: string | null;
   }): Promise<void> {
     await this.pool.query(
       `insert into ingest_recall_audit
         (ran_at, program_id, window_start_slot, window_end_slot, expected, matched, missed,
-         recovered, decode_failed, credits, incomplete)
-       values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)`,
+         recovered, decode_failed, credits, incomplete, errored, error_reason)
+       values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)`,
       [
         input.ranAt.toISOString(),
         input.programId,
@@ -918,6 +927,8 @@ export class IngestRepository {
         input.decodeFailed,
         input.credits,
         input.incomplete,
+        input.errored,
+        input.errorReason,
       ],
     );
   }
@@ -932,7 +943,7 @@ export class IngestRepository {
               coalesce(sum(expected), 0)::text as expected,
               count(*)::text as windows
        from ingest_recall_audit
-       where ran_at >= $1 and incomplete = false`,
+       where ran_at >= $1 and incomplete = false and errored = false`,
       [since.toISOString()],
     );
     const row = result.rows[0];

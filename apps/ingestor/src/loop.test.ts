@@ -627,6 +627,32 @@ describe("short backfill", () => {
     expect(scanned[0]?.slotGt).toBe(200);
   });
 
+  it("scans DBC without the transfer-hook name the parsed scan rejects", async () => {
+    const scanned: string[][] = [];
+    await backfillProgram({
+      env,
+      logger: logger(),
+      repo: repo({
+        checkpoint: vi.fn(async () => ({ signature: "checkpoint", slot: 100 })),
+      }),
+      programId: "dbcij3LWUppWqq96dh6gJWwBifmcGfLSB5D4DuSMaqN",
+      paused: false,
+      gap: { gapSeconds: 28, gapSlots: 82, untilSlot: 200, tipSlot: 282 },
+      deps: {
+        scanHistory: (request) => {
+          scanned.push([...request.instructionNames]);
+          return Promise.resolve({ matches: [], creditsCharged: 11, complete: true });
+        },
+        callRpc: () => Promise.resolve(null),
+      },
+    });
+    expect(scanned[0]).toEqual([
+      "initialize_virtual_pool_with_spl_token",
+      "initialize_virtual_pool_with_token2022",
+      "migration_damm_v2",
+    ]);
+  });
+
   it("records high_volume_skipped when the parsed scan is unavailable", async () => {
     const methods: string[] = [];
     const inserted = vi.fn(async () => undefined);
