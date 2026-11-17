@@ -136,6 +136,8 @@ jobs:
               line("HELIUS_PLAN", pick("HELIUS_PLAN", "developer", {"developer", "free"})),
               line("HELIUS_WS_MODE", pick("HELIUS_WS_MODE", "auto", {"auto", "standard", "enhanced"})),
               line("INGEST_MODE", pick("INGEST_MODE", "dry-run", {"dry-run", "continuous"})),
+              line("INGEST_VENUE", pick("INGEST_VENUE", "pump", {"pump", "meteora"})),
+              line("PUMP_SUBSCRIBE_TRADES", pick("PUMP_SUBSCRIBE_TRADES", "false", {"true", "false"})),
               line("BACKFILL_SLOT_MARGIN", slot_margin()),
               line("THRESHOLDS_PATH", "/app/config/thresholds.yaml"),
           ]) + "\n"

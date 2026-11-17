@@ -15,16 +15,40 @@ export const DBC_PROGRAM_ID = "dbcij3LWUppWqq96dh6gJWwBifmcGfLSB5D4DuSMaqN";
 export const DAMM_V2_PROGRAM_ID = "cpamdpZCGKUy5JxQXB4dcpGPiikHawvSWAd6mEn1sGG";
 export const DLMM_PROGRAM_ID = "LBUZKhRxPF3XUpBCjp4YzTKgLccjZhTSDM9YuVaPwxo";
 
+/**
+ * Official Pump.fun program. IDL address field:
+ * https://github.com/pump-fun/pump-public-docs/blob/main/idl/pump.json
+ */
+export const PUMP_PROGRAM_ID = "6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P";
+
+/**
+ * Official PumpSwap (pump_amm) program. IDL address field:
+ * https://github.com/pump-fun/pump-public-docs/blob/main/idl/pump_amm.json
+ */
+export const PUMP_AMM_PROGRAM_ID = "pAMMBay6oceH9fJKBRHGP5D4bD4sWpmSwMn52FMfXEA";
+
 export const WATCHED_PROGRAMS = [DBC_PROGRAM_ID, DAMM_V2_PROGRAM_ID, DLMM_PROGRAM_ID] as const;
 
-export type PoolType = "dbc" | "damm_v2" | "dlmm";
+export const PUMP_PROGRAMS = [PUMP_PROGRAM_ID, PUMP_AMM_PROGRAM_ID] as const;
+
+export type IngestVenue = "pump" | "meteora";
+
+export type PoolType = "dbc" | "damm_v2" | "dlmm" | "pump" | "pumpswap";
 
 export type EventKind =
   | "dbc_initialize"
   | "dbc_curve_complete"
   | "dbc_migration_damm_v2"
   | "damm_v2_initialize"
-  | "dlmm_initialize";
+  | "dlmm_initialize"
+  | "pump_create"
+  | "pump_create_v2"
+  | "pump_buy"
+  | "pump_sell"
+  | "pump_migrate"
+  | "pumpswap_create_pool"
+  | "pumpswap_buy"
+  | "pumpswap_sell";
 
 /** Quote mints the official DBC migration keeper treats as the quote side. */
 export const QUOTE_MINTS = new Set([
@@ -62,6 +86,19 @@ export const DISC = {
   ixDbcSwap: bytes(248, 198, 158, 145, 225, 117, 135, 200),
   ixDbcSwap2: bytes(65, 75, 63, 76, 235, 91, 91, 136),
   ixDbcSwap2Hook: bytes(183, 93, 153, 40, 24, 230, 194, 151),
+  /** sha256("global:<name>")[..8] from idl/pump.json and idl/pump_amm.json. */
+  ixPumpCreate: bytes(24, 30, 200, 40, 5, 28, 7, 119),
+  ixPumpCreateV2: bytes(214, 144, 76, 236, 95, 139, 49, 180),
+  ixPumpBuy: bytes(102, 6, 61, 18, 1, 218, 235, 234),
+  ixPumpBuyV2: bytes(184, 23, 238, 97, 103, 197, 211, 61),
+  ixPumpSell: bytes(51, 230, 133, 164, 1, 127, 131, 173),
+  ixPumpMigrate: bytes(155, 234, 231, 146, 236, 158, 162, 30),
+  ixPumpMigrateV2: bytes(187, 203, 18, 31, 206, 237, 254, 41),
+  ixPumpAmmCreatePool: bytes(233, 146, 209, 142, 207, 104, 64, 188),
+  ixPumpAmmBuy: bytes(102, 6, 61, 18, 1, 218, 235, 234),
+  ixPumpAmmBuyV2: bytes(184, 23, 238, 97, 103, 197, 211, 61),
+  ixPumpAmmSell: bytes(51, 230, 133, 164, 1, 127, 131, 173),
+  ixPumpAmmSellV2: bytes(93, 246, 130, 60, 231, 233, 64, 178),
 } as const;
 
 /**
@@ -521,6 +558,261 @@ export const INSTRUCTION_LAYOUTS: ReadonlyArray<{
       null,
     ),
   },
+  {
+    programId: PUMP_PROGRAM_ID,
+    disc: DISC.ixPumpCreate,
+    layout: layout(
+      "pump_create",
+      "pump",
+      [
+        "mint",
+        "mint_authority",
+        "bonding_curve",
+        "associated_bonding_curve",
+        "global",
+        "mpl_token_metadata",
+        "metadata",
+        "user",
+      ],
+      "create",
+      "bonding_curve",
+      "mint",
+      null,
+      "user",
+      null,
+      null,
+    ),
+  },
+  {
+    programId: PUMP_PROGRAM_ID,
+    disc: DISC.ixPumpCreateV2,
+    layout: layout(
+      "pump_create_v2",
+      "pump",
+      ["mint", "mint_authority", "bonding_curve", "associated_bonding_curve", "global", "user"],
+      "create_v2",
+      "bonding_curve",
+      "mint",
+      null,
+      "user",
+      null,
+      null,
+    ),
+  },
+  {
+    programId: PUMP_PROGRAM_ID,
+    disc: DISC.ixPumpBuy,
+    layout: layout(
+      "pump_buy",
+      "pump",
+      [
+        "global",
+        "fee_recipient",
+        "mint",
+        "bonding_curve",
+        "associated_bonding_curve",
+        "associated_user",
+        "user",
+      ],
+      "buy",
+      "bonding_curve",
+      "mint",
+      null,
+      "user",
+      null,
+      null,
+    ),
+  },
+  {
+    programId: PUMP_PROGRAM_ID,
+    disc: DISC.ixPumpBuyV2,
+    layout: layout(
+      "pump_buy",
+      "pump",
+      [
+        "global",
+        "base_mint",
+        "quote_mint",
+        "base_token_program",
+        "quote_token_program",
+        "associated_token_program",
+        "fee_recipient",
+        "associated_quote_fee_recipient",
+        "buyback_fee_recipient",
+        "associated_quote_buyback_fee_recipient",
+        "bonding_curve",
+        "associated_base_bonding_curve",
+        "associated_quote_bonding_curve",
+        "user",
+      ],
+      "buy_v2",
+      "bonding_curve",
+      "base_mint",
+      "quote_mint",
+      "user",
+      null,
+      "quote_mint",
+    ),
+  },
+  {
+    programId: PUMP_PROGRAM_ID,
+    disc: DISC.ixPumpSell,
+    layout: layout(
+      "pump_sell",
+      "pump",
+      [
+        "global",
+        "fee_recipient",
+        "mint",
+        "bonding_curve",
+        "associated_bonding_curve",
+        "associated_user",
+        "user",
+      ],
+      "sell",
+      "bonding_curve",
+      "mint",
+      null,
+      "user",
+      null,
+      null,
+    ),
+  },
+  {
+    programId: PUMP_PROGRAM_ID,
+    disc: DISC.ixPumpMigrate,
+    layout: layout(
+      "pump_migrate",
+      "pump",
+      [
+        "global",
+        "withdraw_authority",
+        "mint",
+        "bonding_curve",
+        "associated_bonding_curve",
+        "user",
+        "system_program",
+        "token_program",
+        "pump_amm",
+        "pool",
+      ],
+      "migrate",
+      "pool",
+      "mint",
+      null,
+      "user",
+      "bonding_curve",
+      null,
+    ),
+  },
+  {
+    programId: PUMP_PROGRAM_ID,
+    disc: DISC.ixPumpMigrateV2,
+    layout: layout(
+      "pump_migrate",
+      "pump",
+      [
+        "global",
+        "withdraw_authority",
+        "base_mint",
+        "quote_mint",
+        "bonding_curve",
+        "associated_base_bonding_curve",
+        "associated_quote_bonding_curve",
+        "user",
+        "system_program",
+        "pump_amm",
+        "pool",
+      ],
+      "migrate_v2",
+      "pool",
+      "base_mint",
+      "quote_mint",
+      "user",
+      "bonding_curve",
+      "quote_mint",
+    ),
+  },
+  {
+    programId: PUMP_AMM_PROGRAM_ID,
+    disc: DISC.ixPumpAmmCreatePool,
+    layout: layout(
+      "pumpswap_create_pool",
+      "pumpswap",
+      ["pool", "global_config", "creator", "base_mint", "quote_mint"],
+      "create_pool",
+      "pool",
+      "base_mint",
+      "quote_mint",
+      "creator",
+      null,
+      "quote_mint",
+    ),
+  },
+  {
+    programId: PUMP_AMM_PROGRAM_ID,
+    disc: DISC.ixPumpAmmBuy,
+    layout: layout(
+      "pumpswap_buy",
+      "pumpswap",
+      ["pool", "user", "global_config", "base_mint", "quote_mint"],
+      "buy",
+      "pool",
+      "base_mint",
+      "quote_mint",
+      "user",
+      null,
+      "quote_mint",
+    ),
+  },
+  {
+    programId: PUMP_AMM_PROGRAM_ID,
+    disc: DISC.ixPumpAmmBuyV2,
+    layout: layout(
+      "pumpswap_buy",
+      "pumpswap",
+      ["pool", "user", "global_config", "base_mint", "quote_mint"],
+      "buy_v2",
+      "pool",
+      "base_mint",
+      "quote_mint",
+      "user",
+      null,
+      "quote_mint",
+    ),
+  },
+  {
+    programId: PUMP_AMM_PROGRAM_ID,
+    disc: DISC.ixPumpAmmSell,
+    layout: layout(
+      "pumpswap_sell",
+      "pumpswap",
+      ["pool", "user", "global_config", "base_mint", "quote_mint"],
+      "sell",
+      "pool",
+      "base_mint",
+      "quote_mint",
+      "user",
+      null,
+      "quote_mint",
+    ),
+  },
+  {
+    programId: PUMP_AMM_PROGRAM_ID,
+    disc: DISC.ixPumpAmmSellV2,
+    layout: layout(
+      "pumpswap_sell",
+      "pumpswap",
+      ["pool", "user", "global_config", "base_mint", "quote_mint"],
+      "sell_v2",
+      "pool",
+      "base_mint",
+      "quote_mint",
+      "user",
+      null,
+      "quote_mint",
+    ),
+  },
 ];
 
 export const SWAP_LAYOUTS: ReadonlyArray<{
@@ -606,13 +898,105 @@ export function parsedNamesForProgram(programId: string): readonly string[] {
   return [];
 }
 
+/** Creates and graduations. The audit scans these. Trades are a separate, optional firehose. */
+export const PUMP_LIFECYCLE_NAMES = ["create", "create_v2", "migrate", "migrate_v2"] as const;
+
+export const PUMP_TRADE_NAMES = [
+  "buy",
+  "buy_v2",
+  "buy_v3",
+  "buy_exact_sol_in",
+  "buy_exact_quote_in_v2",
+  "buy_exact_quote_in_v3",
+  "sell",
+  "sell_v2",
+  "sell_v3",
+] as const;
+
+export const PUMP_AMM_LIFECYCLE_NAMES = ["create_pool"] as const;
+
+export const PUMP_AMM_TRADE_NAMES = [
+  "buy",
+  "buy_v2",
+  "buy_exact_quote_in",
+  "buy_exact_quote_in_v2",
+  "sell",
+  "sell_v2",
+] as const;
+
+/** Full trade rows are kept for this many slots after the coin's create. About one minute. */
+export const PUMP_TRADE_DETAIL_SLOTS = 150;
+
+export function programsForVenue(venue: IngestVenue): readonly string[] {
+  return venue === "pump" ? PUMP_PROGRAMS : WATCHED_PROGRAMS;
+}
+
+export function subscriptionNamesForProgram(
+  programId: string,
+  includeTrades: boolean,
+): readonly string[] {
+  if (programId === PUMP_PROGRAM_ID) {
+    return includeTrades ? [...PUMP_LIFECYCLE_NAMES, ...PUMP_TRADE_NAMES] : PUMP_LIFECYCLE_NAMES;
+  }
+  if (programId === PUMP_AMM_PROGRAM_ID) {
+    return includeTrades
+      ? [...PUMP_AMM_LIFECYCLE_NAMES, ...PUMP_AMM_TRADE_NAMES]
+      : PUMP_AMM_LIFECYCLE_NAMES;
+  }
+  return parsedNamesForProgram(programId);
+}
+
 export function scanNamesForProgram(programId: string): readonly string[] {
   if (programId === DBC_PROGRAM_ID) return DBC_SCAN_INSTRUCTION_NAMES;
+  if (programId === PUMP_PROGRAM_ID) return PUMP_LIFECYCLE_NAMES;
+  if (programId === PUMP_AMM_PROGRAM_ID) return PUMP_AMM_LIFECYCLE_NAMES;
   return parsedNamesForProgram(programId);
 }
 
 export function isHighVolumeProgram(programId: string): boolean {
-  return (HIGH_VOLUME_PROGRAM_IDS as readonly string[]).includes(programId);
+  return (
+    (HIGH_VOLUME_PROGRAM_IDS as readonly string[]).includes(programId) ||
+    programId === PUMP_PROGRAM_ID ||
+    programId === PUMP_AMM_PROGRAM_ID
+  );
+}
+
+export function isPumpTradeKind(kind: EventKind): boolean {
+  return (
+    kind === "pump_buy" ||
+    kind === "pump_sell" ||
+    kind === "pumpswap_buy" ||
+    kind === "pumpswap_sell"
+  );
+}
+
+export function isPumpLifecycleKind(kind: EventKind): boolean {
+  return (
+    kind === "pump_create" ||
+    kind === "pump_create_v2" ||
+    kind === "pump_migrate" ||
+    kind === "pumpswap_create_pool"
+  );
+}
+
+/** full = store the event. detail = store this trade. aggregate = counts only. skip = ignore. */
+export function pumpTradeRetention(input: {
+  kind: EventKind;
+  slot: number;
+  trader: string | null;
+  creator: string | null;
+  createdSlot: number | null;
+  detailSlots?: number;
+}): "full" | "detail" | "aggregate" | "skip" {
+  if (!isPumpTradeKind(input.kind) && !isPumpLifecycleKind(input.kind)) return "full";
+  if (isPumpLifecycleKind(input.kind)) return "full";
+  const window = input.detailSlots ?? PUMP_TRADE_DETAIL_SLOTS;
+  if (input.trader !== null && input.creator !== null && input.trader === input.creator) {
+    return "detail";
+  }
+  if (input.createdSlot !== null && input.slot <= input.createdSlot + window) return "detail";
+  if (input.createdSlot !== null) return "aggregate";
+  return "skip";
 }
 
 function layout(

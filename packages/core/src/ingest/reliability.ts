@@ -104,6 +104,41 @@ export class DisposableBag {
   }
 }
 
+/**
+ * Slot notifications can arrive a few slots out of order. Counting a hole the
+ * moment a higher slot arrives treats that reorder as a drop. Holes are counted
+ * only after this many later slots have arrived and the missing slot never showed up.
+ * A restart still counts the slots that never arrive once the window slides past them.
+ */
+export class SlotGapTracker {
+  private readonly seen = new Set<number>();
+  private next: number | null = null;
+  private high: number | null = null;
+  slotsSeen = 0;
+  slotGaps = 0;
+
+  constructor(private readonly reorder = 16) {}
+
+  note(slot: number): void {
+    this.slotsSeen += 1;
+    if (this.next === null || this.high === null) {
+      this.next = slot;
+      this.high = slot;
+      this.seen.add(slot);
+      return;
+    }
+    if (slot + this.reorder < this.next) return;
+    this.seen.add(slot);
+    if (slot > this.high) this.high = slot;
+    const settleThrough = this.high - this.reorder;
+    while (this.next <= settleThrough) {
+      if (!this.seen.has(this.next)) this.slotGaps += 1;
+      this.seen.delete(this.next);
+      this.next += 1;
+    }
+  }
+}
+
 export const LIVENESS_WARN_MS = 30_000;
 export const LIVENESS_CRITICAL_MS = 90_000;
 

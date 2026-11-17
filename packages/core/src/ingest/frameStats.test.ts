@@ -27,10 +27,11 @@ describe("transaction queue", () => {
     stats.noteHandleMs(40, now);
     stats.noteSlot(10, now);
     stats.noteSlot(12, now);
+    for (let slot = 13; slot <= 28; slot += 1) stats.noteSlot(slot, now);
     const rows = stats.drain(now);
     expect(rows.find((row) => row.kind === "tx")?.received).toBe(1);
     expect(rows.find((row) => row.kind === "meta")).toEqual(
-      expect.objectContaining({ shadowDropped: 1, slotGaps: 1, slotsSeen: 2, p99HandleMs: 40 }),
+      expect.objectContaining({ shadowDropped: 1, slotGaps: 1, slotsSeen: 18, p99HandleMs: 40 }),
     );
     expect(stats.drain(now)).toEqual([]);
   });

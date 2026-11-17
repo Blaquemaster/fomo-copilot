@@ -60,7 +60,10 @@ export function planCandidateWrites(input: {
     sourceSignature: input.observation.signature,
   };
   if (
-    input.observation.kind === "dbc_initialize" &&
+    (input.observation.kind === "dbc_initialize" ||
+      input.observation.kind === "pump_create" ||
+      input.observation.kind === "pump_create_v2" ||
+      input.observation.kind === "pumpswap_create_pool") &&
     input.observation.mint &&
     input.observation.pool
   ) {
@@ -69,7 +72,12 @@ export function planCandidateWrites(input: {
         ...base,
         mint: input.observation.mint,
         pool: input.observation.pool,
-        poolType: "dbc",
+        poolType:
+          input.observation.kind === "pumpswap_create_pool"
+            ? "pumpswap"
+            : input.observation.kind === "dbc_initialize"
+              ? "dbc"
+              : "pump",
       },
       curve: null,
       graduation: null,
@@ -83,7 +91,8 @@ export function planCandidateWrites(input: {
     };
   }
   if (
-    input.observation.kind === "dbc_migration_damm_v2" &&
+    (input.observation.kind === "dbc_migration_damm_v2" ||
+      input.observation.kind === "pump_migrate") &&
     input.observation.mint &&
     input.observation.pool
   ) {
@@ -92,7 +101,7 @@ export function planCandidateWrites(input: {
         ...base,
         mint: input.observation.mint,
         pool: input.observation.pool,
-        poolType: "damm_v2",
+        poolType: input.observation.kind === "pump_migrate" ? "pumpswap" : "damm_v2",
       },
       curve: null,
       graduation:

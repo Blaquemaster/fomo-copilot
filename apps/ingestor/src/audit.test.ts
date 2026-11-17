@@ -31,6 +31,9 @@ const env = {
   HELIUS_PLAN: "developer",
   HELIUS_WS_MODE: "auto",
   INGEST_MODE: "dry-run",
+  INGEST_VENUE: "meteora",
+  PUMP_SUBSCRIBE_TRADES: false,
+  PUMP_TRADE_DETAIL_SLOTS: 150,
   BACKFILL_SLOT_MARGIN: 0,
 } as Env;
 

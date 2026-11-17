@@ -187,6 +187,38 @@ create table if not exists ingest_recall_audit (
 alter table ingest_recall_audit add column if not exists errored boolean not null default false;
 alter table ingest_recall_audit add column if not exists error_reason text;
 
+create table if not exists pump_coin (
+  mint text primary key,
+  bonding_curve text not null,
+  creator text,
+  created_slot bigint not null,
+  created_at timestamptz not null,
+  signature text not null
+);
+
+create table if not exists pump_trade (
+  signature text not null,
+  event_index integer not null,
+  slot bigint not null,
+  mint text not null,
+  side text not null,
+  trader text,
+  is_creator boolean not null default false,
+  reason text not null,
+  primary key (signature, event_index)
+);
+
+create index if not exists pump_trade_mint_slot_idx on pump_trade (mint, slot);
+
+create table if not exists pump_coin_stats (
+  mint text primary key,
+  buys integer not null default 0,
+  sells integer not null default 0,
+  creator_sells integer not null default 0,
+  last_slot bigint not null,
+  updated_at timestamptz not null
+);
+
 create index if not exists ingest_recall_audit_ran_idx on ingest_recall_audit (ran_at desc);
 `;
 
@@ -243,6 +275,10 @@ export async function migrate(pool: pg.Pool): Promise<void> {
     await client.query(
       "insert into schema_migrations (id) values ($1) on conflict (id) do nothing",
       ["009_recall_error"],
+    );
+    await client.query(
+      "insert into schema_migrations (id) values ($1) on conflict (id) do nothing",
+      ["010_pump_coin"],
     );
     await client.query("commit");
   } catch (error) {
@@ -967,6 +1003,95 @@ export class IngestRepository {
          )`,
     );
     return Number(result.rows[0]?.unseen ?? 0);
+  }
+
+  async rememberPumpCoin(input: {
+    mint: string;
+    bondingCurve: string;
+    creator: string | null;
+    createdSlot: number;
+    createdAt: Date;
+    signature: string;
+  }): Promise<void> {
+    await this.pool.query(
+      `insert into pump_coin (mint, bonding_curve, creator, created_slot, created_at, signature)
+       values ($1,$2,$3,$4,$5,$6)
+       on conflict (mint) do nothing`,
+      [
+        input.mint,
+        input.bondingCurve,
+        input.creator,
+        input.createdSlot,
+        input.createdAt.toISOString(),
+        input.signature,
+      ],
+    );
+  }
+
+  async pumpCoin(mint: string): Promise<{ createdSlot: number; creator: string | null } | null> {
+    const result = await this.pool.query<{ created_slot: string; creator: string | null }>(
+      "select created_slot, creator from pump_coin where mint = $1",
+      [mint],
+    );
+    const row = result.rows[0];
+    if (!row) return null;
+    return { createdSlot: Number(row.created_slot), creator: row.creator };
+  }
+
+  async insertPumpTrade(input: {
+    signature: string;
+    eventIndex: number;
+    slot: number;
+    mint: string;
+    side: "buy" | "sell";
+    trader: string | null;
+    isCreator: boolean;
+    reason: string;
+  }): Promise<boolean> {
+    const result = await this.pool.query(
+      `insert into pump_trade
+        (signature, event_index, slot, mint, side, trader, is_creator, reason)
+       values ($1,$2,$3,$4,$5,$6,$7,$8)
+       on conflict (signature, event_index) do nothing`,
+      [
+        input.signature,
+        input.eventIndex,
+        input.slot,
+        input.mint,
+        input.side,
+        input.trader,
+        input.isCreator,
+        input.reason,
+      ],
+    );
+    return result.rowCount === 1;
+  }
+
+  async bumpPumpStats(input: {
+    mint: string;
+    slot: number;
+    side: "buy" | "sell";
+    creatorSell: boolean;
+    at: Date;
+  }): Promise<void> {
+    await this.pool.query(
+      `insert into pump_coin_stats (mint, buys, sells, creator_sells, last_slot, updated_at)
+       values ($1, $2, $3, $4, $5, $6)
+       on conflict (mint) do update set
+         buys = pump_coin_stats.buys + excluded.buys,
+         sells = pump_coin_stats.sells + excluded.sells,
+         creator_sells = pump_coin_stats.creator_sells + excluded.creator_sells,
+         last_slot = greatest(pump_coin_stats.last_slot, excluded.last_slot),
+         updated_at = excluded.updated_at`,
+      [
+        input.mint,
+        input.side === "buy" ? 1 : 0,
+        input.side === "sell" ? 1 : 0,
+        input.creatorSell ? 1 : 0,
+        input.slot,
+        input.at.toISOString(),
+      ],
+    );
   }
 
   async alertableCandidates(limit: number): Promise<

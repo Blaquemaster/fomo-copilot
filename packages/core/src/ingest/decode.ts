@@ -4,6 +4,8 @@ import {
   ANCHOR_EVENT_DISC,
   DAMM_V2_PROGRAM_ID,
   DBC_PROGRAM_ID,
+  PUMP_AMM_PROGRAM_ID,
+  PUMP_PROGRAM_ID,
   DISC,
   DLMM_PROGRAM_ID,
   INSTRUCTION_LAYOUTS,
@@ -190,9 +192,9 @@ export function parseParsedNotification(
     const record = asRecord(instruction);
     if (record === null || typeof record["instructionName"] !== "string") continue;
     const instructionName = record["instructionName"];
-    const kind = kindFromInstructionName(instructionName);
-    if (kind === null) continue;
     const programId = typeof record["programId"] === "string" ? record["programId"] : "";
+    const kind = kindFromInstructionName(instructionName, programId);
+    if (kind === null) continue;
     const named = namedAccounts(asRecord(record["decoded"]));
     const rawAccounts = accountPubkeys({ accounts: record["rawAccounts"] }, []);
     const built = observationFromParsedAccounts({
@@ -356,8 +358,22 @@ export function normalizeInstructionName(name: string): string {
   return name.toLowerCase().replaceAll("_", "").replaceAll(" ", "");
 }
 
-function kindFromInstructionName(name: string): EventKind | null {
+function kindFromInstructionName(name: string, programId = ""): EventKind | null {
   const normalized = normalizeInstructionName(name);
+  if (programId === PUMP_PROGRAM_ID) {
+    if (normalized === "createv2") return "pump_create_v2";
+    if (normalized === "create") return "pump_create";
+    if (normalized === "migrate" || normalized === "migratev2") return "pump_migrate";
+    if (normalized.startsWith("buy")) return "pump_buy";
+    if (normalized.startsWith("sell")) return "pump_sell";
+    return null;
+  }
+  if (programId === PUMP_AMM_PROGRAM_ID) {
+    if (normalized === "createpool") return "pumpswap_create_pool";
+    if (normalized.startsWith("buy")) return "pumpswap_buy";
+    if (normalized.startsWith("sell")) return "pumpswap_sell";
+    return null;
+  }
   if (normalized.includes("initializevirtualpool")) return "dbc_initialize";
   if (normalized === "migrationdammv2") return "dbc_migration_damm_v2";
   if (
@@ -419,12 +435,15 @@ function observationFromParsedAccounts(input: {
   blockTimeMs: number | null;
   eventIndex: number;
 }): Observation | null {
-  const poolType: PoolType =
-    input.kind === "dbc_initialize" || input.kind === "dbc_curve_complete"
-      ? "dbc"
-      : input.kind === "dlmm_initialize"
-        ? "dlmm"
-        : "damm_v2";
+  const poolType: PoolType = input.kind.startsWith("pumpswap")
+    ? "pumpswap"
+    : input.kind.startsWith("pump_")
+      ? "pump"
+      : input.kind === "dbc_initialize" || input.kind === "dbc_curve_complete"
+        ? "dbc"
+        : input.kind === "dlmm_initialize"
+          ? "dlmm"
+          : "damm_v2";
   const pick = (...names: string[]): string | null => {
     for (const name of names) {
       const value = input.named.get(normalizeInstructionName(name));
@@ -432,15 +451,18 @@ function observationFromParsedAccounts(input: {
     }
     return null;
   };
-  let mint = pick("base_mint");
-  const pool = pick("pool", "lb_pair");
+  let mint = pick("mint", "base_mint");
+  const pool =
+    input.kind === "pump_migrate"
+      ? pick("pool", "bonding_curve", "lb_pair")
+      : pick("bonding_curve", "pool", "lb_pair");
   const mintA = pick("token_a_mint", "token_mint_x", "token_x");
   const mintB = pick("token_b_mint", "token_mint_y", "token_y");
   if (mint === null && mintA !== null) {
     mint = mintB === null ? mintA : chooseTokenMint(mintA, mintB);
   }
-  const creator = pick("creator", "funder", "payer");
-  const virtualPool = pick("virtual_pool");
+  const creator = pick("creator", "user", "funder", "payer");
+  const virtualPool = input.kind === "pump_migrate" ? pick("bonding_curve") : pick("virtual_pool");
   const quoteMint = pick("quote_mint");
   if ((mint === null || pool === null) && input.rawAccounts.length > 0) {
     const layout = INSTRUCTION_LAYOUTS.find(
