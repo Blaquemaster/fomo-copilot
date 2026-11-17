@@ -392,13 +392,14 @@ export interface AuditWindow {
   toSlot: number;
 }
 
-/** One 15-minute window inside the previous 6 hours, ending at least 30 minutes ago. */
+/** One window inside the previous 6 hours, ending at least 30 minutes ago. */
 export function planAuditWindow(input: {
   nowMs: number;
   tipSlot: number;
   programId: string;
+  spanSlots?: number;
 }): AuditWindow {
-  const span = Math.round(15 * 60 * SLOTS_PER_SECOND);
+  const span = input.spanSlots ?? Math.round(15 * 60 * SLOTS_PER_SECOND);
   const horizon = Math.round(6 * 60 * 60 * SLOTS_PER_SECOND);
   const quiet = Math.round(30 * 60 * SLOTS_PER_SECOND);
   const newestEnd = input.tipSlot - quiet;
@@ -408,6 +409,22 @@ export function planAuditWindow(input: {
   const hash = fnv(`${input.programId}:${bucket.toString()}`);
   const start = oldestStart + (room === 0 ? 0 : hash % (room + 1));
   return { fromSlot: start, toSlot: start + span };
+}
+
+/**
+ * A window that starts before this venue's stream was live is not a miss.
+ * Clamp the start up to coverage, or skip the window when none of it is covered.
+ */
+export function coverAuditWindow(input: {
+  window: AuditWindow;
+  coverageSlot: number | null;
+}): { action: "skip" } | { action: "scan"; fromSlot: number; toSlot: number } {
+  if (input.coverageSlot === null || input.window.toSlot <= input.coverageSlot) {
+    return { action: "skip" };
+  }
+  const fromSlot = Math.max(input.window.fromSlot, input.coverageSlot);
+  if (fromSlot >= input.window.toSlot) return { action: "skip" };
+  return { action: "scan", fromSlot, toSlot: input.window.toSlot };
 }
 
 export function recallLoss(missed: number, expected: number): number | null {

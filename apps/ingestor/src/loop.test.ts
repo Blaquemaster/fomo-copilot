@@ -26,6 +26,7 @@ const env: Env = {
   INGEST_MODE: "dry-run",
   INGEST_VENUE: "meteora",
   PUMP_SUBSCRIBE_TRADES: false,
+  PUMP_SUBSCRIBE_CREATE_POOL: false,
   PUMP_TRADE_DETAIL_SLOTS: 150,
   BACKFILL_SLOT_MARGIN: 0,
 };
@@ -98,6 +99,8 @@ function repo(overrides: Partial<IngestRepository> = {}): IngestRepository {
     insertBackfill: vi.fn(async () => undefined),
     knownSignatures: vi.fn(async () => new Set<string>()),
     lastLiveSlot: vi.fn(async () => null),
+    ingestCursor: vi.fn(async () => ({ slot: null, venue: null, coverageSlot: null })),
+    recordVenueCoverage: vi.fn(async () => undefined),
     insertHeapSample: vi.fn(async () => undefined),
     flushAccounting: vi.fn(async () => undefined),
     persistEvent: vi.fn(async () => true),
@@ -505,9 +508,9 @@ describe("ingest loop", () => {
     const subscribe =
       socket.sent.find((frame) => frame.includes("parsedTransactionSubscribe")) ?? "";
     expect(subscribe).toContain("6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P");
-    expect(subscribe).toContain("pAMMBay6oceH9fJKBRHGP5D4bD4sWpmSwMn52FMfXEA");
     expect(subscribe).toContain("create_v2");
-    expect(subscribe).toContain("create_pool");
+    expect(subscribe).not.toContain("create_pool");
+    expect(subscribe).not.toContain("pAMMBay6oceH9fJKBRHGP5D4bD4sWpmSwMn52FMfXEA");
     expect(subscribe).not.toContain("dbcij3LWUppWqq96dh6gJWwBifmcGfLSB5D4DuSMaqN");
     const body = JSON.parse(subscribe) as {
       params: Array<{ instructionNames?: string[] }>;

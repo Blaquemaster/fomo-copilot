@@ -186,6 +186,10 @@ create table if not exists ingest_recall_audit (
 
 alter table ingest_recall_audit add column if not exists errored boolean not null default false;
 alter table ingest_recall_audit add column if not exists error_reason text;
+alter table ingest_recall_audit add column if not exists skipped boolean not null default false;
+
+alter table ingest_status add column if not exists venue text;
+alter table ingest_status add column if not exists coverage_slot bigint;
 
 create table if not exists pump_coin (
   mint text primary key,
@@ -279,6 +283,10 @@ export async function migrate(pool: pg.Pool): Promise<void> {
     await client.query(
       "insert into schema_migrations (id) values ($1) on conflict (id) do nothing",
       ["010_pump_coin"],
+    );
+    await client.query(
+      "insert into schema_migrations (id) values ($1) on conflict (id) do nothing",
+      ["011_audit_coverage"],
     );
     await client.query("commit");
   } catch (error) {
@@ -761,13 +769,43 @@ export class IngestRepository {
   }
 
   async lastLiveSlot(): Promise<number | null> {
-    const result = await this.pool.query<{ last_slot: string | null }>(
-      "select last_slot from ingest_status where id = 1",
+    return (await this.ingestCursor()).slot;
+  }
+
+  async ingestCursor(): Promise<{
+    slot: number | null;
+    venue: string | null;
+    coverageSlot: number | null;
+  }> {
+    const result = await this.pool.query<{
+      last_slot: string | null;
+      venue: string | null;
+      coverage_slot: string | null;
+    }>("select last_slot, venue, coverage_slot from ingest_status where id = 1");
+    const row = result.rows[0];
+    const slot = row?.last_slot == null ? null : Number(row.last_slot);
+    const coverage = row?.coverage_slot == null ? null : Number(row.coverage_slot);
+    return {
+      slot: slot !== null && Number.isFinite(slot) ? slot : null,
+      venue: row?.venue ?? null,
+      coverageSlot: coverage !== null && Number.isFinite(coverage) ? coverage : null,
+    };
+  }
+
+  async recordVenueCoverage(input: {
+    venue: string;
+    coverageSlot: number;
+    now: Date;
+  }): Promise<void> {
+    await this.pool.query(
+      `insert into ingest_status (id, state, ws_method, plan, mode, venue, coverage_slot, updated_at)
+       values (1, 'starting', 'parsed', 'developer', 'dry-run', $1, $2, $3)
+       on conflict (id) do update set
+         venue = excluded.venue,
+         coverage_slot = excluded.coverage_slot,
+         updated_at = excluded.updated_at`,
+      [input.venue, input.coverageSlot, input.now.toISOString()],
     );
-    const value = result.rows[0]?.last_slot;
-    if (value == null) return null;
-    const slot = Number(value);
-    return Number.isFinite(slot) ? slot : null;
   }
 
   async insertHeapSample(input: {
@@ -945,12 +983,13 @@ export class IngestRepository {
     incomplete: boolean;
     errored: boolean;
     errorReason: string | null;
+    skipped: boolean;
   }): Promise<void> {
     await this.pool.query(
       `insert into ingest_recall_audit
         (ran_at, program_id, window_start_slot, window_end_slot, expected, matched, missed,
-         recovered, decode_failed, credits, incomplete, errored, error_reason)
-       values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)`,
+         recovered, decode_failed, credits, incomplete, errored, error_reason, skipped)
+       values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)`,
       [
         input.ranAt.toISOString(),
         input.programId,
@@ -965,6 +1004,7 @@ export class IngestRepository {
         input.incomplete,
         input.errored,
         input.errorReason,
+        input.skipped,
       ],
     );
   }
@@ -979,7 +1019,7 @@ export class IngestRepository {
               coalesce(sum(expected), 0)::text as expected,
               count(*)::text as windows
        from ingest_recall_audit
-       where ran_at >= $1 and incomplete = false and errored = false`,
+       where ran_at >= $1 and incomplete = false and errored = false and skipped = false`,
       [since.toISOString()],
     );
     const row = result.rows[0];

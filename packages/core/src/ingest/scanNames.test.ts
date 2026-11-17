@@ -13,7 +13,8 @@ import {
   scanNamesForProgram,
   subscriptionNamesForProgram,
 } from "./programs.js";
-import { SlotGapTracker } from "./reliability.js";
+import { coverAuditWindow } from "./frameStats.js";
+import { SlotGapTracker, venueStartupCursor } from "./reliability.js";
 
 describe("scan instruction names", () => {
   it("keeps the transfer-hook name on the live subscription and off the scan", () => {
@@ -45,6 +46,8 @@ describe("scan instruction names", () => {
     expect(subscriptionNamesForProgram(PUMP_PROGRAM_ID, true)).toContain("buy");
     expect(subscriptionNamesForProgram(PUMP_PROGRAM_ID, true)).toContain("sell");
     expect(scanNamesForProgram(PUMP_PROGRAM_ID)).not.toContain("buy");
+    expect(subscriptionNamesForProgram(PUMP_AMM_PROGRAM_ID, false, false)).toEqual([]);
+    expect(scanNamesForProgram(PUMP_AMM_PROGRAM_ID, true)).toEqual(["create_pool"]);
     expect(
       pumpTradeRetention({
         kind: "pump_create_v2",
@@ -92,6 +95,52 @@ describe("scan instruction names", () => {
         createdSlot: null,
       }),
     ).toBe("skip");
+  });
+
+  it("skips an audit window that ends before stream coverage", () => {
+    const window = { fromSlot: 100, toSlot: 200 };
+    expect(coverAuditWindow({ window, coverageSlot: null })).toEqual({ action: "skip" });
+    expect(coverAuditWindow({ window, coverageSlot: 250 })).toEqual({ action: "skip" });
+    expect(coverAuditWindow({ window, coverageSlot: 150 })).toEqual({
+      action: "scan",
+      fromSlot: 150,
+      toSlot: 200,
+    });
+    expect(coverAuditWindow({ window, coverageSlot: 50 })).toEqual({
+      action: "scan",
+      fromSlot: 100,
+      toSlot: 200,
+    });
+  });
+
+  it("drops a stale slot when the stored venue is missing or different", () => {
+    expect(
+      venueStartupCursor({
+        persistedSlot: 1_000,
+        persistedVenue: "meteora",
+        currentVenue: "pump",
+        tipSlot: 500_000,
+        margin: 16,
+      }),
+    ).toEqual({ slot: null, stale: false, resetCoverage: true });
+    expect(
+      venueStartupCursor({
+        persistedSlot: 1_000,
+        persistedVenue: null,
+        currentVenue: "pump",
+        tipSlot: 500_000,
+        margin: 16,
+      }).stale,
+    ).toBe(false);
+    expect(
+      venueStartupCursor({
+        persistedSlot: 499_900,
+        persistedVenue: "pump",
+        currentVenue: "pump",
+        tipSlot: 500_000,
+        margin: 16,
+      }).slot,
+    ).toBe(499_900);
   });
 
   it("does not count a slot that arrives a few slots late as a gap", () => {
