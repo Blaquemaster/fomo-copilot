@@ -10,7 +10,10 @@ import {
   decodeRpcTransaction,
   migrate,
   scanNamesForProgram,
+  auditMaxPages,
+  auditSpanSlots,
   planAuditWindow,
+  coverAuditWindow,
   recallShouldAlert,
   sendTelegramMessage,
   startApp,
@@ -20,8 +23,6 @@ import {
 } from "@fomo/core";
 
 import { getSlot, getTransaction, scanInstructionHistory } from "./helius.js";
-
-const AUDIT_PAGES = 8;
 
 export function auditScanErrorReason(error: unknown): string {
   const message = error instanceof Error ? error.message : "";
@@ -69,10 +70,51 @@ export async function runRecallAudit(input: {
   const fetchTransaction =
     input.fetchTransaction ??
     ((signature: string) => getTransaction(input.env.HELIUS_API_KEY, signature));
+  const coverage = await input.repo.ingestCursor();
   let windowMissed = 0;
   const scanErrors: Array<{ programId: string; reason: string }> = [];
-  for (const programId of programsForVenue(input.env.INGEST_VENUE)) {
-    const window = planAuditWindow({ nowMs: now(), tipSlot: tip, programId });
+  const programs = programsForVenue(input.env.INGEST_VENUE).filter(
+    (programId) => scanNamesForProgram(programId, input.env.PUMP_SUBSCRIBE_CREATE_POOL).length > 0,
+  );
+  for (const programId of programs) {
+    const planned = planAuditWindow({
+      nowMs: now(),
+      tipSlot: tip,
+      programId,
+      spanSlots: auditSpanSlots(programId),
+    });
+    const covered = coverAuditWindow({ window: planned, coverageSlot: coverage.coverageSlot });
+    if (covered.action === "skip") {
+      input.logger.info(
+        { programId, window: planned, coverageSlot: coverage.coverageSlot },
+        "recall window is before stream coverage",
+      );
+      try {
+        await input.repo.insertRecall({
+          ranAt: new Date(now()),
+          programId,
+          windowStartSlot: planned.fromSlot,
+          windowEndSlot: planned.toSlot,
+          expected: 0,
+          matched: 0,
+          missed: 0,
+          recovered: 0,
+          decodeFailed: 0,
+          credits: 0,
+          incomplete: false,
+          errored: false,
+          errorReason: "before_coverage",
+          skipped: true,
+        });
+      } catch (writeError) {
+        input.logger.error(
+          { err: writeError, programId },
+          "failed to record skipped recall window",
+        );
+      }
+      continue;
+    }
+    const window = { fromSlot: covered.fromSlot, toSlot: covered.toSlot };
     if (window.toSlot - window.fromSlot > BACKFILL_MAX_SLOT_SPAN * 20) {
       input.logger.warn({ programId, window }, "recall window is unexpectedly wide");
     }
@@ -81,10 +123,10 @@ export async function runRecallAudit(input: {
       scanned = await scan({
         apiKey: input.env.HELIUS_API_KEY,
         programId,
-        instructionNames: scanNamesForProgram(programId),
+        instructionNames: scanNamesForProgram(programId, input.env.PUMP_SUBSCRIBE_CREATE_POOL),
         slotGt: window.fromSlot - 1,
         slotLte: window.toSlot,
-        maxPages: AUDIT_PAGES,
+        maxPages: auditMaxPages(programId),
       });
     } catch (error) {
       const reason = auditScanErrorReason(error);
@@ -105,6 +147,7 @@ export async function runRecallAudit(input: {
           incomplete: false,
           errored: true,
           errorReason: reason,
+          skipped: false,
         });
       } catch (writeError) {
         input.logger.error({ err: writeError, programId }, "failed to record recall scan error");
@@ -133,6 +176,7 @@ export async function runRecallAudit(input: {
         incomplete: true,
         errored: false,
         errorReason: null,
+        skipped: false,
       });
       input.logger.warn(
         { programId, credits: scanned.creditsCharged },
@@ -197,6 +241,7 @@ export async function runRecallAudit(input: {
       incomplete: false,
       errored: false,
       errorReason: null,
+      skipped: false,
     });
     input.logger.info(
       {

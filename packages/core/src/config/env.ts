@@ -42,6 +42,14 @@ export const envSchema = z.object({
     .enum(["true", "false"])
     .default("false")
     .transform((value) => value === "true"),
+  /**
+   * PumpSwap create_pool outside a Pump migrate is mostly non-Pump.fun or copycat
+   * pools. Off by default. A create_pool inside a migrate transaction is still decoded.
+   */
+  PUMP_SUBSCRIBE_CREATE_POOL: z
+    .enum(["true", "false"])
+    .default("false")
+    .transform((value) => value === "true"),
   /** Slots after create during which each trade is stored, not only counted. */
   PUMP_TRADE_DETAIL_SLOTS: z.coerce.number().int().min(0).max(10_000).default(150),
   HELIUS_MONTHLY_CREDITS: z.coerce.number().int().positive().max(1_000_000_000).optional(),

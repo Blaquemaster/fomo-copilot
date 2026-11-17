@@ -138,6 +138,7 @@ jobs:
               line("INGEST_MODE", pick("INGEST_MODE", "dry-run", {"dry-run", "continuous"})),
               line("INGEST_VENUE", pick("INGEST_VENUE", "pump", {"pump", "meteora"})),
               line("PUMP_SUBSCRIBE_TRADES", pick("PUMP_SUBSCRIBE_TRADES", "false", {"true", "false"})),
+              line("PUMP_SUBSCRIBE_CREATE_POOL", pick("PUMP_SUBSCRIBE_CREATE_POOL", "false", {"true", "false"})),
               line("BACKFILL_SLOT_MARGIN", slot_margin()),
               line("THRESHOLDS_PATH", "/app/config/thresholds.yaml"),
           ]) + "\n"

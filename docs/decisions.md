@@ -1,5 +1,13 @@
 # Decision log
 
+## 2026-11-17 — Coverage, create_pool, and a cheaper audit
+
+The first Pump audit scored chain history from before the venue switch as 471 misses. A window that ends at or before `ingest_status.coverage_slot` is stored as `skipped` with reason `before_coverage` and does not page Telegram. A window that straddles coverage is scanned only from that slot forward. Coverage resets when the stored venue changes, when a slot with no venue is already older than the backfill cap (the leftover Meteora checkpoint), or when the same venue's slot is too old to backfill. A usable slot for the current venue is kept.
+
+PumpSwap `create_pool` outside a Pump `migrate` is not a Pump.fun graduation. The live subscription and the audit omit it unless `PUMP_SUBSCRIBE_CREATE_POOL=true`. A `create_pool` instruction inside a migrate transaction is still decoded. Measured production was about 173 of those events an hour, so dropping them takes the stream from about 1,253 credits an hour (about 902k a month) to about 1,080 an hour (about 778k a month). Creates plus migrates are about 1,100 an hour by themselves, so that is the floor. It is under the Free plan's 1 million and about 28k above a 750k target. The 60/80/90 percent guards are unchanged.
+
+The Pump recall window is five minutes, not fifteen. At about 200 transactions a second, fifteen minutes is about 180,000 transactions and does not finish inside eight scan pages (the 160 credit cap). Five minutes is about 60,000 transactions, six pages, about 120 credits, and it finishes. Four runs a day is about 14k credits a month, under the 40k audit budget. PumpSwap is not scanned while `create_pool` is off.
+
 ## 2026-11-17 — Pump.fun is the live venue
 
 Meteora stays in the code and turns on with `INGEST_VENUE=meteora`. The default is `pump`: program `6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P` and PumpSwap `pAMMBay6oceH9fJKBRHGP5D4bD4sWpmSwMn52FMfXEA`, both read from the address field of the official IDLs in https://github.com/pump-fun/pump-public-docs. The live subscription always includes create, create_v2, migrate, migrate_v2, and create_pool. Buy and sell names are added only when `PUMP_SUBSCRIBE_TRADES=true`. The recall scan stays on the lifecycle names, the same split PR #17 used for the transfer-hook instruction.

@@ -33,11 +33,12 @@ from ingest_frame_hourly;
 select
   count(*) as audit_windows,
   count(*) filter (where errored) as errored_windows,
-  count(*) filter (where incomplete and not errored) as incomplete_windows,
-  count(*) filter (where incomplete = false and errored = false and missed = 0) as clean_windows,
-  coalesce(sum(expected) filter (where incomplete = false and errored = false), 0) as expected_events,
-  coalesce(sum(missed) filter (where incomplete = false and errored = false), 0) as misses,
-  coalesce(sum(recovered) filter (where incomplete = false and errored = false), 0) as recovered,
+  count(*) filter (where skipped) as skipped_windows,
+  count(*) filter (where incomplete and not errored and not skipped) as incomplete_windows,
+  count(*) filter (where incomplete = false and errored = false and skipped = false and missed = 0) as clean_windows,
+  coalesce(sum(expected) filter (where incomplete = false and errored = false and skipped = false), 0) as expected_events,
+  coalesce(sum(missed) filter (where incomplete = false and errored = false and skipped = false), 0) as misses,
+  coalesce(sum(recovered) filter (where incomplete = false and errored = false and skipped = false), 0) as recovered,
   coalesce(sum(credits), 0) as credits
 from ingest_recall_audit
 where ran_at >= now() - interval '7 days';

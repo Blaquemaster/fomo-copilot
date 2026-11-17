@@ -38,7 +38,7 @@ import {
   isUnrecoveredGap,
   nextReconnectAlert,
   parsedEventMicros,
-  persistedSlotIsUsable,
+  venueStartupCursor,
   parseLogsNotification,
   parseParsedNotification,
   parseSlotNotification,
@@ -88,6 +88,8 @@ interface ReconnectGap {
   staleFromSlot?: number | null;
   /** True when untilSlot came from ingest_status after a restart. */
   fromPersistedSlot?: boolean;
+  /** True when this venue has no usable coverage yet and the audit cursor must move. */
+  resetCoverage?: boolean;
 }
 
 export interface SocketLike {
@@ -347,11 +349,22 @@ async function runSocket(input: {
     bag.add(() => {
       ws.removeEventListener("pong", onPong);
     });
-    const watched = programsForVenue(input.env.INGEST_VENUE);
+    const watched = programsForVenue(input.env.INGEST_VENUE).filter(
+      (programId) =>
+        subscriptionNamesForProgram(
+          programId,
+          input.env.PUMP_SUBSCRIBE_TRADES,
+          input.env.PUMP_SUBSCRIBE_CREATE_POOL,
+        ).length > 0,
+    );
     const instructionNames = [
       ...new Set(
         watched.flatMap((programId) =>
-          subscriptionNamesForProgram(programId, input.env.PUMP_SUBSCRIBE_TRADES),
+          subscriptionNamesForProgram(
+            programId,
+            input.env.PUMP_SUBSCRIBE_TRADES,
+            input.env.PUMP_SUBSCRIBE_CREATE_POOL,
+          ),
         ),
       ),
     ];
@@ -364,6 +377,13 @@ async function runSocket(input: {
     }
     flushOnClose = flushAccounting;
     const gap = await readGap(input, meter);
+    if (gap.resetCoverage && gap.tipSlot !== null) {
+      await input.repo.recordVenueCoverage({
+        venue: input.env.INGEST_VENUE,
+        coverageSlot: gap.tipSlot,
+        now: new Date(),
+      });
+    }
     connectedAtMs = now();
     touch();
     input.logger.info(
@@ -1078,7 +1098,11 @@ export async function backfillProgram(input: {
     if (
       shouldSkipListedSignature({
         instructionNames: listed,
-        watchedNames: subscriptionNamesForProgram(input.programId, input.env.PUMP_SUBSCRIBE_TRADES),
+        watchedNames: subscriptionNamesForProgram(
+          input.programId,
+          input.env.PUMP_SUBSCRIBE_TRADES,
+          input.env.PUMP_SUBSCRIBE_CREATE_POOL,
+        ),
       })
     ) {
       continue;
@@ -1447,27 +1471,35 @@ async function readGap(
   }
   let staleFromSlot: number | null = null;
   let fromPersistedSlot = false;
+  let resetCoverage = false;
   if (lastSlot === null) {
-    const persisted = await input.repo.lastLiveSlot();
-    if (
-      persistedSlotIsUsable({
-        persistedSlot: persisted,
-        tipSlot: currentSlot,
-        margin: input.env.BACKFILL_SLOT_MARGIN,
-        maxSpan: BACKFILL_MAX_SLOT_SPAN,
-      })
-    ) {
-      lastSlot = persisted;
+    const cursor = await input.repo.ingestCursor();
+    const decision = venueStartupCursor({
+      persistedSlot: cursor.slot,
+      persistedVenue: cursor.venue,
+      currentVenue: input.env.INGEST_VENUE,
+      tipSlot: currentSlot,
+      margin: input.env.BACKFILL_SLOT_MARGIN,
+      maxSpan: BACKFILL_MAX_SLOT_SPAN,
+    });
+    resetCoverage = decision.resetCoverage;
+    if (decision.slot !== null) {
+      lastSlot = decision.slot;
       fromPersistedSlot = true;
       input.logger.info(
-        { persistedSlot: persisted, tipSlot: currentSlot },
+        { persistedSlot: decision.slot, tipSlot: currentSlot, venue: input.env.INGEST_VENUE },
         "startup backfill bounded by persisted live slot",
       );
-    } else if (persisted !== null) {
-      staleFromSlot = backfillStopSlot(persisted, input.env.BACKFILL_SLOT_MARGIN);
+    } else if (decision.stale && cursor.slot !== null) {
+      staleFromSlot = backfillStopSlot(cursor.slot, input.env.BACKFILL_SLOT_MARGIN);
       input.logger.warn(
-        { persistedSlot: persisted, tipSlot: currentSlot, gapFromSlot: staleFromSlot },
+        { persistedSlot: cursor.slot, tipSlot: currentSlot, gapFromSlot: staleFromSlot },
         "persisted live slot is older than the backfill cap",
+      );
+    } else if (cursor.venue !== null && cursor.venue !== input.env.INGEST_VENUE) {
+      input.logger.info(
+        { persistedVenue: cursor.venue, venue: input.env.INGEST_VENUE, persistedSlot: cursor.slot },
+        "ignoring persisted live slot from another venue",
       );
     }
   }
@@ -1480,6 +1512,7 @@ async function readGap(
     }),
     staleFromSlot,
     fromPersistedSlot,
+    resetCoverage,
   };
 }
 

@@ -222,6 +222,43 @@ export function backfillStopSlot(lastLiveSlot: number, margin: number): number {
   return Math.max(0, Math.floor(lastLiveSlot) - safeMargin);
 }
 
+/**
+ * A venue change must not reuse the previous venue's slot. A slot with no stored
+ * venue that is already too old is the Meteora checkpoint left behind the switch.
+ * A long downtime of the same venue still reports stale, and both cases reset
+ * audit coverage so earlier slots are not scored as misses.
+ */
+export function venueStartupCursor(input: {
+  persistedSlot: number | null;
+  persistedVenue: string | null;
+  currentVenue: string;
+  tipSlot: number | null;
+  margin: number;
+  maxSpan?: number;
+}): { slot: number | null; stale: boolean; resetCoverage: boolean } {
+  if (input.persistedVenue !== null && input.persistedVenue !== input.currentVenue) {
+    return { slot: null, stale: false, resetCoverage: true };
+  }
+  const usable = persistedSlotIsUsable({
+    persistedSlot: input.persistedSlot,
+    tipSlot: input.tipSlot,
+    margin: input.margin,
+    maxSpan: input.maxSpan,
+  });
+  if (usable) {
+    return {
+      slot: input.persistedSlot,
+      stale: false,
+      resetCoverage: input.persistedVenue === null,
+    };
+  }
+  if (input.persistedSlot !== null) {
+    const legacySwitch = input.persistedVenue === null;
+    return { slot: null, stale: !legacySwitch, resetCoverage: true };
+  }
+  return { slot: null, stale: false, resetCoverage: true };
+}
+
 export function persistedSlotIsUsable(input: {
   persistedSlot: number | null;
   tipSlot: number | null;

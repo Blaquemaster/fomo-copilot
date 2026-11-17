@@ -33,6 +33,7 @@ const env = {
   INGEST_MODE: "dry-run",
   INGEST_VENUE: "meteora",
   PUMP_SUBSCRIBE_TRADES: false,
+  PUMP_SUBSCRIBE_CREATE_POOL: false,
   PUMP_TRADE_DETAIL_SLOTS: 150,
   BACKFILL_SLOT_MARGIN: 0,
 } as Env;
@@ -76,6 +77,7 @@ describe("recall audit", () => {
         })),
         addUsage: vi.fn(async () => undefined),
         insertRecall: inserted,
+        ingestCursor: vi.fn(async () => ({ slot: 1, venue: "meteora", coverageSlot: 0 })),
         knownSignatures: vi.fn(async () => new Set<string>()),
         persistEvent: vi.fn(async () => true),
         recallTotals: vi.fn(async () => ({ missed: 0, expected: 0, windows: 0 })),
@@ -112,5 +114,51 @@ describe("recall audit", () => {
       expect.objectContaining({ programId: DLMM_PROGRAM_ID, errored: false }),
     );
     expect(sendTelegramMessage).toHaveBeenCalledTimes(1);
+  });
+
+  it("records a pre-coverage window as skipped and does not alert", async () => {
+    vi.mocked(sendTelegramMessage).mockClear();
+    const inserted = vi.fn(async () => undefined);
+    const scanned: string[] = [];
+    await runRecallAudit({
+      env,
+      logger: logger(),
+      now: () => Date.parse("2026-11-16T12:00:00.000Z"),
+      tipSlot: 470_000_000,
+      repo: {
+        monthUsage: vi.fn(async () => ({
+          creditMicros: 0n,
+          alerted60: false,
+          alerted80: false,
+          paused: false,
+        })),
+        addUsage: vi.fn(async () => undefined),
+        insertRecall: inserted,
+        knownSignatures: vi.fn(async () => new Set<string>()),
+        persistEvent: vi.fn(async () => true),
+        recallTotals: vi.fn(async () => ({ missed: 0, expected: 0, windows: 0 })),
+        creationUnseen: vi.fn(async () => 0),
+        ingestCursor: vi.fn(async () => ({
+          slot: 470_000_000,
+          venue: "meteora",
+          coverageSlot: 470_000_000,
+        })),
+      } as unknown as IngestRepository,
+      scan: () => {
+        scanned.push("scanned");
+        return Promise.resolve({ matches: [], creditsCharged: 11, complete: true });
+      },
+    });
+    expect(scanned).toEqual([]);
+    expect(inserted.mock.calls.length).toBeGreaterThan(0);
+    const rows = inserted.mock.calls as unknown as Array<
+      [{ skipped: boolean; missed: number; errorReason: string }]
+    >;
+    for (const call of rows) {
+      expect(call[0].skipped).toBe(true);
+      expect(call[0].missed).toBe(0);
+      expect(call[0].errorReason).toBe("before_coverage");
+    }
+    expect(sendTelegramMessage).not.toHaveBeenCalled();
   });
 });

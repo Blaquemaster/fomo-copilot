@@ -934,23 +934,43 @@ export function programsForVenue(venue: IngestVenue): readonly string[] {
 export function subscriptionNamesForProgram(
   programId: string,
   includeTrades: boolean,
+  includeCreatePool = false,
 ): readonly string[] {
   if (programId === PUMP_PROGRAM_ID) {
     return includeTrades ? [...PUMP_LIFECYCLE_NAMES, ...PUMP_TRADE_NAMES] : PUMP_LIFECYCLE_NAMES;
   }
   if (programId === PUMP_AMM_PROGRAM_ID) {
-    return includeTrades
-      ? [...PUMP_AMM_LIFECYCLE_NAMES, ...PUMP_AMM_TRADE_NAMES]
-      : PUMP_AMM_LIFECYCLE_NAMES;
+    const lifecycle = includeCreatePool ? PUMP_AMM_LIFECYCLE_NAMES : [];
+    return includeTrades ? [...lifecycle, ...PUMP_AMM_TRADE_NAMES] : lifecycle;
   }
   return parsedNamesForProgram(programId);
 }
 
-export function scanNamesForProgram(programId: string): readonly string[] {
+export function scanNamesForProgram(
+  programId: string,
+  includeCreatePool = false,
+): readonly string[] {
   if (programId === DBC_PROGRAM_ID) return DBC_SCAN_INSTRUCTION_NAMES;
   if (programId === PUMP_PROGRAM_ID) return PUMP_LIFECYCLE_NAMES;
-  if (programId === PUMP_AMM_PROGRAM_ID) return PUMP_AMM_LIFECYCLE_NAMES;
+  if (programId === PUMP_AMM_PROGRAM_ID) return includeCreatePool ? PUMP_AMM_LIFECYCLE_NAMES : [];
   return parsedNamesForProgram(programId);
+}
+
+/** Pump program history is mostly swaps. Five minutes finishes inside the audit page budget. */
+export function auditSpanSlots(programId: string): number {
+  const slotsPerSecond = 1000 / 215;
+  const minutes = programId === PUMP_PROGRAM_ID || programId === PUMP_AMM_PROGRAM_ID ? 5 : 15;
+  return Math.round(minutes * 60 * slotsPerSecond);
+}
+
+/**
+ * Pages of 10,000 transactions. Five minutes of a ~200 tx/s program is about
+ * 60,000 transactions, so eight pages finishes it. Each full page-request is
+ * about 20 credits.
+ */
+export function auditMaxPages(programId: string): number {
+  if (programId === PUMP_PROGRAM_ID || programId === PUMP_AMM_PROGRAM_ID) return 8;
+  return 8;
 }
 
 export function isHighVolumeProgram(programId: string): boolean {
