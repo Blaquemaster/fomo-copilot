@@ -1,5 +1,13 @@
 # Decision log
 
+## 2026-11-17 — Pump.fun is the live venue
+
+Meteora stays in the code and turns on with `INGEST_VENUE=meteora`. The default is `pump`: program `6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P` and PumpSwap `pAMMBay6oceH9fJKBRHGP5D4bD4sWpmSwMn52FMfXEA`, both read from the address field of the official IDLs in https://github.com/pump-fun/pump-public-docs. The live subscription always includes create, create_v2, migrate, migrate_v2, and create_pool. Buy and sell names are added only when `PUMP_SUBSCRIBE_TRADES=true`. The recall scan stays on the lifecycle names, the same split PR #17 used for the transfer-hook instruction.
+
+Every create and graduation is stored. A trade is stored as its own row for `PUMP_TRADE_DETAIL_SLOTS` (150, about a minute) after that coin's create, and whenever the trader is the create signer. Later trades of a known coin update `pump_coin_stats` only. Trades for a coin we never saw created are not stored. A public-RPC sample on 2026-11-17 showed about 200 Pump.fun transactions per second and about 200 PumpSwap transactions per second. Subscribing to the trade names would be on the order of 200,000 parsed events an hour, about 150 million credits a month. That does not fit the Free plan's 1 million credits, or a 10 million Developer plan. Creates alone are roughly one million credits a month and are the default. Slot notifications were not the metered part of the previous soak (about 324 credits an hour against thousands of slot messages an hour).
+
+Slot gaps of one slot were counted as soon as a higher slot arrived, so a notification that showed up a couple of slots late looked like a drop. Gaps are now counted only after 16 later slots, and only if the missing slot never arrived. Slots the leader never produced still look like gaps; a 500-slot public sample was missing 3 blocks, while the soak's 101 gaps across 411k slots is far below that skip rate, so most of those 101 were reorder or a restart, not Solana skipping blocks.
+
 ## 2026-11-16 — Scan names are not the live subscription names
 
 Helius's parsed-events scan returns HTTP 400 when the DBC filter includes `initialize_virtual_pool_with_token2022_transfer_hook`, because that name is not in the IDL it scans. The live subscription still sends it. Startup backfill and the recall audit scan `DBC_SCAN_INSTRUCTION_NAMES`, which omits that name. A scan that still fails is recorded on `ingest_recall_audit` as `errored` with `error_reason` (`009_recall_error`). The audit continues with the other programs and sends one summary, instead of exiting and raising a crash alert.

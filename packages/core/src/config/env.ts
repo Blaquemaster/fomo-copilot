@@ -32,6 +32,18 @@ export const envSchema = z.object({
   // enhanced is the full-program firehose and is not the default.
   HELIUS_WS_MODE: z.enum(["auto", "standard", "enhanced"]).default("auto"),
   INGEST_MODE: z.enum(["dry-run", "continuous"]).default("dry-run"),
+  /** pump is the live source. meteora keeps the previous DBC/DAMM/DLMM subscription. */
+  INGEST_VENUE: z.enum(["pump", "meteora"]).default("pump"),
+  /**
+   * Buy and sell subscriptions are a firehose. Off by default so a deploy does not
+   * spend the monthly credit allowance on every Pump.fun trade.
+   */
+  PUMP_SUBSCRIBE_TRADES: z
+    .enum(["true", "false"])
+    .default("false")
+    .transform((value) => value === "true"),
+  /** Slots after create during which each trade is stored, not only counted. */
+  PUMP_TRADE_DETAIL_SLOTS: z.coerce.number().int().min(0).max(10_000).default(150),
   HELIUS_MONTHLY_CREDITS: z.coerce.number().int().positive().max(1_000_000_000).optional(),
   /** Slots kept behind the last live slot when backfill decides it has caught up. */
   BACKFILL_SLOT_MARGIN: z.coerce.number().int().min(0).max(10_000).default(16),

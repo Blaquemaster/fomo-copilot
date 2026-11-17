@@ -7,6 +7,11 @@ import {
   LIVENESS_CRITICAL_MS,
   LIVENESS_WARN_MS,
   WATCHED_PROGRAMS,
+  isPumpLifecycleKind,
+  isPumpTradeKind,
+  programsForVenue,
+  pumpTradeRetention,
+  subscriptionNamesForProgram,
   allowanceCredits,
   backoffDelayMs,
   backfillStopSlot,
@@ -40,7 +45,6 @@ import {
   parseTransactionNotification,
   parseSlotResponse,
   planBackfillPage,
-  PARSED_INSTRUCTION_NAMES,
   selectBackfillTxCap,
   shouldSkipListedSignature,
   redactString,
@@ -343,7 +347,15 @@ async function runSocket(input: {
     bag.add(() => {
       ws.removeEventListener("pong", onPong);
     });
-    for (const request of subscribe(ws, method)) {
+    const watched = programsForVenue(input.env.INGEST_VENUE);
+    const instructionNames = [
+      ...new Set(
+        watched.flatMap((programId) =>
+          subscriptionNamesForProgram(programId, input.env.PUMP_SUBSCRIBE_TRADES),
+        ),
+      ),
+    ];
+    for (const request of subscribe(ws, method, watched, instructionNames)) {
       pendingSubs.set(request.id, request);
       input.logger.info(
         { method: request.method, programs: request.programs, request: request.id },
@@ -601,7 +613,10 @@ async function runSocket(input: {
       const at = new Date();
       if (rpcSignature === null && admitTxBytes(queuedBytes, bytes) === "overflow") {
         const slot = extractSlot(text);
-        const programId = watchedProgramIn(text) ?? WATCHED_PROGRAMS[0];
+        const programId =
+          watchedProgramIn(text, programsForVenue(input.env.INGEST_VENUE)) ??
+          programsForVenue(input.env.INGEST_VENUE)[0] ??
+          "";
         if (slot !== null) overflow.note(programId, slot);
         if (stats.noteDropped("tx", "queue_overflow", bytes, at)) {
           input.logger.warn(
@@ -824,13 +839,8 @@ async function persistDecoded(
         ? new Date(observation.blockTimeMs)
         : new Date();
     try {
-      const inserted = await input.repo.persistEvent({
-        observation,
-        byteLength: observation.eventIndex === 0 ? byteLength : 0,
-        receivedAt,
-        source,
-      });
-      if (!inserted) continue;
+      const kept = await storeObservation(input, observation, byteLength, receivedAt, source);
+      if (!kept) continue;
       stored += 1;
     } catch (error) {
       input.logger.error({ err: error }, "failed to store ingest event");
@@ -1068,7 +1078,7 @@ export async function backfillProgram(input: {
     if (
       shouldSkipListedSignature({
         instructionNames: listed,
-        watchedNames: PARSED_INSTRUCTION_NAMES,
+        watchedNames: subscriptionNamesForProgram(input.programId, input.env.PUMP_SUBSCRIBE_TRADES),
       })
     ) {
       continue;
@@ -1362,6 +1372,8 @@ async function getSignatures(
 function subscribe(
   ws: SocketLike,
   method: ResolvedWsMethod,
+  programs: readonly string[],
+  instructionNames: readonly string[],
 ): Array<{ id: number; method: string; programs: readonly string[] }> {
   if (ws.readyState !== 1) return [];
   const requests: Array<{ id: number; method: string; programs: readonly string[] }> = [];
@@ -1372,7 +1384,7 @@ function subscribe(
         id: 1,
         method: "transactionSubscribe",
         params: [
-          { accountInclude: [...WATCHED_PROGRAMS], vote: false, failed: false },
+          { accountInclude: [...programs], vote: false, failed: false },
           {
             commitment: "confirmed",
             encoding: "jsonParsed",
@@ -1382,7 +1394,7 @@ function subscribe(
         ],
       }),
     );
-    requests.push({ id: 1, method: "transactionSubscribe", programs: WATCHED_PROGRAMS });
+    requests.push({ id: 1, method: "transactionSubscribe", programs });
   } else {
     ws.send(
       JSON.stringify({
@@ -1391,8 +1403,8 @@ function subscribe(
         method: "parsedTransactionSubscribe",
         params: [
           {
-            programs: [...WATCHED_PROGRAMS],
-            instructionNames: [...PARSED_INSTRUCTION_NAMES],
+            programs: [...programs],
+            instructionNames: [...instructionNames],
             includeFailed: false,
             includeCpi: true,
           },
@@ -1403,7 +1415,7 @@ function subscribe(
     requests.push({
       id: 1,
       method: "parsedTransactionSubscribe",
-      programs: WATCHED_PROGRAMS,
+      programs,
     });
   }
   ws.send(JSON.stringify({ jsonrpc: "2.0", id: 2, method: "slotSubscribe" }));
@@ -1660,11 +1672,83 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 
 export { WATCHED_PROGRAMS };
 
-function watchedProgramIn(text: string): string | null {
-  for (const programId of WATCHED_PROGRAMS) {
+function watchedProgramIn(text: string, programs: readonly string[]): string | null {
+  for (const programId of programs) {
     if (text.includes(programId)) return programId;
   }
   return null;
+}
+
+async function storeObservation(
+  input: { repo: IngestRepository; logger: Logger },
+  observation: Observation,
+  byteLength: number,
+  receivedAt: Date,
+  source: "stream" | "audit",
+): Promise<boolean> {
+  const pumpish = isPumpTradeKind(observation.kind) || isPumpLifecycleKind(observation.kind);
+  const coin = pumpish && observation.mint ? await input.repo.pumpCoin(observation.mint) : null;
+  const retention = pumpTradeRetention({
+    kind: observation.kind,
+    slot: observation.slot,
+    trader: observation.creatorWallet,
+    creator: coin?.creator ?? null,
+    createdSlot: coin?.createdSlot ?? null,
+  });
+  if (retention === "skip") return false;
+  if (retention === "aggregate") {
+    if (!observation.mint) return false;
+    const side =
+      observation.kind === "pump_sell" || observation.kind === "pumpswap_sell" ? "sell" : "buy";
+    await input.repo.bumpPumpStats({
+      mint: observation.mint,
+      slot: observation.slot,
+      side,
+      creatorSell: false,
+      at: receivedAt,
+    });
+    return true;
+  }
+  const inserted = await input.repo.persistEvent({
+    observation,
+    byteLength: observation.eventIndex === 0 ? byteLength : 0,
+    receivedAt,
+    source,
+  });
+  if (!inserted) return false;
+  if (isPumpLifecycleKind(observation.kind) && observation.mint && observation.pool) {
+    await input.repo.rememberPumpCoin({
+      mint: observation.mint,
+      bondingCurve: observation.virtualPool ?? observation.pool,
+      creator: observation.creatorWallet,
+      createdSlot: observation.slot,
+      createdAt: receivedAt,
+      signature: observation.signature,
+    });
+  }
+  if (isPumpTradeKind(observation.kind) && observation.mint) {
+    const side =
+      observation.kind === "pump_sell" || observation.kind === "pumpswap_sell" ? "sell" : "buy";
+    const isCreator = coin?.creator != null && observation.creatorWallet === coin.creator;
+    await input.repo.insertPumpTrade({
+      signature: observation.signature,
+      eventIndex: observation.eventIndex,
+      slot: observation.slot,
+      mint: observation.mint,
+      side,
+      trader: observation.creatorWallet,
+      isCreator,
+      reason: isCreator ? "creator" : "early_window",
+    });
+    await input.repo.bumpPumpStats({
+      mint: observation.mint,
+      slot: observation.slot,
+      side,
+      creatorSell: isCreator && side === "sell",
+      at: receivedAt,
+    });
+  }
+  return true;
 }
 
 async function recoverOverflow(input: {
@@ -1768,7 +1852,7 @@ async function backfillOnConnect(input: {
     input.logger.warn({}, "skipping backfill because non-essential Helius calls are paused");
     return;
   }
-  for (const programId of WATCHED_PROGRAMS) {
+  for (const programId of programsForVenue(input.env.INGEST_VENUE)) {
     await backfillProgram({ ...input, programId, paused: false });
   }
 }

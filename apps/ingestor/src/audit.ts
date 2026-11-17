@@ -3,7 +3,7 @@ import { pathToFileURL } from "node:url";
 import {
   BACKFILL_MAX_SLOT_SPAN,
   IngestRepository,
-  WATCHED_PROGRAMS,
+  programsForVenue,
   allowanceCredits,
   budgetLevel,
   createPool,
@@ -71,7 +71,7 @@ export async function runRecallAudit(input: {
     ((signature: string) => getTransaction(input.env.HELIUS_API_KEY, signature));
   let windowMissed = 0;
   const scanErrors: Array<{ programId: string; reason: string }> = [];
-  for (const programId of WATCHED_PROGRAMS) {
+  for (const programId of programsForVenue(input.env.INGEST_VENUE)) {
     const window = planAuditWindow({ nowMs: now(), tipSlot: tip, programId });
     if (window.toSlot - window.fromSlot > BACKFILL_MAX_SLOT_SPAN * 20) {
       input.logger.warn({ programId, window }, "recall window is unexpectedly wide");

@@ -1,3 +1,5 @@
+import { SlotGapTracker } from "./reliability.js";
+
 /** Transaction frames only. Slot notifications and ping replies never enter this queue. */
 export const TX_QUEUE_BYTE_CAP = 8 * 1024 * 1024;
 export const MAX_FRAME_CHARS = 100_000;
@@ -175,7 +177,9 @@ export class FrameStats {
   private readonly handleSamples: number[] = [];
   private slotsSeen = 0;
   private slotGaps = 0;
-  private lastSlot: number | null = null;
+  private readonly slotTracker = new SlotGapTracker();
+  private drainedSlots = 0;
+  private drainedGaps = 0;
   private warned = new Set<string>();
 
   noteReceived(kind: FrameKind, bytes: number, now: Date): void {
@@ -220,11 +224,9 @@ export class FrameStats {
 
   noteSlot(slot: number, now: Date): void {
     this.roll(now);
-    this.slotsSeen += 1;
-    if (this.lastSlot !== null && slot > this.lastSlot + 1) {
-      this.slotGaps += slot - this.lastSlot - 1;
-    }
-    if (this.lastSlot === null || slot > this.lastSlot) this.lastSlot = slot;
+    this.slotTracker.note(slot);
+    this.slotsSeen = this.slotTracker.slotsSeen - this.drainedSlots;
+    this.slotGaps = this.slotTracker.slotGaps - this.drainedGaps;
   }
 
   /** Rows to add. Empty when nothing happened. Gauges are repeated on the meta row only. */
@@ -279,6 +281,8 @@ export class FrameStats {
         slotGaps: this.slotGaps,
       });
       this.shadowDropped = 0;
+      this.drainedSlots = this.slotTracker.slotsSeen;
+      this.drainedGaps = this.slotTracker.slotGaps;
       this.slotsSeen = 0;
       this.slotGaps = 0;
       this.maxQueueDepth = 0;
@@ -322,7 +326,6 @@ export class FrameStats {
     this.handleSamples.length = 0;
     this.slotsSeen = 0;
     this.slotGaps = 0;
-    this.lastSlot = null;
     this.warned.clear();
   }
 

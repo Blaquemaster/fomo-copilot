@@ -24,6 +24,9 @@ const env: Env = {
   HELIUS_PLAN: "developer",
   HELIUS_WS_MODE: "auto",
   INGEST_MODE: "dry-run",
+  INGEST_VENUE: "meteora",
+  PUMP_SUBSCRIBE_TRADES: false,
+  PUMP_TRADE_DETAIL_SLOTS: 150,
   BACKFILL_SLOT_MARGIN: 0,
 };
 
@@ -474,6 +477,42 @@ describe("ingest loop", () => {
     await vi.waitFor(() => {
       expect(methods).toContain("getTransaction");
     });
+    controller.abort();
+    await done;
+  });
+
+  it("subscribes to Pump.fun creates and not to every trade when trades are off", async () => {
+    const socket = new FakeSocket();
+    const controller = new AbortController();
+    const done = runIngestLoop({
+      env: { ...env, INGEST_VENUE: "pump", PUMP_SUBSCRIBE_TRADES: false },
+      logger: logger(),
+      repo: repo(),
+      signal: controller.signal,
+      deps: {
+        openSocket: () => asSocket(socket),
+        warnMs: 60_000,
+        criticalMs: 120_000,
+        livenessTickMs: 60_000,
+        usageFlushMs: 60_000,
+        confirmTimeoutMs: 60_000,
+        callRpc: () => Promise.resolve(1),
+      },
+    });
+    await vi.waitFor(() => {
+      expect(socket.sent.some((frame) => frame.includes("parsedTransactionSubscribe"))).toBe(true);
+    });
+    const subscribe =
+      socket.sent.find((frame) => frame.includes("parsedTransactionSubscribe")) ?? "";
+    expect(subscribe).toContain("6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P");
+    expect(subscribe).toContain("pAMMBay6oceH9fJKBRHGP5D4bD4sWpmSwMn52FMfXEA");
+    expect(subscribe).toContain("create_v2");
+    expect(subscribe).toContain("create_pool");
+    expect(subscribe).not.toContain("dbcij3LWUppWqq96dh6gJWwBifmcGfLSB5D4DuSMaqN");
+    const body = JSON.parse(subscribe) as {
+      params: Array<{ instructionNames?: string[] }>;
+    };
+    expect(body.params[0]?.instructionNames).not.toContain("buy");
     controller.abort();
     await done;
   });

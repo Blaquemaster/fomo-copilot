@@ -1,0 +1,8 @@
+title = "fomo-copilot"
+
+[extend]
+useDefault = true
+
+[allowlist]
+description = "Mainnet transaction fixtures. Account keys and lookup-table addresses are public chain data."
+paths = ['''packages/core/src/ingest/fixtures/''']

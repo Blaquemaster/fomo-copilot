@@ -15,8 +15,8 @@ done
 age=$(docker exec fomo-copilot-postgres-1 sh -c 'psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -Atc "select coalesce(extract(epoch from now()-max(received_at))::int,99999) from raw_events"' 2>/dev/null)
 state=$(docker exec fomo-copilot-postgres-1 sh -c 'psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -Atc "select state from ingest_status limit 1"' 2>/dev/null)
 if [ -z "$age" ]; then verdict=FAIL; notes+=("db query failed")
-elif [ "$age" -gt 600 ]; then verdict=FAIL; notes+=("last event ${age}s ago")
-elif [ "$age" -gt 300 ]; then [ $verdict = PASS ] && verdict=WARN; notes+=("last event ${age}s ago")
+elif [ "$age" -gt 300 ]; then verdict=FAIL; notes+=("last event ${age}s ago")
+elif [ "$age" -gt 120 ]; then [ $verdict = PASS ] && verdict=WARN; notes+=("last event ${age}s ago")
 else notes+=("last event ${age}s ago"); fi
 [ "$state" = connected ] || { [ $verdict = PASS ] && verdict=WARN; notes+=("state=$state"); }
 msg="$verdict: ${notes[*]}"

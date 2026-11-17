@@ -18,6 +18,41 @@ const MIGRATION_MINT = "4MKCDXiCASBmZLJrTq6J9usjPXZ8mCsPZFcR7QGdpump";
 const MIGRATION_POOL = "5uPyUS4ZW8KJFTb94bw7DhBgrWW29v8ekL6czSbWud3f";
 
 describe("mainnet transaction fixtures", () => {
+  it("decodes a mainnet Pump.fun create_v2 and its bundled buy", () => {
+    // 4zKozQVM5gcomgiXnMAP7uFLUftm47PSRDomWDDZf8VqJG3D9R8mJF9CQHvhR7jCZW6fKNNprpdnuvoGUmoXFuib slot 470510493
+    const fixture = load("pump-create-v2.json");
+    const found = parseRpcTransaction(fixture.result, fixture.signature);
+    expect(found).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ kind: "pump_create_v2", poolType: "pump" }),
+        expect.objectContaining({ kind: "pump_buy", poolType: "pump" }),
+      ]),
+    );
+    expect(found.filter((row) => row.kind === "pump_create_v2").every(isPersistable)).toBe(true);
+  });
+
+  it("decodes a mainnet Pump.fun sell", () => {
+    // 2ALTy5oYwwv3qwzbt7HvMfJgu6zdLQymitxAG29u9eD13C2YqEayu7Lyk4AxH5JfkrCMnL6uBAiiJSyXZf5NbQKH
+    const fixture = load("pump-sell.json");
+    const found = parseRpcTransaction(fixture.result, fixture.signature);
+    expect(found).toEqual(
+      expect.arrayContaining([expect.objectContaining({ kind: "pump_sell", poolType: "pump" })]),
+    );
+    expect(found.filter((row) => row.kind === "pump_sell").every(isPersistable)).toBe(true);
+  });
+
+  it("decodes a mainnet PumpSwap buy_v2", () => {
+    // 34E3G2JcTCD1yHZgRtXKDa7czC5PXmFobsoujLVtxL2K61j4ppkWgdghai8r2oVqJ5kyRWzTAr9jNoPupjYRw3oB slot 470510511
+    const fixture = load("pumpswap-buy-v2.json");
+    const found = parseRpcTransaction(fixture.result, fixture.signature);
+    expect(found).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ kind: "pumpswap_buy", poolType: "pumpswap" }),
+      ]),
+    );
+    expect(found.filter((row) => row.kind === "pumpswap_buy").every(isPersistable)).toBe(true);
+  });
+
   it("reads mint and pool from the recorded migration and DAMM v2 initializes", () => {
     const migration = load("migration.json");
     const migrationObs = parseRpcTransaction(migration.result, migration.signature);
