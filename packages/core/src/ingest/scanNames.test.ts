@@ -9,11 +9,12 @@ import {
   PUMP_PROGRAM_ID,
   parsedNamesForProgram,
   programsForVenue,
+  subscribedPrograms,
   pumpTradeRetention,
   scanNamesForProgram,
   subscriptionNamesForProgram,
 } from "./programs.js";
-import { coverAuditWindow } from "./frameStats.js";
+import { coverAuditWindow, planAuditWindow } from "./frameStats.js";
 import { SlotGapTracker, venueStartupCursor } from "./reliability.js";
 
 describe("scan instruction names", () => {
@@ -36,6 +37,9 @@ describe("scan instruction names", () => {
       parsedNamesForProgram(DAMM_V2_PROGRAM_ID),
     );
     expect(programsForVenue("pump")).toEqual([PUMP_PROGRAM_ID, PUMP_AMM_PROGRAM_ID]);
+    expect(
+      subscribedPrograms({ venue: "pump", includeTrades: false, includeCreatePool: false }),
+    ).toEqual([PUMP_PROGRAM_ID]);
     expect(programsForVenue("meteora")).toContain(DBC_PROGRAM_ID);
     expect(subscriptionNamesForProgram(PUMP_PROGRAM_ID, false)).toEqual([
       "create",
@@ -95,6 +99,19 @@ describe("scan instruction names", () => {
         createdSlot: null,
       }),
     ).toBe("skip");
+  });
+
+  it("picks the audit window from slots after coverage", () => {
+    const coverageSlot = 470_000_000 - 20_000;
+    const window = planAuditWindow({
+      nowMs: Date.parse("2026-11-16T12:00:00.000Z"),
+      tipSlot: 470_000_000,
+      programId: PUMP_PROGRAM_ID,
+      spanSlots: 1_000,
+      coverageSlot,
+    });
+    expect(window.fromSlot).toBeGreaterThanOrEqual(coverageSlot);
+    expect(window.toSlot - window.fromSlot).toBe(1_000);
   });
 
   it("skips an audit window that ends before stream coverage", () => {

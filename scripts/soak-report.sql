@@ -43,11 +43,14 @@ select
 from ingest_recall_audit
 where ran_at >= now() - interval '7 days';
 
+-- Pump graduations with no create, at or after this venue's coverage slot.
 select count(*)::int as creation_unseen
 from raw_events later
-where later.event_kind in ('dbc_migration_damm_v2', 'dbc_curve_complete')
+where later.event_kind = 'pump_migrate'
   and later.mint is not null
+  and later.slot >= coalesce((select coverage_slot from ingest_status where id = 1), 0)
   and not exists (
     select 1 from raw_events init
-    where init.mint = later.mint and init.event_kind = 'dbc_initialize'
+    where init.mint = later.mint
+      and init.event_kind in ('pump_create', 'pump_create_v2')
   );

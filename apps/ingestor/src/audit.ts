@@ -82,6 +82,7 @@ export async function runRecallAudit(input: {
       tipSlot: tip,
       programId,
       spanSlots: auditSpanSlots(programId),
+      coverageSlot: coverage.coverageSlot,
     });
     const covered = coverAuditWindow({ window: planned, coverageSlot: coverage.coverageSlot });
     if (covered.action === "skip") {
@@ -256,13 +257,16 @@ export async function runRecallAudit(input: {
     );
   }
   const since = new Date(now() - 7 * 24 * 60 * 60 * 1000);
-  const week = await input.repo.recallTotals(since);
+  const week = await input.repo.recallTotals(since, {
+    programIds: programsForVenue(input.env.INGEST_VENUE),
+    coverageSlot: coverage.coverageSlot,
+  });
   const alert = recallShouldAlert({
     windowMissed,
     sevenDayMissed: week.missed,
     sevenDayExpected: week.expected,
   });
-  const unseen = await input.repo.creationUnseen();
+  const unseen = await input.repo.creationUnseen(input.env.INGEST_VENUE, coverage.coverageSlot);
   input.logger.info(
     { unseen, windows: week.windows, missed: week.missed, expected: week.expected },
     "creation unseen",

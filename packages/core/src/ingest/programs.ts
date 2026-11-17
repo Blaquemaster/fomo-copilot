@@ -931,6 +931,19 @@ export function programsForVenue(venue: IngestVenue): readonly string[] {
   return venue === "pump" ? PUMP_PROGRAMS : WATCHED_PROGRAMS;
 }
 
+/** Programs that actually appear on the websocket. Empty name lists are not subscribed. */
+export function subscribedPrograms(input: {
+  venue: IngestVenue;
+  includeTrades: boolean;
+  includeCreatePool: boolean;
+}): readonly string[] {
+  return programsForVenue(input.venue).filter(
+    (programId) =>
+      subscriptionNamesForProgram(programId, input.includeTrades, input.includeCreatePool).length >
+      0,
+  );
+}
+
 export function subscriptionNamesForProgram(
   programId: string,
   includeTrades: boolean,
