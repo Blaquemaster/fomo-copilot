@@ -16,6 +16,12 @@ import {
 import type { DecodeFailure, Observation } from "../ingest/decode.js";
 import type { FrameHourRow } from "../ingest/frameStats.js";
 import {
+  PUMP_PROGRAMS,
+  WATCHED_PROGRAMS,
+  programsForVenue,
+  type IngestVenue,
+} from "../ingest/programs.js";
+import {
   monthUsedPercent,
   formatIngestStatus,
   formatSpotCheck,
@@ -287,6 +293,28 @@ export async function migrate(pool: pg.Pool): Promise<void> {
     await client.query(
       "insert into schema_migrations (id) values ($1) on conflict (id) do nothing",
       ["011_audit_coverage"],
+    );
+    await client.query(
+      "insert into schema_migrations (id) values ($1) on conflict (id) do nothing",
+      ["012_skip_stale_audits"],
+    );
+    await client.query(
+      `update ingest_recall_audit a
+       set skipped = true,
+           error_reason = case
+             when s.venue = 'pump' and not (a.program_id = any($1::text[])) then 'other_venue'
+             when s.venue = 'meteora' and not (a.program_id = any($2::text[])) then 'other_venue'
+             else 'before_coverage'
+           end
+       from ingest_status s
+       where s.id = 1
+         and a.skipped = false
+         and (
+           (s.coverage_slot is not null and a.window_start_slot < s.coverage_slot)
+           or (s.venue = 'pump' and not (a.program_id = any($1::text[])))
+           or (s.venue = 'meteora' and not (a.program_id = any($2::text[])))
+         )`,
+      [[...PUMP_PROGRAMS], [...WATCHED_PROGRAMS]],
     );
     await client.query("commit");
   } catch (error) {
@@ -768,6 +796,10 @@ export class IngestRepository {
     );
   }
 
+  async clearCheckpoint(programId: string): Promise<void> {
+    await this.pool.query("delete from ingest_checkpoint where program_id = $1", [programId]);
+  }
+
   async lastLiveSlot(): Promise<number | null> {
     return (await this.ingestCursor()).slot;
   }
@@ -954,8 +986,13 @@ export class IngestRepository {
   }): Promise<string> {
     const base = await this.statusBody(input);
     const since = new Date(input.now.getTime() - 7 * 24 * 60 * 60 * 1000);
-    const week = await this.recallTotals(since);
-    const unseen = await this.creationUnseen();
+    const cursor = await this.ingestCursor();
+    const venue: IngestVenue = cursor.venue === "meteora" ? "meteora" : "pump";
+    const week = await this.recallTotals(since, {
+      programIds: programsForVenue(venue),
+      coverageSlot: cursor.coverageSlot,
+    });
+    const unseen = await this.creationUnseen(venue, cursor.coverageSlot);
     const loss =
       week.expected === 0 ? "n/a" : `${((week.missed / week.expected) * 100).toFixed(2)}%`;
     return [
@@ -1009,7 +1046,10 @@ export class IngestRepository {
     );
   }
 
-  async recallTotals(since: Date): Promise<{ missed: number; expected: number; windows: number }> {
+  async recallTotals(
+    since: Date,
+    scope?: { programIds: readonly string[]; coverageSlot: number | null },
+  ): Promise<{ missed: number; expected: number; windows: number }> {
     const result = await this.pool.query<{
       missed: string;
       expected: string;
@@ -1019,8 +1059,13 @@ export class IngestRepository {
               coalesce(sum(expected), 0)::text as expected,
               count(*)::text as windows
        from ingest_recall_audit
-       where ran_at >= $1 and incomplete = false and errored = false and skipped = false`,
-      [since.toISOString()],
+       where ran_at >= $1
+         and incomplete = false
+         and errored = false
+         and skipped = false
+         and ($2::text[] is null or program_id = any($2::text[]))
+         and ($3::bigint is null or window_start_slot >= $3)`,
+      [since.toISOString(), scope ? [...scope.programIds] : null, scope?.coverageSlot ?? null],
     );
     const row = result.rows[0];
     return {
@@ -1030,17 +1075,25 @@ export class IngestRepository {
     };
   }
 
-  /** Migrations and curve completions whose mint has no initialize row. */
-  async creationUnseen(): Promise<number> {
+  /** Graduations whose mint has no create row, inside the live venue and coverage. */
+  async creationUnseen(
+    venue: IngestVenue = "pump",
+    coverageSlot: number | null = null,
+  ): Promise<number> {
+    const laterKinds =
+      venue === "pump" ? ["pump_migrate"] : ["dbc_migration_damm_v2", "dbc_curve_complete"];
+    const createKinds = venue === "pump" ? ["pump_create", "pump_create_v2"] : ["dbc_initialize"];
     const result = await this.pool.query<{ unseen: string }>(
       `select count(*)::text as unseen
        from raw_events later
-       where later.event_kind in ('dbc_migration_damm_v2', 'dbc_curve_complete')
+       where later.event_kind = any($1::text[])
          and later.mint is not null
+         and ($3::bigint is null or later.slot >= $3)
          and not exists (
            select 1 from raw_events init
-           where init.mint = later.mint and init.event_kind = 'dbc_initialize'
+           where init.mint = later.mint and init.event_kind = any($2::text[])
          )`,
+      [laterKinds, createKinds, coverageSlot],
     );
     return Number(result.rows[0]?.unseen ?? 0);
   }

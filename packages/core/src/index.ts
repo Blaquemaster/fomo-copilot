@@ -77,6 +77,7 @@ export {
   PUMP_LIFECYCLE_NAMES,
   PUMP_TRADE_DETAIL_SLOTS,
   programsForVenue,
+  subscribedPrograms,
   subscriptionNamesForProgram,
   pumpTradeRetention,
   isPumpTradeKind,

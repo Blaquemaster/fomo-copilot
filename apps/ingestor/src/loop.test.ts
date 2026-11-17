@@ -101,6 +101,7 @@ function repo(overrides: Partial<IngestRepository> = {}): IngestRepository {
     lastLiveSlot: vi.fn(async () => null),
     ingestCursor: vi.fn(async () => ({ slot: null, venue: null, coverageSlot: null })),
     recordVenueCoverage: vi.fn(async () => undefined),
+    clearCheckpoint: vi.fn(async () => undefined),
     insertHeapSample: vi.fn(async () => undefined),
     flushAccounting: vi.fn(async () => undefined),
     persistEvent: vi.fn(async () => true),
@@ -516,6 +517,45 @@ describe("ingest loop", () => {
       params: Array<{ instructionNames?: string[] }>;
     };
     expect(body.params[0]?.instructionNames).not.toContain("buy");
+    controller.abort();
+    await done;
+  });
+
+  it("does not backfill PumpSwap when create_pool is off", async () => {
+    const scanned: string[] = [];
+    const cleared: string[] = [];
+    const socket = new FakeSocket();
+    const controller = new AbortController();
+    const done = runIngestLoop({
+      env: { ...env, INGEST_VENUE: "pump" },
+      logger: logger(),
+      repo: repo({
+        checkpoint: vi.fn(async () => ({ signature: "ckpt", slot: 1 })),
+        ingestCursor: vi.fn(async () => ({ slot: 80, venue: "pump", coverageSlot: 80 })),
+        clearCheckpoint: vi.fn(async (programId: string) => {
+          cleared.push(programId);
+        }),
+      }),
+      signal: controller.signal,
+      deps: {
+        openSocket: () => asSocket(socket),
+        warnMs: 60_000,
+        criticalMs: 120_000,
+        livenessTickMs: 60_000,
+        usageFlushMs: 60_000,
+        confirmTimeoutMs: 60_000,
+        scanHistory: (request) => {
+          scanned.push(request.programId);
+          return Promise.resolve({ matches: [], creditsCharged: 11, complete: true });
+        },
+        callRpc: (method) => Promise.resolve(method === "getSlot" ? 80 : []),
+      },
+    });
+    await vi.waitFor(() => {
+      expect(scanned).toContain("6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P");
+    });
+    expect(scanned).not.toContain("pAMMBay6oceH9fJKBRHGP5D4bD4sWpmSwMn52FMfXEA");
+    expect(cleared).toContain("pAMMBay6oceH9fJKBRHGP5D4bD4sWpmSwMn52FMfXEA");
     controller.abort();
     await done;
   });

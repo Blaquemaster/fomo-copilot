@@ -1,5 +1,11 @@
 # Decision log
 
+## 2026-11-17 — Backfill only subscribed programs
+
+Startup backfill used every program for the venue, so PumpSwap was scanned even with `PUMP_SUBSCRIBE_CREATE_POOL=false`. That walk burned about 440 credits on a 38-slot gap and left the checkpoint at slot 470531229. Backfill now uses the same filter as the websocket, and a checkpoint for a program that is not subscribed is deleted. A similar 38-slot restart of the Pump program is one scan of about 3,000 transactions, about 13 credits, plus one `getTransaction` per create or migrate in the gap.
+
+Audit windows are chosen only from slots at or after `coverage_slot`, so a useful 5-minute window exists about 35 minutes after coverage starts instead of waiting until the whole 6-hour horizon is inside coverage. Rows whose window starts before coverage, or whose program is not in the current venue, are marked `skipped` on migrate (`012_skip_stale_audits`). Recall totals and creation-unseen follow the same scope, so the old Meteora gaps and the pre-coverage Pump misses stay out of the 7-day alert.
+
 ## 2026-11-17 — Coverage, create_pool, and a cheaper audit
 
 The first Pump audit scored chain history from before the venue switch as 471 misses. A window that ends at or before `ingest_status.coverage_slot` is stored as `skipped` with reason `before_coverage` and does not page Telegram. A window that straddles coverage is scanned only from that slot forward. Coverage resets when the stored venue changes, when a slot with no venue is already older than the backfill cap (the leftover Meteora checkpoint), or when the same venue's slot is too old to backfill. A usable slot for the current venue is kept.

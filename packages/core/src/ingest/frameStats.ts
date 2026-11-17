@@ -398,12 +398,17 @@ export function planAuditWindow(input: {
   tipSlot: number;
   programId: string;
   spanSlots?: number;
+  /** When set, the window is chosen only from slots this venue has actually streamed. */
+  coverageSlot?: number | null;
 }): AuditWindow {
   const span = input.spanSlots ?? Math.round(15 * 60 * SLOTS_PER_SECOND);
   const horizon = Math.round(6 * 60 * 60 * SLOTS_PER_SECOND);
   const quiet = Math.round(30 * 60 * SLOTS_PER_SECOND);
   const newestEnd = input.tipSlot - quiet;
-  const oldestStart = Math.max(0, input.tipSlot - horizon);
+  const oldestStart = Math.max(0, input.tipSlot - horizon, input.coverageSlot ?? 0);
+  if (newestEnd - span < oldestStart) {
+    return { fromSlot: oldestStart, toSlot: oldestStart };
+  }
   const room = Math.max(0, newestEnd - span - oldestStart);
   const bucket = Math.floor(input.nowMs / (6 * 60 * 60 * 1000));
   const hash = fnv(`${input.programId}:${bucket.toString()}`);

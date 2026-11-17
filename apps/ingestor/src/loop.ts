@@ -10,6 +10,7 @@ import {
   isPumpLifecycleKind,
   isPumpTradeKind,
   programsForVenue,
+  subscribedPrograms,
   pumpTradeRetention,
   subscriptionNamesForProgram,
   allowanceCredits,
@@ -349,14 +350,11 @@ async function runSocket(input: {
     bag.add(() => {
       ws.removeEventListener("pong", onPong);
     });
-    const watched = programsForVenue(input.env.INGEST_VENUE).filter(
-      (programId) =>
-        subscriptionNamesForProgram(
-          programId,
-          input.env.PUMP_SUBSCRIBE_TRADES,
-          input.env.PUMP_SUBSCRIBE_CREATE_POOL,
-        ).length > 0,
-    );
+    const watched = subscribedPrograms({
+      venue: input.env.INGEST_VENUE,
+      includeTrades: input.env.PUMP_SUBSCRIBE_TRADES,
+      includeCreatePool: input.env.PUMP_SUBSCRIBE_CREATE_POOL,
+    });
     const instructionNames = [
       ...new Set(
         watched.flatMap((programId) =>
@@ -1013,7 +1011,10 @@ export async function backfillProgram(input: {
     });
     return;
   }
-  if (liveStop !== null && scanNamesForProgram(input.programId).length > 0) {
+  if (
+    liveStop !== null &&
+    scanNamesForProgram(input.programId, input.env.PUMP_SUBSCRIBE_CREATE_POOL).length > 0
+  ) {
     const handled = await backfillByScan({ ...input, seen, gap, liveStop, gapFromSlot });
     if (handled) return;
   }
@@ -1202,7 +1203,7 @@ async function backfillByScan(input: {
   gapFromSlot: number;
   deps?: IngestDeps;
 }): Promise<boolean> {
-  const names = scanNamesForProgram(input.programId);
+  const names = scanNamesForProgram(input.programId, input.env.PUMP_SUBSCRIBE_CREATE_POOL);
   const scan = input.deps?.scanHistory ?? scanInstructionHistory;
   let scanned: Awaited<ReturnType<typeof scanInstructionHistory>>;
   try {
@@ -1885,7 +1886,17 @@ async function backfillOnConnect(input: {
     input.logger.warn({}, "skipping backfill because non-essential Helius calls are paused");
     return;
   }
+  const subscribed = subscribedPrograms({
+    venue: input.env.INGEST_VENUE,
+    includeTrades: input.env.PUMP_SUBSCRIBE_TRADES,
+    includeCreatePool: input.env.PUMP_SUBSCRIBE_CREATE_POOL,
+  });
   for (const programId of programsForVenue(input.env.INGEST_VENUE)) {
+    if (subscribed.includes(programId)) continue;
+    await input.repo.clearCheckpoint(programId);
+    input.logger.info({ programId }, "cleared checkpoint for unsubscribed program");
+  }
+  for (const programId of subscribed) {
     await backfillProgram({ ...input, programId, paused: false });
   }
 }
