@@ -69,7 +69,7 @@ export function earlyBuyerHistoryParams(
     limit: EARLY_BUYER_PAGE_LIMIT,
     commitment: "confirmed",
     encoding: "json",
-    maxSupportedTransactionVersion: 0,
+    maxSupportedTransactionVersion: 1,
     filters: { status: "succeeded" },
   };
   if (paginationToken) config["paginationToken"] = paginationToken;
@@ -89,6 +89,8 @@ export function earlyBuyersFromHistory(
     (typeof record["signature"] === "string" ? record["signature"] : null);
   const slot = typeof record["slot"] === "number" ? record["slot"] : 0;
   if (signature === null) return [];
+  const version = transactionVersion(record["version"] ?? transaction?.["version"]);
+  if (version === "unsupported") return [];
   const decoded = decodeRpcTransaction(record, signature);
   const rows: EarlyBuyerRow[] = [];
   for (const observation of decoded.observations) {
@@ -108,9 +110,9 @@ export function earlyBuyersFromHistory(
   }
   const message = asRecord(transaction?.["message"]);
   const meta = asRecord(record["meta"]);
-  const keys = accountKeys(message, meta);
+  const keys = accountKeys(message, meta, version);
   for (const instruction of instructionsOf(message, meta, keys)) {
-    const found = venueBuyer(instruction, target, meta);
+    const found = venueBuyer(instruction, target, meta, keys);
     if (found === null) continue;
     pushBuyer(rows, {
       signature,
@@ -141,6 +143,7 @@ function venueBuyer(
   instruction: { programId: string; data: Uint8Array; accounts: string[] },
   target: { mint: string; creator: string | null },
   meta: Record<string, unknown> | null,
+  keys: readonly string[],
 ): { wallet: string; side: "buy" | "sell" } | null {
   if (instruction.programId === LAUNCHLAB_PROGRAM_ID) {
     const side = launchlabSide(instruction.data);
@@ -154,8 +157,13 @@ function venueBuyer(
     const mint = instruction.accounts[DBC_SWAP_ACCOUNTS.indexOf("base_mint")];
     if (wallet === undefined || mint !== target.mint) return null;
     const delta = tokenDelta(meta, wallet, mint);
-    if (delta === null || delta === 0n) return null;
-    return { wallet, side: delta > 0n ? "buy" : "sell" };
+    if (delta !== null && delta !== 0n) return { wallet, side: delta > 0n ? "buy" : "sell" };
+    const inputMint = tokenMintAt(
+      meta,
+      keys.indexOf(instruction.accounts[DBC_SWAP_ACCOUNTS.indexOf("input_token_account")] ?? ""),
+    );
+    if (inputMint === null) return null;
+    return { wallet, side: inputMint === mint ? "sell" : "buy" };
   }
   if (instruction.programId === PUMP_PROGRAM_ID || instruction.programId === PUMP_AMM_PROGRAM_ID) {
     return null;
@@ -199,8 +207,10 @@ function tokenAmount(value: unknown, owner: string, mint: string): bigint | null
     const record = asRecord(entry);
     if (record?.["owner"] !== owner || record["mint"] !== mint) continue;
     const ui = asRecord(record["uiTokenAmount"]);
-    const amount = typeof ui?.["amount"] === "string" ? ui["amount"] : null;
-    if (amount === null || !/^\d+$/.test(amount)) continue;
+    const raw = ui?.["amount"] ?? ui?.["uiAmountString"];
+    const amount =
+      typeof raw === "number" && Number.isFinite(raw) ? Math.trunc(raw).toString() : raw;
+    if (typeof amount !== "string" || !/^\d+$/.test(amount)) continue;
     total = (total ?? 0n) + BigInt(amount);
   }
   return total;
@@ -251,13 +261,25 @@ function instructionData(value: unknown): Uint8Array {
   try {
     return decodeBase58(value);
   } catch {
-    return new Uint8Array();
+    try {
+      return Uint8Array.from(Buffer.from(value, "base64"));
+    } catch {
+      return new Uint8Array();
+    }
   }
+}
+
+/** Legacy, v0, and v1. Anything else is left for a later decoder. */
+function transactionVersion(value: unknown): "legacy" | 0 | 1 | "unsupported" {
+  if (value === undefined || value === null || value === "legacy") return "legacy";
+  if (value === 0 || value === 1) return value;
+  return "unsupported";
 }
 
 function accountKeys(
   message: Record<string, unknown> | null,
   meta: Record<string, unknown> | null,
+  version: "legacy" | 0 | 1,
 ): string[] {
   const raw = message?.["accountKeys"];
   const staticKeys = Array.isArray(raw)
@@ -269,10 +291,26 @@ function accountKeys(
         })
         .filter((key): key is string => key !== null)
     : [];
+  if (version === "legacy") return staticKeys;
   const loaded = asRecord(meta?.["loadedAddresses"]);
   const writable = stringList(loaded?.["writable"]);
   const readonly = stringList(loaded?.["readonly"]);
   return [...staticKeys, ...writable, ...readonly];
+}
+
+function tokenMintAt(meta: Record<string, unknown> | null, accountIndex: number): string | null {
+  if (accountIndex < 0) return null;
+  for (const field of ["postTokenBalances", "preTokenBalances"]) {
+    const list = meta?.[field];
+    if (!Array.isArray(list)) continue;
+    for (const entry of list) {
+      const record = asRecord(entry);
+      if (record?.["accountIndex"] === accountIndex && typeof record["mint"] === "string") {
+        return record["mint"];
+      }
+    }
+  }
+  return null;
 }
 
 function stringList(value: unknown): string[] {
@@ -301,14 +339,20 @@ export async function collectEarlyBuyers(input: {
   fetchPage: (account: string, paginationToken: string | null) => Promise<HistoryPage | null>;
   save: (rows: readonly EarlyBuyerRow[]) => Promise<void>;
   checkpoint: (row: BackfillCheckpoint) => Promise<void>;
-}): Promise<{ credits: number; buyers: number; mintsDone: number; stopped: boolean }> {
+}): Promise<{
+  credits: number;
+  buyers: number;
+  mintsDone: number;
+  stopped: boolean;
+  errored: boolean;
+}> {
   let credits = 0;
   let buyers = 0;
   let mintsDone = 0;
   const buysPerMint = Math.max(1, Math.floor(input.buysPerMint));
   for (const mint of input.mints) {
     if (credits + historyPageCredits(1) > input.runCreditsLeft) {
-      return { credits, buyers, mintsDone, stopped: true };
+      return { credits, buyers, mintsDone, stopped: true, errored: false };
     }
     let pages = mint.pages;
     let buysKept = mint.buysKept;
@@ -330,10 +374,10 @@ export async function collectEarlyBuyers(input: {
     let finished = false;
     while (pages < EARLY_BUYER_MAX_PAGES && buysKept < buysPerMint) {
       if (credits + historyPageCredits(1) > input.runCreditsLeft) {
-        return { credits, buyers, mintsDone, stopped: true };
+        return { credits, buyers, mintsDone, stopped: true, errored: false };
       }
       const page = await input.fetchPage(mint.account, token);
-      if (page === null) return { credits, buyers, mintsDone, stopped: true };
+      if (page === null) return { credits, buyers, mintsDone, stopped: true, errored: true };
       const cost = historyPageCredits(page.transactions.length);
       credits += cost;
       const stored: EarlyBuyerRow[] = [];
@@ -364,5 +408,5 @@ export async function collectEarlyBuyers(input: {
     }
     if (finished) mintsDone += 1;
   }
-  return { credits, buyers, mintsDone, stopped: false };
+  return { credits, buyers, mintsDone, stopped: false, errored: false };
 }

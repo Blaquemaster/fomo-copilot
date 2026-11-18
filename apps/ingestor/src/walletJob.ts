@@ -14,9 +14,16 @@ import {
   type Logger,
 } from "@fomo/core";
 
-import { heliusRpc } from "./helius.js";
+import { HeliusRpcError, heliusRpc } from "./helius.js";
 
 const WAKE_MS = 60_000;
+const HISTORY_RETRY_MS = [60_000, 120_000, 240_000, 480_000, 600_000] as const;
+
+/** First retry is one minute. Later tries double until ten minutes. */
+export function historyRetryDelayMs(attempt: number): number {
+  const index = Math.max(0, Math.floor(attempt) - 1);
+  return HISTORY_RETRY_MS[Math.min(index, HISTORY_RETRY_MS.length - 1)] ?? 600_000;
+}
 
 export async function runWalletMaintenance(input: {
   env: Env;
@@ -25,17 +32,32 @@ export async function runWalletMaintenance(input: {
   signal: AbortSignal;
   fetchPage?: (account: string, paginationToken: string | null) => Promise<HistoryPage | null>;
   onWallets?: (addresses: readonly string[]) => void;
+  sleep?: (ms: number, signal: AbortSignal) => Promise<void>;
 }): Promise<void> {
   const intervalMs = (input.env.WALLET_REFRESH_HOURS ?? 24) * 60 * 60 * 1000;
+  const wait = input.sleep ?? sleep;
+  let failureAttempt = 0;
   while (!input.signal.aborted) {
+    let retryMs: number | null = null;
     try {
       const finished = await input.repo.walletJobFinishedAt();
       const due = finished === null || Date.now() - finished.getTime() >= intervalMs;
-      if (due) await runWalletPass(input);
+      if (due) {
+        const outcome = await runWalletPass(input);
+        if (outcome === "retry") {
+          failureAttempt += 1;
+          retryMs = historyRetryDelayMs(failureAttempt);
+        } else {
+          failureAttempt = 0;
+        }
+      }
     } catch (error) {
-      input.logger.error({ err: error }, "wallet maintenance failed");
+      failureAttempt += 1;
+      retryMs = historyRetryDelayMs(failureAttempt);
+      input.logger.error({ err: error, code: rpcCode(error) }, "wallet maintenance failed");
     }
-    await sleep(Math.min(intervalMs, WAKE_MS), input.signal);
+    if (input.signal.aborted) return;
+    await wait(retryMs ?? Math.min(intervalMs, WAKE_MS), input.signal);
   }
 }
 
@@ -46,7 +68,7 @@ async function runWalletPass(input: {
   signal: AbortSignal;
   fetchPage?: (account: string, paginationToken: string | null) => Promise<HistoryPage | null>;
   onWallets?: (addresses: readonly string[]) => void;
-}): Promise<void> {
+}): Promise<"ok" | "retry"> {
   const monthCap = input.env.WALLET_BACKFILL_CREDIT_CAP ?? 200_000;
   const runCap = input.env.WALLET_BACKFILL_RUN_CREDITS ?? 10_000;
   const buysPerMint = input.env.WALLET_BACKFILL_BUYS ?? 50;
@@ -72,26 +94,36 @@ async function runWalletPass(input: {
     "early-buyer backfill budget",
   );
   const mints = runCreditsLeft >= 10 ? await input.repo.nextBackfillMints(runCreditsLeft) : [];
-  const result = await collectEarlyBuyers({
-    mints,
-    buysPerMint,
-    runCreditsLeft,
-    fetchPage: (account, token) => fetchHistory(input, account, token),
-    save: async (rows) => {
-      await input.repo.saveEarlyBuyers(rows);
-    },
-    checkpoint: async (row) => {
-      await input.repo.saveBackfillCheckpoint(row);
-      if (row.creditDelta > 0) {
-        await input.repo.recordFeatureSpend({
-          feature: WALLET_BACKFILL_FEATURE,
-          creditMicros: BigInt(row.creditDelta) * MICROS_PER_CREDIT,
-          storedEvents: 0,
-          now: new Date(),
-        });
-      }
-    },
-  });
+  let result: Awaited<ReturnType<typeof collectEarlyBuyers>>;
+  try {
+    result = await collectEarlyBuyers({
+      mints,
+      buysPerMint,
+      runCreditsLeft,
+      fetchPage: (account, token) => fetchHistory(input, account, token),
+      save: async (rows) => {
+        await input.repo.saveEarlyBuyers(rows);
+      },
+      checkpoint: async (row) => {
+        await input.repo.saveBackfillCheckpoint(row);
+        if (row.creditDelta > 0) {
+          await input.repo.recordFeatureSpend({
+            feature: WALLET_BACKFILL_FEATURE,
+            creditMicros: BigInt(row.creditDelta) * MICROS_PER_CREDIT,
+            storedEvents: 0,
+            now: new Date(),
+          });
+        }
+      },
+    });
+  } catch (error) {
+    input.logger.warn({ code: rpcCode(error), err: error }, "early-buyer history fetch failed");
+    return "retry";
+  }
+  if (result.errored) {
+    input.logger.warn({ code: null }, "early-buyer history fetch failed");
+    return "retry";
+  }
   const maxWallets = input.env.WALLET_MAX_WALLETS ?? 300;
   const ranked = scoreProvenWallets(await input.repo.earlyBuys(), maxWallets);
   const active = await input.repo.activeTrackedWallets();
@@ -118,6 +150,16 @@ async function runWalletPass(input: {
     },
     "wallet backfill and refresh",
   );
+  return "ok";
+}
+
+function rpcCode(error: unknown): number | null {
+  if (error instanceof HeliusRpcError) return error.code;
+  if (typeof error === "object" && error !== null && "code" in error) {
+    const code = (error as { code?: unknown }).code;
+    if (typeof code === "number") return code;
+  }
+  return null;
 }
 
 async function fetchHistory(
@@ -129,23 +171,21 @@ async function fetchHistory(
   paginationToken: string | null,
 ): Promise<HistoryPage | null> {
   if (input.fetchPage) return input.fetchPage(account, paginationToken);
-  try {
-    const result = await heliusRpc({
-      apiKey: input.env.HELIUS_API_KEY,
-      method: "getTransactionsForAddress",
-      params: earlyBuyerHistoryParams(account, paginationToken),
-    });
-    const record =
-      typeof result === "object" && result !== null ? (result as Record<string, unknown>) : null;
-    if (record === null || !Array.isArray(record["data"])) return null;
-    const token = record["paginationToken"];
-    return {
-      transactions: record["data"],
-      paginationToken: typeof token === "string" ? token : null,
-    };
-  } catch {
-    return null;
+  const result = await heliusRpc({
+    apiKey: input.env.HELIUS_API_KEY,
+    method: "getTransactionsForAddress",
+    params: earlyBuyerHistoryParams(account, paginationToken),
+  });
+  const record =
+    typeof result === "object" && result !== null ? (result as Record<string, unknown>) : null;
+  if (record === null || !Array.isArray(record["data"])) {
+    throw new HeliusRpcError("early-buyer history response had no transaction list", null);
   }
+  const token = record["paginationToken"];
+  return {
+    transactions: record["data"],
+    paginationToken: typeof token === "string" ? token : null,
+  };
 }
 
 function creditsLeft(capMicros: bigint, spentMicros: bigint): number {
