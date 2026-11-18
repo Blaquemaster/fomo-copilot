@@ -1,5 +1,6 @@
 import { createPool, migrate, IngestRepository, startApp } from "@fomo/core";
 
+import { runBscIngest } from "./bsc.js";
 import { runIngestLoop } from "./loop.js";
 
 await startApp({
@@ -24,7 +25,17 @@ await startApp({
       const stop = () => controller.abort();
       process.once("SIGINT", stop);
       process.once("SIGTERM", stop);
-      await runIngestLoop({ env, logger, repo, signal: controller.signal });
+      const bsc = env.BSC_WSS_URL
+        ? runBscIngest({ env, logger, repo, signal: controller.signal }).catch((error: unknown) => {
+            logger.error({ err: error }, "bsc ingest exited");
+          })
+        : Promise.resolve();
+      try {
+        await runIngestLoop({ env, logger, repo, signal: controller.signal });
+      } finally {
+        controller.abort();
+        await bsc;
+      }
     } finally {
       await pool.end();
     }

@@ -234,6 +234,51 @@ create table if not exists ingest_coin (
   signature text not null
 );
 
+create table if not exists ingest_asset (
+  chain text not null,
+  address text not null,
+  launchpad text not null,
+  quote_address text,
+  tax_bps integer,
+  buy_tax_bps integer,
+  sell_tax_bps integer,
+  pool text,
+  cl_pool_id text,
+  creator text,
+  created_block bigint,
+  created_at timestamptz not null,
+  tx_hash text not null,
+  primary key (chain, address)
+);
+
+create table if not exists ingest_chain_checkpoint (
+  chain text primary key,
+  block_number bigint not null,
+  coverage_block bigint,
+  updated_at timestamptz not null default now()
+);
+
+create table if not exists ingest_chain_event (
+  chain text not null,
+  tx_hash text not null,
+  log_index integer not null,
+  block_number bigint not null,
+  event_name text not null,
+  address text not null,
+  primary key (chain, tx_hash, log_index)
+);
+
+create table if not exists ingest_chain_audit (
+  id bigserial primary key,
+  chain text not null,
+  ran_at timestamptz not null,
+  from_block bigint not null,
+  to_block bigint not null,
+  expected integer not null,
+  matched integer not null,
+  missed integer not null
+);
+
 create table if not exists pump_coin (
   mint text primary key,
   bonding_curve text not null,
@@ -381,6 +426,10 @@ export async function migrate(pool: pg.Pool): Promise<void> {
            where e.mint = c.mint
              and e.event_kind in ('dbc_initialize', 'dbc_migration_damm_v2')
          )`,
+    );
+    await client.query(
+      "insert into schema_migrations (id) values ($1) on conflict (id) do nothing",
+      ["015_bsc_flap"],
     );
     await client.query(
       `update ingest_recall_audit a
@@ -1251,6 +1300,145 @@ export class IngestRepository {
       expected: Number(row?.expected ?? 0),
       windows: Number(row?.windows ?? 0),
     };
+  }
+
+  async chainCheckpoint(
+    chain: string,
+  ): Promise<{ blockNumber: number; coverageBlock: number | null } | null> {
+    const result = await this.pool.query<{ block_number: string; coverage_block: string | null }>(
+      "select block_number, coverage_block from ingest_chain_checkpoint where chain = $1",
+      [chain],
+    );
+    const row = result.rows[0];
+    if (!row) return null;
+    const coverage = row.coverage_block == null ? null : Number(row.coverage_block);
+    return {
+      blockNumber: Number(row.block_number),
+      coverageBlock: coverage !== null && Number.isFinite(coverage) ? coverage : null,
+    };
+  }
+
+  async saveChainCheckpoint(input: {
+    chain: string;
+    blockNumber: number;
+    coverageBlock: number | null;
+    now: Date;
+  }): Promise<void> {
+    await this.pool.query(
+      `insert into ingest_chain_checkpoint (chain, block_number, coverage_block, updated_at)
+       values ($1,$2,$3,$4)
+       on conflict (chain) do update set
+         block_number = greatest(ingest_chain_checkpoint.block_number, excluded.block_number),
+         coverage_block = coalesce(ingest_chain_checkpoint.coverage_block, excluded.coverage_block),
+         updated_at = excluded.updated_at`,
+      [input.chain, input.blockNumber, input.coverageBlock, input.now.toISOString()],
+    );
+  }
+
+  async rememberAsset(input: {
+    chain: string;
+    address: string;
+    launchpad: string;
+    quoteAddress: string | null;
+    taxBps: number | null;
+    buyTaxBps: number | null;
+    sellTaxBps: number | null;
+    pool: string | null;
+    clPoolId: string | null;
+    creator: string | null;
+    createdBlock: number | null;
+    createdAt: Date;
+    txHash: string;
+  }): Promise<void> {
+    await this.pool.query(
+      `insert into ingest_asset
+        (chain, address, launchpad, quote_address, tax_bps, buy_tax_bps, sell_tax_bps, pool,
+         cl_pool_id, creator, created_block, created_at, tx_hash)
+       values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)
+       on conflict (chain, address) do update set
+         quote_address = coalesce(ingest_asset.quote_address, excluded.quote_address),
+         tax_bps = coalesce(ingest_asset.tax_bps, excluded.tax_bps),
+         buy_tax_bps = coalesce(ingest_asset.buy_tax_bps, excluded.buy_tax_bps),
+         sell_tax_bps = coalesce(ingest_asset.sell_tax_bps, excluded.sell_tax_bps),
+         pool = coalesce(excluded.pool, ingest_asset.pool),
+         cl_pool_id = coalesce(ingest_asset.cl_pool_id, excluded.cl_pool_id),
+         creator = coalesce(ingest_asset.creator, excluded.creator),
+         created_block = coalesce(ingest_asset.created_block, excluded.created_block)`,
+      [
+        input.chain,
+        input.address,
+        input.launchpad,
+        input.quoteAddress,
+        input.taxBps,
+        input.buyTaxBps,
+        input.sellTaxBps,
+        input.pool,
+        input.clPoolId,
+        input.creator,
+        input.createdBlock,
+        input.createdAt.toISOString(),
+        input.txHash,
+      ],
+    );
+  }
+
+  async insertChainEvent(input: {
+    chain: string;
+    txHash: string;
+    logIndex: number;
+    blockNumber: number;
+    eventName: string;
+    address: string;
+  }): Promise<boolean> {
+    const result = await this.pool.query(
+      `insert into ingest_chain_event
+        (chain, tx_hash, log_index, block_number, event_name, address)
+       values ($1,$2,$3,$4,$5,$6)
+       on conflict (chain, tx_hash, log_index) do nothing`,
+      [
+        input.chain,
+        input.txHash,
+        input.logIndex,
+        input.blockNumber,
+        input.eventName,
+        input.address,
+      ],
+    );
+    return result.rowCount === 1;
+  }
+
+  async chainEventKeys(chain: string, fromBlock: number, toBlock: number): Promise<Set<string>> {
+    const result = await this.pool.query<{ tx_hash: string; log_index: number }>(
+      `select tx_hash, log_index from ingest_chain_event
+       where chain = $1 and block_number >= $2 and block_number <= $3`,
+      [chain, fromBlock, toBlock],
+    );
+    return new Set(result.rows.map((row) => `${row.tx_hash}:${row.log_index.toString()}`));
+  }
+
+  async insertChainAudit(input: {
+    chain: string;
+    ranAt: Date;
+    fromBlock: number;
+    toBlock: number;
+    expected: number;
+    matched: number;
+    missed: number;
+  }): Promise<void> {
+    await this.pool.query(
+      `insert into ingest_chain_audit
+        (chain, ran_at, from_block, to_block, expected, matched, missed)
+       values ($1,$2,$3,$4,$5,$6,$7)`,
+      [
+        input.chain,
+        input.ranAt.toISOString(),
+        input.fromBlock,
+        input.toBlock,
+        input.expected,
+        input.matched,
+        input.missed,
+      ],
+    );
   }
 
   /** Graduations whose mint has no create row, inside the live venue and coverage. */

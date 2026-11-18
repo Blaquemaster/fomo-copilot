@@ -61,6 +61,11 @@ export const envSchema = z.object({
   HELIUS_MONTHLY_CREDITS: z.coerce.number().int().positive().max(1_000_000_000).optional(),
   /** Slots kept behind the last live slot when backfill decides it has caught up. */
   BACKFILL_SLOT_MARGIN: z.coerce.number().int().min(0).max(10_000).default(16),
+  /**
+   * BNB Chain websocket for Flap. Absent means Solana intake only.
+   * The URL is a secret when it contains an API key.
+   */
+  BSC_WSS_URL: z.string().min(8).max(2048).optional(),
 });
 
 export type Env = z.infer<typeof envSchema>;
@@ -117,12 +122,16 @@ export function loadEnv(source: NodeJS.ProcessEnv = process.env): Env {
   }
   assertDatabaseUrl(parsed.data);
   enabledVenues(parsed.data);
+  if (parsed.data.BSC_WSS_URL && !/^wss?:\/\//.test(parsed.data.BSC_WSS_URL)) {
+    throw new ConfigError("BSC_WSS_URL: invalid_protocol");
+  }
   return parsed.data;
 }
 
 /** Values that must never appear in logs or crash alerts. Longest first. */
 export function secretValuesFromEnv(env: Env): string[] {
   const values = [env.TELEGRAM_BOT_TOKEN, env.HELIUS_API_KEY, env.POSTGRES_PASSWORD];
+  if (env.BSC_WSS_URL) values.push(env.BSC_WSS_URL);
   try {
     const password = decodeURIComponent(new URL(env.DATABASE_URL).password);
     values.push(password);
