@@ -2,7 +2,7 @@ import { type Env, type IngestRepository } from "@fomo/core";
 import { describe, expect, it, vi } from "vitest";
 
 import { HeliusRpcError } from "./helius.js";
-import { historyRetryDelayMs, runWalletMaintenance } from "./walletJob.js";
+import { historyRetryDelayMs, runWalletMaintenance, walletRefreshIntervalMs } from "./walletJob.js";
 
 const env = {
   NODE_ENV: "test",
@@ -27,6 +27,11 @@ const env = {
 } as Env;
 
 describe("early-buyer history retry", () => {
+  it("runs every four hours by default and still caps each run", () => {
+    expect(walletRefreshIntervalMs(undefined)).toBe(4 * 60 * 60 * 1000);
+    expect(walletRefreshIntervalMs(4)).toBe(4 * 60 * 60 * 1000);
+  });
+
   it("backs off within minutes and does not mark the job finished after an rpc error", async () => {
     expect(historyRetryDelayMs(1)).toBe(60_000);
     expect(historyRetryDelayMs(2)).toBe(120_000);

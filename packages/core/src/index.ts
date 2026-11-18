@@ -99,7 +99,10 @@ export {
   type IngestVenue,
 } from "./ingest/programs.js";
 export {
+  LOSS_AGE_MS,
   PROVEN_WALLET_RULE,
+  SCORING_VERSION,
+  applyLossMaturity,
   chunkWallets,
   scoreProvenWallets,
   shrunkHitRate,

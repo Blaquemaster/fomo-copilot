@@ -114,6 +114,7 @@ function repo(overrides: Partial<IngestRepository> = {}): IngestRepository {
     alertableCandidates: vi.fn(async () => []),
     earlyBuys: vi.fn(async () => []),
     activeTrackedWallets: vi.fn(async () => []),
+    activeScoringVersion: vi.fn(async () => null),
     saveTrackedWallets: vi.fn(async () => undefined),
     insertWalletFill: vi.fn(async () => undefined),
     insertXMentions: vi.fn(async () => 0),

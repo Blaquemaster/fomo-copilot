@@ -80,8 +80,12 @@ export const envSchema = z.object({
   WALLET_BACKFILL_RUN_CREDITS: z.coerce.number().int().min(1).max(100_000_000).optional(),
   /** Share of the live wallet list that a daily refresh may replace. Default 20. */
   WALLET_CHURN_PCT: z.coerce.number().int().min(0).max(100).optional(),
-  /** Hours between early-buyer backfill and wallet-list refresh. Default 24. */
+  /** Hours between early-buyer backfill and wallet-list refresh. Default 4. */
   WALLET_REFRESH_HOURS: z.coerce.number().int().min(1).max(168).optional(),
+  /** Minutes before a non-graduated Pump or LaunchLab coin counts as a loss. Default 120. */
+  WALLET_LOSS_AGE_MINUTES: z.coerce.number().int().min(1).max(10_080).optional(),
+  /** Minutes before a non-graduated Meteora DBC coin counts as a loss. Default 60. */
+  WALLET_LOSS_AGE_METEORA_MINUTES: z.coerce.number().int().min(1).max(10_080).optional(),
   /** Covered early buys required before a wallet can join the proven list. Default 5. */
   WALLET_MIN_ENTRIES: z.coerce.number().int().min(1).max(1_000).optional(),
   /** How many of those entries must be on coins that did not graduate. Default 1. */

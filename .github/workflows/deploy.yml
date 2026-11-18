@@ -91,6 +91,8 @@ jobs:
           WALLET_BACKFILL_RUN_CREDITS: ${{ vars.WALLET_BACKFILL_RUN_CREDITS }}
           WALLET_CHURN_PCT: ${{ vars.WALLET_CHURN_PCT }}
           WALLET_REFRESH_HOURS: ${{ vars.WALLET_REFRESH_HOURS }}
+          WALLET_LOSS_AGE_MINUTES: ${{ vars.WALLET_LOSS_AGE_MINUTES }}
+          WALLET_LOSS_AGE_METEORA_MINUTES: ${{ vars.WALLET_LOSS_AGE_METEORA_MINUTES }}
           WALLET_MIN_ENTRIES: ${{ vars.WALLET_MIN_ENTRIES }}
           WALLET_MIN_LOSSES: ${{ vars.WALLET_MIN_LOSSES }}
           WALLET_BOT_MAX_ENTRIES: ${{ vars.WALLET_BOT_MAX_ENTRIES }}
@@ -218,7 +220,9 @@ jobs:
               line("WALLET_BACKFILL_CREDIT_CAP", bounded("WALLET_BACKFILL_CREDIT_CAP", "200000", 100000000)),
               line("WALLET_BACKFILL_RUN_CREDITS", bounded("WALLET_BACKFILL_RUN_CREDITS", "10000", 100000000)),
               line("WALLET_CHURN_PCT", churn_pct()),
-              line("WALLET_REFRESH_HOURS", bounded("WALLET_REFRESH_HOURS", "24", 168)),
+              line("WALLET_REFRESH_HOURS", bounded("WALLET_REFRESH_HOURS", "4", 168)),
+              line("WALLET_LOSS_AGE_MINUTES", bounded("WALLET_LOSS_AGE_MINUTES", "120", 10080)),
+              line("WALLET_LOSS_AGE_METEORA_MINUTES", bounded("WALLET_LOSS_AGE_METEORA_MINUTES", "60", 10080)),
               line("WALLET_MIN_ENTRIES", bounded("WALLET_MIN_ENTRIES", "5", 1000)),
               line("WALLET_MIN_LOSSES", loss_floor()),
               line("WALLET_BOT_MAX_ENTRIES", bounded("WALLET_BOT_MAX_ENTRIES", "80", 100000)),

@@ -42,6 +42,7 @@ import {
   measureReconnectGap,
   MICROS_PER_CREDIT,
   utcMonth,
+  applyLossMaturity,
   scoreProvenWallets,
   walletCreditCapMicros,
   walletFillsFromParsed,
@@ -1510,11 +1511,18 @@ async function prepareWalletSignals(input: {
   const active = await input.repo.activeTrackedWallets();
   if (active.length === 0) {
     const buys = await input.repo.earlyBuys();
-    const scored = scoreProvenWallets(buys, maxWallets, {
-      minEntries: input.env.WALLET_MIN_ENTRIES ?? 5,
-      minLosses: input.env.WALLET_MIN_LOSSES ?? 1,
-      botMaxEntries: input.env.WALLET_BOT_MAX_ENTRIES ?? 80,
-    });
+    const scored = scoreProvenWallets(
+      applyLossMaturity(buys, new Date(), {
+        pumpMs: (input.env.WALLET_LOSS_AGE_MINUTES ?? 120) * 60 * 1000,
+        meteoraMs: (input.env.WALLET_LOSS_AGE_METEORA_MINUTES ?? 60) * 60 * 1000,
+      }),
+      maxWallets,
+      {
+        minEntries: input.env.WALLET_MIN_ENTRIES ?? 5,
+        minLosses: input.env.WALLET_MIN_LOSSES ?? 1,
+        botMaxEntries: input.env.WALLET_BOT_MAX_ENTRIES ?? 80,
+      },
+    );
     await input.repo.saveTrackedWallets(scored, new Date());
     input.logger.info(
       { selected: scored.length, maxWallets },

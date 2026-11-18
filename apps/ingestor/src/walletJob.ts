@@ -4,6 +4,8 @@ import {
   allowanceCredits,
   collectEarlyBuyers,
   earlyBuyerHistoryParams,
+  SCORING_VERSION,
+  applyLossMaturity,
   nextTrackedSet,
   scoreProvenWallets,
   utcMonth,
@@ -18,6 +20,12 @@ import { HeliusRpcError, heliusRpc } from "./helius.js";
 
 const WAKE_MS = 60_000;
 const HISTORY_RETRY_MS = [60_000, 120_000, 240_000, 480_000, 600_000] as const;
+
+/** Backfill and rescore cadence. Default is every 4 hours, inside the monthly credit cap. */
+export function walletRefreshIntervalMs(hours: number | undefined): number {
+  const safe = hours === undefined || !Number.isFinite(hours) ? 4 : hours;
+  return Math.max(1, safe) * 60 * 60 * 1000;
+}
 
 /** First retry is one minute. Later tries double until ten minutes. */
 export function historyRetryDelayMs(attempt: number): number {
@@ -34,7 +42,7 @@ export async function runWalletMaintenance(input: {
   onWallets?: (addresses: readonly string[]) => void;
   sleep?: (ms: number, signal: AbortSignal) => Promise<void>;
 }): Promise<void> {
-  const intervalMs = (input.env.WALLET_REFRESH_HOURS ?? 24) * 60 * 60 * 1000;
+  const intervalMs = walletRefreshIntervalMs(input.env.WALLET_REFRESH_HOURS);
   const wait = input.sleep ?? sleep;
   let failureAttempt = 0;
   while (!input.signal.aborted) {
@@ -126,20 +134,33 @@ async function runWalletPass(input: {
     return "retry";
   }
   const maxWallets = input.env.WALLET_MAX_WALLETS ?? 300;
-  const ranked = scoreProvenWallets(await input.repo.earlyBuys(), maxWallets, {
-    minEntries: input.env.WALLET_MIN_ENTRIES ?? 5,
-    minLosses: input.env.WALLET_MIN_LOSSES ?? 1,
-    botMaxEntries: input.env.WALLET_BOT_MAX_ENTRIES ?? 80,
-  });
+  const ranked = scoreProvenWallets(
+    applyLossMaturity(await input.repo.earlyBuys(), new Date(), {
+      pumpMs: (input.env.WALLET_LOSS_AGE_MINUTES ?? 120) * 60 * 1000,
+      meteoraMs: (input.env.WALLET_LOSS_AGE_METEORA_MINUTES ?? 60) * 60 * 1000,
+    }),
+    maxWallets,
+    {
+      minEntries: input.env.WALLET_MIN_ENTRIES ?? 5,
+      minLosses: input.env.WALLET_MIN_LOSSES ?? 1,
+      botMaxEntries: input.env.WALLET_BOT_MAX_ENTRIES ?? 80,
+    },
+  );
   const active = await input.repo.activeTrackedWallets();
+  const storedVersion = await input.repo.activeScoringVersion();
+  const reset = storedVersion !== null && storedVersion !== SCORING_VERSION;
   const refresh = nextTrackedSet({
     ranked,
     active,
     maxWallets,
     maxChurnPct: input.env.WALLET_CHURN_PCT ?? 20,
+    reset,
   });
-  if (refresh.upsert.length > 0 || refresh.replaced > 0) {
-    await input.repo.applyWalletRefresh({ keep: refresh.keep, upsert: refresh.upsert }, new Date());
+  if (reset || refresh.upsert.length > 0 || refresh.replaced > 0) {
+    await input.repo.applyWalletRefresh(
+      { keep: refresh.keep, upsert: refresh.upsert, scoringVersion: SCORING_VERSION },
+      new Date(),
+    );
     input.onWallets?.(refresh.keep);
   }
   await input.repo.markWalletJob(new Date());

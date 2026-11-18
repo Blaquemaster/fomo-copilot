@@ -1,5 +1,11 @@
 # Decision log
 
+## 2026-11-18 — Scoring version 2 rebuilds the live list
+
+`tracked_wallet.scoring_version` is 2 for lists built by these rules. Existing rows default to 1, so the next refresh replaces the whole live set once and resubscribes, instead of keeping the old 100% wallets under the 20% churn cap. Later refreshes use the churn cap again.
+
+A coin that has not graduated is a loss only after 2 hours on Pump and LaunchLab, or 1 hour on Meteora DBC. Younger coins stay unresolved. Graduation is read again on every scoring pass. The sniper check uses the wallet's earliest buy on that coin. The backfill and rescore run every 4 hours. Each run is still at most 10,000 credits and the month is still 200,000, so that pace spends the month cap in about three days and then keeps rescoring without more history calls. The Flap sweep clamps `toBlock` to the node head from `eth_blockNumber`.
+
 ## 2026-11-18 — Balanced early-buyer sample and a shrunk hit rate
 
 Each backfill run interleaves finished-open rows and then fresh mints, one coin that did not graduate for each coin that did, until one side runs out. A mint that fails history fetches five times in a row is marked `skipped` with the error and the run moves on. Fewer failures stop the run without marking the daily job finished.

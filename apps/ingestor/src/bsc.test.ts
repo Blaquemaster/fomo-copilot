@@ -6,6 +6,7 @@ import type { IngestRepository } from "@fomo/core";
 import {
   BSC_SWEEP_MS,
   bscLogStall,
+  clampLogRange,
   enrichRetryDelayMs,
   handlePortalLog,
   logBlockPages,
@@ -108,5 +109,7 @@ describe("bsc flap intake", () => {
     expect(bscLogStall({ head: 900, checkpoint: 100, missedLogs: 0 })).toBe(false);
     expect(bscLogStall({ head: 100, checkpoint: 100, missedLogs: 4 })).toBe(false);
     expect(bscLogStall({ head: 900, checkpoint: 100, missedLogs: 4 })).toBe(true);
+    expect(clampLogRange(10, 21, 20)).toEqual({ fromBlock: 10, toBlock: 20 });
+    expect(clampLogRange(21, 22, 20)).toBeNull();
   });
 });

@@ -35,6 +35,19 @@ export function bscLogStall(input: {
 /** 30s, 2m, then 10m. getTokenV8Safe often fails in the create block on PublicNode. */
 export const ENRICH_RETRY_MS = [30_000, 120_000, 600_000] as const;
 
+/** Never ask a node for a block past the head it just reported. */
+export function clampLogRange(
+  fromBlock: number,
+  toBlock: number,
+  head: number,
+): { fromBlock: number; toBlock: number } | null {
+  if (!Number.isFinite(fromBlock) || !Number.isFinite(toBlock) || !Number.isFinite(head))
+    return null;
+  const to = Math.min(toBlock, head);
+  if (to < fromBlock) return null;
+  return { fromBlock, toBlock: to };
+}
+
 /** Inclusive pages of at most `size` blocks. The next page repeats the boundary block. */
 export function logBlockPages(
   fromBlock: number,
@@ -397,7 +410,9 @@ async function catchUp(
   const pages = logBlockPages(fromBlock, toBlock);
   let missed = 0;
   for (const page of pages) {
-    const logs = await getLogsWithRetry(input.logger, send, page.fromBlock, page.toBlock);
+    const range = clampLogRange(page.fromBlock, page.toBlock, toBlock);
+    if (!range) continue;
+    const logs = await getLogsWithRetry(input.logger, send, range.fromBlock, range.toBlock);
     for (const item of logs) {
       const log = parseLog(item);
       if (!log) continue;
@@ -425,14 +440,17 @@ async function getLogsWithRetry(
   fromBlock: number,
   toBlock: number,
 ): Promise<unknown[]> {
+  const head = await readHead(send);
+  const range = clampLogRange(fromBlock, toBlock, head);
+  if (!range) return [];
   let attempt = 1;
   for (;;) {
     try {
       const logs = await send("eth_getLogs", [
         {
           address: FLAP_PORTAL,
-          fromBlock: `0x${fromBlock.toString(16)}`,
-          toBlock: `0x${toBlock.toString(16)}`,
+          fromBlock: `0x${range.fromBlock.toString(16)}`,
+          toBlock: `0x${range.toBlock.toString(16)}`,
           topics: [[...FLAP_LOG_TOPICS]],
         },
       ]);
@@ -462,7 +480,9 @@ async function recallBsc(
   let missed = 0;
   const pages = logBlockPages(fromBlock, toBlock);
   for (const page of pages) {
-    const logs = await getLogsWithRetry(input.logger, send, page.fromBlock, page.toBlock);
+    const range = clampLogRange(page.fromBlock, page.toBlock, toBlock);
+    if (!range) continue;
+    const logs = await getLogsWithRetry(input.logger, send, range.fromBlock, range.toBlock);
     const known = await input.repo.chainEventKeys(BSC_CHAIN, page.fromBlock, page.toBlock);
     for (const item of logs) {
       const log = parseLog(item);

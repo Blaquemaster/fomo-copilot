@@ -18,7 +18,7 @@ import {
 import type { DecodeFailure, Observation } from "../ingest/decode.js";
 import type { FrameHourRow } from "../ingest/frameStats.js";
 import { stratifyBackfillMints } from "../ingest/earlyBuyers.js";
-import { walletCreditCapMicros } from "../ingest/wallets.js";
+import { SCORING_VERSION, walletCreditCapMicros } from "../ingest/wallets.js";
 import {
   DLMM_PROGRAM_ID,
   LAUNCHLAB_PROGRAMS,
@@ -283,8 +283,11 @@ create table if not exists tracked_wallet (
   early_wins integer not null,
   derivation text not null,
   active boolean not null,
-  selected_at timestamptz not null
+  selected_at timestamptz not null,
+  scoring_version integer not null default 1
 );
+
+alter table tracked_wallet add column if not exists scoring_version integer not null default 1;
 
 create table if not exists wallet_fill (
   signature text not null,
@@ -552,6 +555,10 @@ export async function migrate(pool: pg.Pool): Promise<void> {
     await client.query(
       "insert into schema_migrations (id) values ($1) on conflict (id) do nothing",
       ["019_wallet_balance"],
+    );
+    await client.query(
+      "insert into schema_migrations (id) values ($1) on conflict (id) do nothing",
+      ["020_scoring_version"],
     );
     await client.query(
       `update ingest_recall_audit a
@@ -1383,9 +1390,10 @@ export class IngestRepository {
       mint: string;
       side: "buy" | "sell";
       graduated: boolean;
-      outcomeKnown: boolean;
       slot: number | null;
       createdSlot: number | null;
+      createdAt: Date | null;
+      venue: string | null;
     }>
   > {
     const result = await this.pool.query<{
@@ -1393,27 +1401,17 @@ export class IngestRepository {
       mint: string;
       side: string;
       graduated: boolean;
-      outcome_known: boolean;
       slot: string | null;
       created_slot: string | null;
+      created_at: Date | null;
+      venue: string | null;
     }>(
-      `select t.wallet, t.mint, t.side, t.slot, c.created_slot,
+      `select t.wallet, t.mint, t.side, t.slot, c.created_slot, c.created_at, c.venue,
               exists (
                 select 1 from raw_events g
                 where g.mint = t.mint
                   and g.event_kind in ('pump_migrate', 'launchlab_migrate', 'dbc_migration_damm_v2')
-              ) as graduated,
-              (
-                exists (
-                  select 1 from raw_events g
-                  where g.mint = t.mint
-                    and g.event_kind in ('pump_migrate', 'launchlab_migrate', 'dbc_migration_damm_v2')
-                )
-                or exists (
-                  select 1 from wallet_backfill_mint b
-                  where b.mint = t.mint and b.status = 'done'
-                )
-              ) as outcome_known
+              ) as graduated
        from (
          select trader as wallet, mint, side, slot from pump_trade
          where trader is not null and is_creator = false and side in ('buy', 'sell')
@@ -1428,10 +1426,21 @@ export class IngestRepository {
       mint: row.mint,
       side: row.side === "sell" ? "sell" : "buy",
       graduated: row.graduated,
-      outcomeKnown: row.outcome_known,
       slot: row.slot === null ? null : Number(row.slot),
       createdSlot: row.created_slot === null ? null : Number(row.created_slot),
+      createdAt: row.created_at,
+      venue: row.venue,
     }));
+  }
+
+  async activeScoringVersion(): Promise<number | null> {
+    const result = await this.pool.query<{ version: string | number | null }>(
+      "select min(scoring_version) as version from tracked_wallet where active = true",
+    );
+    const version = result.rows[0]?.version;
+    if (version === null || version === undefined) return null;
+    const parsed = Number(version);
+    return Number.isFinite(parsed) ? parsed : null;
   }
 
   async activeTrackedWallets(): Promise<string[]> {
@@ -1454,15 +1463,16 @@ export class IngestRepository {
     for (const row of rows) {
       await this.pool.query(
         `insert into tracked_wallet
-          (address, hit_rate, early_entries, early_wins, derivation, active, selected_at)
-         values ($1,$2,$3,$4,$5,true,$6)
+          (address, hit_rate, early_entries, early_wins, derivation, active, selected_at, scoring_version)
+         values ($1,$2,$3,$4,$5,true,$6,$7)
          on conflict (address) do update set
            hit_rate = excluded.hit_rate,
            early_entries = excluded.early_entries,
            early_wins = excluded.early_wins,
            derivation = excluded.derivation,
            active = true,
-           selected_at = excluded.selected_at`,
+           selected_at = excluded.selected_at,
+           scoring_version = excluded.scoring_version`,
         [
           row.address,
           row.hitRate,
@@ -1470,6 +1480,7 @@ export class IngestRepository {
           row.earlyWins,
           row.derivation,
           now.toISOString(),
+          SCORING_VERSION,
         ],
       );
     }
@@ -1797,29 +1808,39 @@ export class IngestRepository {
         earlyWins: number;
         derivation: string;
       }>;
+      scoringVersion?: number;
     },
     now: Date,
   ): Promise<void> {
-    if (input.keep.length === 0) return;
+    const version = input.scoringVersion ?? SCORING_VERSION;
     const client = await this.pool.connect();
     try {
       await client.query("begin");
+      if (input.keep.length === 0) {
+        await client.query(
+          "update tracked_wallet set active = false, scoring_version = $1 where active = true",
+          [version],
+        );
+        await client.query("commit");
+        return;
+      }
       await client.query(
-        "update tracked_wallet set active = false where active = true and address <> all($1::text[])",
-        [input.keep],
+        "update tracked_wallet set active = false, scoring_version = $2 where active = true and address <> all($1::text[])",
+        [input.keep, version],
       );
       for (const row of input.upsert) {
         await client.query(
           `insert into tracked_wallet
-            (address, hit_rate, early_entries, early_wins, derivation, active, selected_at)
-           values ($1,$2,$3,$4,$5,true,$6)
+            (address, hit_rate, early_entries, early_wins, derivation, active, selected_at, scoring_version)
+           values ($1,$2,$3,$4,$5,true,$6,$7)
            on conflict (address) do update set
              hit_rate = excluded.hit_rate,
              early_entries = excluded.early_entries,
              early_wins = excluded.early_wins,
              derivation = excluded.derivation,
              active = true,
-             selected_at = excluded.selected_at`,
+             selected_at = excluded.selected_at,
+             scoring_version = excluded.scoring_version`,
           [
             row.address,
             row.hitRate,
@@ -1827,6 +1848,7 @@ export class IngestRepository {
             row.earlyWins,
             row.derivation,
             now.toISOString(),
+            version,
           ],
         );
       }
