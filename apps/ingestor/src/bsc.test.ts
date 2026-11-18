@@ -5,7 +5,10 @@ import type { IngestRepository } from "@fomo/core";
 
 import {
   BSC_SWEEP_MS,
+  auditBscLogs,
   bscLogStall,
+  catchUpBscLogs,
+  clampLogRange,
   enrichRetryDelayMs,
   handlePortalLog,
   logBlockPages,
@@ -108,5 +111,91 @@ describe("bsc flap intake", () => {
     expect(bscLogStall({ head: 900, checkpoint: 100, missedLogs: 0 })).toBe(false);
     expect(bscLogStall({ head: 100, checkpoint: 100, missedLogs: 4 })).toBe(false);
     expect(bscLogStall({ head: 900, checkpoint: 100, missedLogs: 4 })).toBe(true);
+    expect(clampLogRange(10, 21, 20)).toEqual({ fromBlock: 10, toBlock: 20 });
+    expect(clampLogRange(21, 22, 20)).toBeNull();
+  });
+
+  it("checkpoints the served head when the node is behind the page, then continues", async () => {
+    const logger = { error() {}, info() {}, warn() {}, debug() {} };
+    const saved: number[] = [];
+    const requested: Array<{ fromBlock: number; toBlock: number }> = [];
+    const repo = {
+      saveChainCheckpoint: async (input: { blockNumber: number }) => {
+        saved.push(input.blockNumber);
+      },
+    };
+    const send = (head: number) => async (method: string, params: unknown[]) => {
+      if (method === "eth_blockNumber") return `0x${head.toString(16)}`;
+      if (method === "eth_getLogs") {
+        const filter = params[0] as { fromBlock: string; toBlock: string };
+        const fromBlock = Number.parseInt(filter.fromBlock, 16);
+        const toBlock = Number.parseInt(filter.toBlock, 16);
+        requested.push({ fromBlock, toBlock });
+        return [];
+      }
+      throw new Error(method);
+    };
+    await catchUpBscLogs(
+      { repo: repo as never, logger: logger as never },
+      send(20),
+      10,
+      1_000,
+      null,
+    );
+    expect(saved).toEqual([20]);
+    expect(requested).toEqual([{ fromBlock: 10, toBlock: 20 }]);
+    requested.length = 0;
+    await catchUpBscLogs(
+      { repo: repo as never, logger: logger as never },
+      send(1_000),
+      saved[saved.length - 1] ?? 20,
+      1_000,
+      null,
+    );
+    expect(saved[saved.length - 1]).toBe(1_000);
+    expect(requested.every((range) => range.toBlock <= 1_000)).toBe(true);
+    for (let block = 21; block <= 1_000; block += 1) {
+      expect(requested.some((range) => range.fromBlock <= block && block <= range.toBlock)).toBe(
+        true,
+      );
+    }
+  });
+
+  it("ends the recall window at the served head instead of the planned page", async () => {
+    const logger = { error() {}, info() {}, warn() {}, debug() {} };
+    const requested: Array<{ fromBlock: number; toBlock: number }> = [];
+    const keyRanges: Array<{ fromBlock: number; toBlock: number }> = [];
+    const audits: Array<{ fromBlock: number; toBlock: number }> = [];
+    let headReads = 0;
+    const send = async (method: string, params: unknown[]) => {
+      if (method === "eth_blockNumber") {
+        headReads += 1;
+        const head = headReads === 1 ? 1_000 : 150;
+        return `0x${head.toString(16)}`;
+      }
+      if (method === "eth_getLogs") {
+        const filter = params[0] as { fromBlock: string; toBlock: string };
+        requested.push({
+          fromBlock: Number.parseInt(filter.fromBlock, 16),
+          toBlock: Number.parseInt(filter.toBlock, 16),
+        });
+        return [];
+      }
+      throw new Error(method);
+    };
+    const repo = {
+      chainCheckpoint: async () => ({ blockNumber: 100, coverageBlock: 100, reconnects: 0 }),
+      chainEventKeys: async (_chain: string, fromBlock: number, toBlock: number) => {
+        keyRanges.push({ fromBlock, toBlock });
+        return new Set<string>();
+      },
+      insertChainAudit: async (input: { fromBlock: number; toBlock: number }) => {
+        audits.push(input);
+      },
+    };
+    await auditBscLogs({ repo: repo as never, logger: logger as never }, send);
+    expect(requested).toEqual([{ fromBlock: 100, toBlock: 150 }]);
+    expect(keyRanges).toEqual([{ fromBlock: 100, toBlock: 150 }]);
+    expect(audits).toEqual([expect.objectContaining({ fromBlock: 100, toBlock: 150 })]);
   });
 });

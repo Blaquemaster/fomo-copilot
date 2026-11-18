@@ -10,6 +10,7 @@ import {
   WALLET_TRADE_NAMES,
 } from "./programs.js";
 import {
+  applyLossMaturity,
   chunkWallets,
   nextTrackedSet,
   scoreProvenWallets,
@@ -72,6 +73,30 @@ describe("proven wallets", () => {
       { minEntries: 1, minLosses: 1 },
     );
     expect(sniper).toEqual([]);
+    const laterBuy = scoreProvenWallets(
+      [
+        {
+          wallet: "snipe",
+          mint: "mint-a",
+          side: "buy",
+          graduated: true,
+          slot: 20,
+          createdSlot: 10,
+        },
+        {
+          wallet: "snipe",
+          mint: "mint-a",
+          side: "buy",
+          graduated: true,
+          slot: 10,
+          createdSlot: 10,
+        },
+        { wallet: "snipe", mint: "mint-b", side: "buy", graduated: false, slot: 4, createdSlot: 3 },
+      ],
+      300,
+      { minEntries: 1, minLosses: 1 },
+    );
+    expect(laterBuy).toEqual([]);
     const scalp = scoreProvenWallets(
       [
         { wallet: "bot", mint: "mint-a", side: "buy", graduated: true, slot: 8, createdSlot: 1 },
@@ -109,6 +134,79 @@ describe("proven wallets", () => {
     const scored = scoreProvenWallets(rows, 2, { minEntries: 2, minLosses: 1 });
     expect(scored.map((row) => row.address)).toEqual(["a-wallet", "b-wallet"]);
     expect(scored[0]?.hitRate).toBeGreaterThan(scored[1]?.hitRate ?? 0);
+  });
+
+  it("leaves a young non-graduate unresolved and counts an old one as a loss", () => {
+    const now = new Date("2026-11-18T12:00:00.000Z");
+    const rows = applyLossMaturity(
+      [
+        {
+          wallet: "a",
+          mint: "young-pump",
+          side: "buy",
+          graduated: false,
+          venue: "pump",
+          createdAt: new Date(now.getTime() - 90 * 60 * 1000),
+        },
+        {
+          wallet: "a",
+          mint: "old-launch",
+          side: "buy",
+          graduated: false,
+          venue: "launchlab",
+          createdAt: new Date(now.getTime() - 3 * 60 * 60 * 1000),
+        },
+        {
+          wallet: "a",
+          mint: "dbc",
+          side: "buy",
+          graduated: false,
+          venue: "meteora",
+          createdAt: new Date(now.getTime() - 90 * 60 * 1000),
+        },
+        {
+          wallet: "a",
+          mint: "graduated-young",
+          side: "buy",
+          graduated: true,
+          venue: "pump",
+          createdAt: new Date(now.getTime() - 10 * 60 * 1000),
+        },
+      ],
+      now,
+    );
+    expect(rows.find((row) => row.mint === "young-pump")?.outcomeKnown).toBe(false);
+    expect(rows.find((row) => row.mint === "old-launch")?.outcomeKnown).toBe(true);
+    expect(rows.find((row) => row.mint === "dbc")?.outcomeKnown).toBe(true);
+    expect(rows.find((row) => row.mint === "graduated-young")?.outcomeKnown).toBe(true);
+    const later = applyLossMaturity(
+      [
+        {
+          wallet: "a",
+          mint: "young-pump",
+          side: "buy",
+          graduated: true,
+          venue: "pump",
+          createdAt: new Date(now.getTime() - 90 * 60 * 1000),
+        },
+      ],
+      now,
+    );
+    expect(later[0]?.outcomeKnown).toBe(true);
+    expect(later[0]?.graduated).toBe(true);
+  });
+
+  it("rebuilds the live list when the scoring version changes", () => {
+    const ranked = [scored("new-wallet")];
+    const refresh = nextTrackedSet({
+      ranked,
+      active: ["old-a", "old-b", "old-c", "old-d", "old-e"],
+      maxWallets: 5,
+      maxChurnPct: 20,
+      reset: true,
+    });
+    expect(refresh.keep).toEqual(["new-wallet"]);
+    expect(refresh.replaced).toBe(5);
   });
 
   it("returns nothing when there is no stored early buy", () => {

@@ -13,6 +13,15 @@ import {
  * which only keeps the short window after create. Lookback is all of that stored
  * history. The list must be frozen before Phase D and is not tuned on a paper window.
  */
+/** Bump when the scoring rules change enough that the live list must be rebuilt. */
+export const SCORING_VERSION = 2;
+
+export const LOSS_AGE_MS = {
+  pump: 2 * 60 * 60 * 1000,
+  launchlab: 2 * 60 * 60 * 1000,
+  meteora: 60 * 60 * 1000,
+} as const;
+
 export const PROVEN_WALLET_RULE = {
   minEntries: 5,
   minLosses: 1,
@@ -34,6 +43,8 @@ export interface EarlyBuy {
   outcomeKnown?: boolean;
   slot?: number | null;
   createdSlot?: number | null;
+  createdAt?: Date | string | null;
+  venue?: string | null;
 }
 
 export interface ScoreOptions {
@@ -88,8 +99,8 @@ export function scoreProvenWallets(
       sells: new Map<string, EarlyBuy>(),
       graduated: new Set<string>(),
     };
-    if (row.side === "buy") bucket.buys.set(row.mint, row);
-    else bucket.sells.set(row.mint, row);
+    if (row.side === "buy") keepEarliest(bucket.buys, row);
+    else keepEarliest(bucket.sells, row);
     if (row.graduated) bucket.graduated.add(row.mint);
     byWallet.set(row.wallet, bucket);
   }
@@ -130,8 +141,42 @@ export function scoreProvenWallets(
   return scored.slice(0, Math.max(0, maxWallets));
 }
 
+function keepEarliest(bucket: Map<string, EarlyBuy>, row: EarlyBuy): void {
+  const previous = bucket.get(row.mint);
+  if (!previous || earlierSlot(row, previous)) bucket.set(row.mint, row);
+}
+
+function earlierSlot(next: EarlyBuy, previous: EarlyBuy): boolean {
+  if (next.slot == null) return false;
+  if (previous.slot == null) return true;
+  return next.slot < previous.slot;
+}
+
 function isSniper(row: EarlyBuy): boolean {
   return row.slot != null && row.createdSlot != null && row.slot === row.createdSlot;
+}
+
+/** A non-graduated coin is a loss only after it is old enough that graduation was likely. */
+export function applyLossMaturity(
+  rows: readonly EarlyBuy[],
+  now: Date,
+  ages: { pumpMs: number; meteoraMs: number } = {
+    pumpMs: LOSS_AGE_MS.pump,
+    meteoraMs: LOSS_AGE_MS.meteora,
+  },
+): EarlyBuy[] {
+  return rows.map((row) => {
+    if (row.graduated) return { ...row, outcomeKnown: true };
+    const created =
+      row.createdAt instanceof Date
+        ? row.createdAt.getTime()
+        : typeof row.createdAt === "string"
+          ? new Date(row.createdAt).getTime()
+          : null;
+    if (created === null || Number.isNaN(created)) return { ...row, outcomeKnown: false };
+    const wait = row.venue === "meteora" ? ages.meteoraMs : ages.pumpMs;
+    return { ...row, outcomeKnown: now.getTime() - created >= wait };
+  });
 }
 
 function isScalp(row: EarlyBuy, sells: ReadonlyMap<string, EarlyBuy>): boolean {
@@ -167,15 +212,28 @@ export interface WalletRefresh {
  * Daily refresh. An empty live set may fill up to maxWallets. After that, at most
  * maxChurnPct of the current addresses are replaced. Empty slots under the cap
  * may still be filled. Wallets that fell out of the ranked set are dropped first.
- * An empty ranking leaves the live set untouched.
+ * An empty ranking leaves the live set untouched, except when reset is set.
  */
 export function nextTrackedSet(input: {
   ranked: readonly ScoredWallet[];
   active: readonly string[];
   maxWallets: number;
   maxChurnPct: number;
+  /** Replace the whole live set. Used once when scoring_version changes. */
+  reset?: boolean;
 }): WalletRefresh {
   const maxWallets = Math.max(0, Math.floor(input.maxWallets));
+  if (input.reset) {
+    const upsert = input.ranked.slice(0, maxWallets);
+    const keep = upsert.map((row) => row.address);
+    const kept = new Set(keep);
+    return {
+      keep,
+      upsert,
+      replaced: input.active.filter((address) => !kept.has(address)).length,
+      added: keep.filter((address) => !input.active.includes(address)).length,
+    };
+  }
   if (input.ranked.length === 0 || maxWallets === 0) {
     return { keep: [...input.active], upsert: [], replaced: 0, added: 0 };
   }
