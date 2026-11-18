@@ -29,6 +29,7 @@ const env: Env = {
   PUMP_SUBSCRIBE_CREATE_POOL: false,
   PUMP_TRADE_DETAIL_SLOTS: 150,
   BACKFILL_SLOT_MARGIN: 0,
+  BSC_WSS_URL: "wss://bsc-rpc.publicnode.com",
 };
 
 class FakeSocket extends EventTarget {

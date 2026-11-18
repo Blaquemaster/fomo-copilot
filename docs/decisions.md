@@ -1,10 +1,22 @@
 # Decision log
 
+## 2026-11-18 — Flap reconnects and catch-up
+
+`BSC_WSS_URL` defaults to `wss://bsc-rpc.publicnode.com`. That URL has no API key, so deploy always writes it and logs do not treat it as a secret. A keyed override still comes from the Actions variable or secret.
+
+Each connect subscribes before `eth_getLogs`. Catch-up starts at the last saved block, inclusive, and walks the whole gap in pages of 500. A failed page is logged and retried. The checkpoint moves only after a page is stored. Duplicate logs are ignored by `(tx_hash, log_index)`.
+
+PublicNode closes the socket every few minutes. A 20 second ping and `eth_blockNumber` keep it up, and each reconnect increments `ingest_chain_checkpoint.reconnects`, which the status report prints.
+
+`getTokenV8Safe` is retried at 30 seconds, 2 minutes, and 10 minutes when the create-time read comes back empty. The six-hour recall covers about the last hour of BSC blocks, paged, and records expected, matched, and missed for the chain.
+
+The Meteora coin cleanup from `014_launchpad_tags` runs once. `raw_events (mint, event_kind)` is indexed for that query.
+
 ## 2026-11-18 — BNB Chain Flap, beside Solana
 
 Flap creates and graduations are read from the BNB Chain Portal `0xe2cE6ab80874Fa9Fa2aAE65D277Dd6B8e65C9De0`. The socket subscribes to `TokenCreated`, `FlapTokenTaxSet`, `LaunchedToDEX`, and `FlapTokenCLPoolCreated`. Trades are not subscribed. `getTokenV8Safe` runs once per create. Coins are stored in `ingest_asset` with primary key `(chain, address)` and launchpad `Flap`, including the tax rate. Checkpoints are block numbers in `ingest_chain_checkpoint`. A reconnect catch-up is one `eth_getLogs` of at most 500 blocks. A wider gap is left unrecovered so a public RPC range limit is not walked. A recall every six hours compares one 200-block window with `eth_getLogs`.
 
-`BSC_WSS_URL` is optional. When it is unset, the process is Solana-only. The BSC loop catches its own errors and does not stop the Helius loop. GoPlus and Honeypot.is request URLs exist as `flapScreenRequests` and are not called.
+The BSC loop catches its own errors and does not stop the Helius loop. GoPlus and Honeypot.is request URLs exist as `flapScreenRequests` and are not called.
 
 Alchemy's free tier is about 30 million compute units a month. This path is one logs subscription, one `eth_call` (26 CU) per create, and one `eth_getLogs` (60 CU) per recall. At a few hundred Flap creates an hour that is a few million CU a month. The live topic hash was not confirmed against a BSC node; public `eth_getLogs` was rejected. The topics are keccak256 of the signatures in the Flap indexer doc.
 

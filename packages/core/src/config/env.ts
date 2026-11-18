@@ -62,13 +62,16 @@ export const envSchema = z.object({
   /** Slots kept behind the last live slot when backfill decides it has caught up. */
   BACKFILL_SLOT_MARGIN: z.coerce.number().int().min(0).max(10_000).default(16),
   /**
-   * BNB Chain websocket for Flap. Absent means Solana intake only.
-   * The URL is a secret when it contains an API key.
+   * BNB Chain websocket for Flap. The default is a public keyless endpoint.
+   * A keyed provider URL is still redacted.
    */
-  BSC_WSS_URL: z.string().min(8).max(2048).optional(),
+  BSC_WSS_URL: z.string().min(8).max(2048).default("wss://bsc-rpc.publicnode.com"),
 });
 
 export type Env = z.infer<typeof envSchema>;
+
+/** Public keyless BSC endpoint. Deploy writes this unless an override is set. */
+export const PUBLIC_BSC_WSS_URL = "wss://bsc-rpc.publicnode.com";
 
 function blankToUndefined(source: NodeJS.ProcessEnv): Record<string, string> {
   const out: Record<string, string> = {};
@@ -131,7 +134,9 @@ export function loadEnv(source: NodeJS.ProcessEnv = process.env): Env {
 /** Values that must never appear in logs or crash alerts. Longest first. */
 export function secretValuesFromEnv(env: Env): string[] {
   const values = [env.TELEGRAM_BOT_TOKEN, env.HELIUS_API_KEY, env.POSTGRES_PASSWORD];
-  if (env.BSC_WSS_URL) values.push(env.BSC_WSS_URL);
+  if (env.BSC_WSS_URL && !env.BSC_WSS_URL.includes("bsc-rpc.publicnode.com")) {
+    values.push(env.BSC_WSS_URL);
+  }
   try {
     const password = decodeURIComponent(new URL(env.DATABASE_URL).password);
     values.push(password);

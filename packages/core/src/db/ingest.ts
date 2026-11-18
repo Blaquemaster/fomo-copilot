@@ -52,6 +52,7 @@ create table if not exists raw_events (
 );
 
 create index if not exists raw_events_received_idx on raw_events (received_at desc);
+create index if not exists raw_events_mint_kind_idx on raw_events (mint, event_kind);
 
 create table if not exists candidates (
   id bigserial primary key,
@@ -255,8 +256,21 @@ create table if not exists ingest_chain_checkpoint (
   chain text primary key,
   block_number bigint not null,
   coverage_block bigint,
+  reconnects integer not null default 0,
   updated_at timestamptz not null default now()
 );
+
+alter table ingest_chain_checkpoint add column if not exists reconnects integer not null default 0;
+
+create table if not exists ingest_asset_enrich (
+  chain text not null,
+  address text not null,
+  attempt integer not null,
+  due_at timestamptz not null,
+  primary key (chain, address)
+);
+
+create index if not exists ingest_asset_enrich_due_idx on ingest_asset_enrich (due_at);
 
 create table if not exists ingest_chain_event (
   chain text not null,
@@ -384,6 +398,10 @@ export async function migrate(pool: pg.Pool): Promise<void> {
       "insert into schema_migrations (id) values ($1) on conflict (id) do nothing",
       ["013_multi_venue"],
     );
+    const launchpadTags = await client.query("select 1 from schema_migrations where id = $1", [
+      "014_launchpad_tags",
+    ]);
+    const firstLaunchpadTags = launchpadTags.rowCount === 0;
     await client.query(
       "insert into schema_migrations (id) values ($1) on conflict (id) do nothing",
       ["014_launchpad_tags"],
@@ -418,18 +436,24 @@ export async function migrate(pool: pg.Pool): Promise<void> {
            '4Bu96XjU84XjPDSpveTVf6LYGCkfW5FK7SNkREWcEfV4'
          )`,
     );
-    await client.query(
-      `delete from ingest_coin c
-       where c.venue = 'meteora'
-         and not exists (
-           select 1 from raw_events e
-           where e.mint = c.mint
-             and e.event_kind in ('dbc_initialize', 'dbc_migration_damm_v2')
-         )`,
-    );
+    if (firstLaunchpadTags) {
+      await client.query(
+        `delete from ingest_coin c
+         where c.venue = 'meteora'
+           and not exists (
+             select 1 from raw_events e
+             where e.mint = c.mint
+               and e.event_kind in ('dbc_initialize', 'dbc_migration_damm_v2')
+           )`,
+      );
+    }
     await client.query(
       "insert into schema_migrations (id) values ($1) on conflict (id) do nothing",
       ["015_bsc_flap"],
+    );
+    await client.query(
+      "insert into schema_migrations (id) values ($1) on conflict (id) do nothing",
+      ["016_bsc_reliability"],
     );
     await client.query(
       `update ingest_recall_audit a
@@ -1226,6 +1250,14 @@ export class IngestRepository {
         `${venue} creation unseen: ${unseen.toString()}`,
       );
     }
+    const bsc = await this.chainCheckpoint("bsc");
+    if (bsc) lines.push(`bsc reconnects: ${bsc.reconnects.toString()}`);
+    const bscAudit = await this.latestChainAudit("bsc");
+    if (bscAudit) {
+      lines.push(
+        `bsc recall: ${bscAudit.missed.toString()}/${bscAudit.expected.toString()} missed (${bscAudit.matched.toString()} matched)`,
+      );
+    }
     return lines.join("\n");
   }
 
@@ -1302,11 +1334,17 @@ export class IngestRepository {
     };
   }
 
-  async chainCheckpoint(
-    chain: string,
-  ): Promise<{ blockNumber: number; coverageBlock: number | null } | null> {
-    const result = await this.pool.query<{ block_number: string; coverage_block: string | null }>(
-      "select block_number, coverage_block from ingest_chain_checkpoint where chain = $1",
+  async chainCheckpoint(chain: string): Promise<{
+    blockNumber: number;
+    coverageBlock: number | null;
+    reconnects: number;
+  } | null> {
+    const result = await this.pool.query<{
+      block_number: string;
+      coverage_block: string | null;
+      reconnects: string | null;
+    }>(
+      "select block_number, coverage_block, reconnects from ingest_chain_checkpoint where chain = $1",
       [chain],
     );
     const row = result.rows[0];
@@ -1315,7 +1353,19 @@ export class IngestRepository {
     return {
       blockNumber: Number(row.block_number),
       coverageBlock: coverage !== null && Number.isFinite(coverage) ? coverage : null,
+      reconnects: Number(row.reconnects ?? 0),
     };
+  }
+
+  async noteChainReconnect(chain: string): Promise<number> {
+    const result = await this.pool.query<{ reconnects: string }>(
+      `update ingest_chain_checkpoint
+       set reconnects = reconnects + 1, updated_at = now()
+       where chain = $1
+       returning reconnects`,
+      [chain],
+    );
+    return Number(result.rows[0]?.reconnects ?? 0);
   }
 
   async saveChainCheckpoint(input: {
@@ -1414,6 +1464,58 @@ export class IngestRepository {
       [chain, fromBlock, toBlock],
     );
     return new Set(result.rows.map((row) => `${row.tx_hash}:${row.log_index.toString()}`));
+  }
+
+  async scheduleAssetEnrich(input: {
+    chain: string;
+    address: string;
+    attempt: number;
+    dueAt: Date;
+  }): Promise<void> {
+    await this.pool.query(
+      `insert into ingest_asset_enrich (chain, address, attempt, due_at)
+       values ($1,$2,$3,$4)
+       on conflict (chain, address) do update set
+         attempt = excluded.attempt,
+         due_at = excluded.due_at`,
+      [input.chain, input.address, input.attempt, input.dueAt.toISOString()],
+    );
+  }
+
+  async dueAssetEnrich(
+    now: Date,
+    limit = 20,
+  ): Promise<Array<{ chain: string; address: string; attempt: number }>> {
+    const result = await this.pool.query<{ chain: string; address: string; attempt: number }>(
+      `select chain, address, attempt from ingest_asset_enrich
+       where due_at <= $1
+       order by due_at
+       limit $2`,
+      [now.toISOString(), limit],
+    );
+    return result.rows;
+  }
+
+  async clearAssetEnrich(chain: string, address: string): Promise<void> {
+    await this.pool.query("delete from ingest_asset_enrich where chain = $1 and address = $2", [
+      chain,
+      address,
+    ]);
+  }
+
+  async latestChainAudit(chain: string): Promise<{
+    expected: number;
+    matched: number;
+    missed: number;
+  } | null> {
+    const result = await this.pool.query<{ expected: number; matched: number; missed: number }>(
+      `select expected, matched, missed from ingest_chain_audit
+       where chain = $1
+       order by ran_at desc
+       limit 1`,
+      [chain],
+    );
+    return result.rows[0] ?? null;
   }
 
   async insertChainAudit(input: {

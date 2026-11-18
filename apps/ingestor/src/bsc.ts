@@ -15,12 +15,37 @@ import {
   type Env,
 } from "@fomo/core";
 
-/** One getLogs page. Alchemy's free-tier eth_getLogs range stays small. */
-const MAX_CATCHUP_BLOCKS = 500;
-/** About 90 seconds of BSC blocks, ending this far behind the tip. */
-const AUDIT_SPAN_BLOCKS = 200;
-const AUDIT_QUIET_BLOCKS = 200;
+/** PublicNode and Alchemy both accept this page size. */
+export const LOG_PAGE_BLOCKS = 500;
+/** About one hour of BSC blocks (0.45s each), kept off the in-flight tip. */
+const AUDIT_HOUR_BLOCKS = 8_000;
+const AUDIT_QUIET_BLOCKS = 20;
 const AUDIT_EVERY_MS = 6 * 60 * 60 * 1000;
+const HEARTBEAT_MS = 20_000;
+/** 30s, 2m, then 10m. getTokenV8Safe often fails in the create block on PublicNode. */
+export const ENRICH_RETRY_MS = [30_000, 120_000, 600_000] as const;
+
+/** Inclusive pages of at most `size` blocks. The next page repeats the boundary block. */
+export function logBlockPages(
+  fromBlock: number,
+  toBlock: number,
+  size = LOG_PAGE_BLOCKS,
+): Array<{ fromBlock: number; toBlock: number }> {
+  if (toBlock < fromBlock || size < 1) return [];
+  const pages: Array<{ fromBlock: number; toBlock: number }> = [];
+  let from = fromBlock;
+  while (from <= toBlock) {
+    const to = Math.min(toBlock, from + size - 1);
+    pages.push({ fromBlock: from, toBlock: to });
+    if (to >= toBlock) break;
+    from = to;
+  }
+  return pages;
+}
+
+export function enrichRetryDelayMs(attempt: number): number | null {
+  return ENRICH_RETRY_MS[attempt] ?? null;
+}
 
 /**
  * BNB Chain Flap intake. Runs beside Solana and never throws out to it.
@@ -41,12 +66,19 @@ export async function runBscIngest(input: {
 }): Promise<void> {
   if (!input.env.BSC_WSS_URL) return;
   let attempt = 1;
+  let connected = false;
   while (!input.signal.aborted) {
     try {
+      if (connected) {
+        const reconnects = await input.repo.noteChainReconnect(BSC_CHAIN);
+        input.logger.info({ chain: BSC_CHAIN, reconnects }, "bsc reconnect");
+      }
       await connectBsc(input);
+      connected = true;
       attempt = 1;
     } catch (error) {
       if (input.signal.aborted) return;
+      connected = true;
       input.logger.error({ err: error }, "bsc socket failed");
       const wait = backoffDelayMs(attempt, () => 0);
       attempt += 1;
@@ -59,14 +91,24 @@ export async function handlePortalLog(
   repo: IngestRepository,
   log: PortalLog,
   enrich: (token: string) => Promise<FlapTokenState | null> = async () => null,
-): Promise<void> {
+): Promise<{ stored: boolean; needsEnrich: boolean; token: string | null }> {
   const topic = log.topics[0];
-  if (!topic) return;
+  if (!topic) return { stored: false, needsEnrich: false, token: null };
   const event = decodePortalLog(topic, log.data);
-  if (!event) return;
+  if (!event) return { stored: false, needsEnrich: false, token: null };
+  const inserted = await repo.insertChainEvent({
+    chain: BSC_CHAIN,
+    txHash: log.txHash,
+    logIndex: log.logIndex,
+    blockNumber: log.blockNumber,
+    eventName: event.kind,
+    address: event.token,
+  });
+  if (!inserted) return { stored: false, needsEnrich: false, token: event.token };
   const createdAt = new Date();
+  let state: FlapTokenState | null = null;
   if (event.kind === "create") {
-    const state = await enrich(event.token).catch(() => null);
+    state = await enrich(event.token).catch(() => null);
     const buy = state?.buyTaxBps ?? null;
     const sell = state?.sellTaxBps ?? null;
     await repo.rememberAsset({
@@ -133,14 +175,8 @@ export async function handlePortalLog(
       txHash: log.txHash,
     });
   }
-  await repo.insertChainEvent({
-    chain: BSC_CHAIN,
-    txHash: log.txHash,
-    logIndex: log.logIndex,
-    blockNumber: log.blockNumber,
-    eventName: event.kind,
-    address: event.token,
-  });
+  const needsEnrich = event.kind === "create" && enrichmentMissing(state);
+  return { stored: true, needsEnrich, token: event.token };
 }
 
 export function portalLogFilter(): {
@@ -168,7 +204,10 @@ async function connectBsc(input: {
   const url = input.env.BSC_WSS_URL;
   if (!url) return;
   const ws = input.deps?.openSocket ? input.deps.openSocket(url) : new WebSocket(url);
-  const pending = new Map<number, (value: unknown) => void>();
+  const pending = new Map<
+    number,
+    { resolve: (value: unknown) => void; reject: (error: Error) => void }
+  >();
   let nextId = 1;
   const send = (method: string, params: unknown[]): Promise<unknown> => {
     const id = nextId;
@@ -178,9 +217,15 @@ async function connectBsc(input: {
         if (!pending.delete(id)) return;
         reject(new Error("bsc rpc timed out"));
       }, 20_000);
-      pending.set(id, (value) => {
-        clearTimeout(timer);
-        resolve(value);
+      pending.set(id, {
+        resolve: (value) => {
+          clearTimeout(timer);
+          resolve(value);
+        },
+        reject: (error) => {
+          clearTimeout(timer);
+          reject(error);
+        },
       });
     });
     ws.send(JSON.stringify({ jsonrpc: "2.0", id, method, params }));
@@ -190,6 +235,7 @@ async function connectBsc(input: {
     ws.once("open", () => resolve());
     ws.once("error", () => reject(new Error("bsc websocket failed to open")));
   });
+  let caughtUp = false;
   const onMessage = (raw: WebSocket.RawData): void => {
     let message: Record<string, unknown>;
     try {
@@ -198,14 +244,17 @@ async function connectBsc(input: {
       return;
     }
     if (typeof message["id"] === "number") {
-      const resolve = pending.get(message["id"]);
-      if (!resolve) return;
+      const waiter = pending.get(message["id"]);
+      if (!waiter) return;
       pending.delete(message["id"]);
       if (message["error"]) {
-        resolve(null);
+        const errorRecord = message["error"] as { message?: unknown };
+        const text =
+          typeof errorRecord.message === "string" ? errorRecord.message : "bsc rpc error";
+        waiter.reject(new Error(text));
         return;
       }
-      resolve(message["result"]);
+      waiter.resolve(message["result"]);
       return;
     }
     if (message["method"] !== "eth_subscription") return;
@@ -214,63 +263,74 @@ async function connectBsc(input: {
     const result = (params as { result?: unknown }).result;
     const log = parseLog(result);
     if (!log) return;
-    void handlePortalLog(input.repo, log, (token) => enrich(send, token))
-      .then(() =>
-        input.repo.saveChainCheckpoint({
-          chain: BSC_CHAIN,
-          blockNumber: log.blockNumber,
-          coverageBlock: null,
-          now: new Date(),
-        }),
-      )
-      .catch((error: unknown) => {
-        input.logger.error({ err: error }, "bsc log failed");
-      });
+    void acceptLog(input, send, log, () => caughtUp).catch((error: unknown) => {
+      input.logger.error({ err: error }, "bsc log failed");
+    });
   };
   ws.on("message", onMessage);
+  let heartbeat: ReturnType<typeof setInterval> | undefined;
+  let audit: ReturnType<typeof setInterval> | undefined;
+  let enrichTimer: ReturnType<typeof setInterval> | undefined;
   try {
-    const headHex = await send("eth_blockNumber", []);
-    const head = typeof headHex === "string" ? Number.parseInt(headHex, 16) : null;
-    if (head === null || !Number.isFinite(head)) throw new Error("bsc eth_blockNumber failed");
-    const cursor = await input.repo.chainCheckpoint(BSC_CHAIN);
-    if (cursor === null) {
-      await input.repo.saveChainCheckpoint({
-        chain: BSC_CHAIN,
-        blockNumber: head,
-        coverageBlock: head,
-        now: new Date(),
-      });
-      input.logger.info({ chain: BSC_CHAIN, block: head }, "bsc coverage starts at the tip");
-    } else if (head > cursor.blockNumber && head - cursor.blockNumber <= MAX_CATCHUP_BLOCKS) {
-      await catchUp(input, send, cursor.blockNumber + 1, head);
-    } else if (head - cursor.blockNumber > MAX_CATCHUP_BLOCKS) {
-      input.logger.warn(
-        { fromBlock: cursor.blockNumber, toBlock: head },
-        "bsc gap is wider than the catch-up cap",
-      );
-      await input.repo.saveChainCheckpoint({
-        chain: BSC_CHAIN,
-        blockNumber: head,
-        coverageBlock: null,
-        now: new Date(),
-      });
-    }
     await send("eth_subscribe", ["logs", portalLogFilter()]);
     input.logger.info({ chain: BSC_CHAIN, portal: FLAP_PORTAL }, "bsc flap subscription started");
-    const audit = setInterval(() => {
-      void recallBsc(input, send, head).catch((error: unknown) => {
+    const head = await readHead(send);
+    const cursor = await input.repo.chainCheckpoint(BSC_CHAIN);
+    const fromBlock = cursor?.blockNumber ?? head;
+    await catchUp(input, send, fromBlock, head, cursor === null ? head : null);
+    caughtUp = true;
+    let lastBeat = Date.now();
+    heartbeat = setInterval(() => {
+      if (typeof ws.ping === "function") ws.ping();
+      if (pending.size > 0) return;
+      void readHead(send)
+        .then(() => {
+          lastBeat = Date.now();
+        })
+        .catch((error: unknown) => {
+          input.logger.warn({ err: error }, "bsc heartbeat failed");
+          ws.close();
+        });
+      if (Date.now() - lastBeat > HEARTBEAT_MS * 3) ws.close();
+    }, HEARTBEAT_MS);
+    audit = setInterval(() => {
+      void recallBsc(input, send).catch((error: unknown) => {
         input.logger.error({ err: error }, "bsc recall failed");
       });
     }, AUDIT_EVERY_MS);
+    enrichTimer = setInterval(() => {
+      void retryEnrichments(input, send).catch((error: unknown) => {
+        input.logger.error({ err: error }, "bsc enrich retry failed");
+      });
+    }, 10_000);
     await new Promise<void>((resolve) => {
-      const finish = () => resolve();
-      ws.once("close", finish);
+      ws.once("close", () => resolve());
       input.signal.addEventListener("abort", () => ws.close(), { once: true });
     });
-    clearInterval(audit);
   } finally {
+    if (heartbeat) clearInterval(heartbeat);
+    if (audit) clearInterval(audit);
+    if (enrichTimer) clearInterval(enrichTimer);
     ws.off("message", onMessage);
     if (ws.readyState === WebSocket.OPEN) ws.close();
+  }
+}
+
+async function acceptLog(
+  input: { repo: IngestRepository; logger: Logger },
+  send: (method: string, params: unknown[]) => Promise<unknown>,
+  log: PortalLog,
+  caughtUp: () => boolean,
+): Promise<void> {
+  const outcome = await handlePortalLog(input.repo, log, (token) => enrich(send, token));
+  if (outcome.needsEnrich && outcome.token) await scheduleEnrich(input.repo, outcome.token, 0);
+  if (outcome.stored && caughtUp()) {
+    await input.repo.saveChainCheckpoint({
+      chain: BSC_CHAIN,
+      blockNumber: log.blockNumber,
+      coverageBlock: null,
+      now: new Date(),
+    });
   }
 }
 
@@ -279,61 +339,87 @@ async function catchUp(
   send: (method: string, params: unknown[]) => Promise<unknown>,
   fromBlock: number,
   toBlock: number,
+  coverageBlock: number | null,
 ): Promise<void> {
-  const logs = await send("eth_getLogs", [
-    {
-      address: FLAP_PORTAL,
-      fromBlock: `0x${fromBlock.toString(16)}`,
-      toBlock: `0x${toBlock.toString(16)}`,
-      topics: [[...FLAP_LOG_TOPICS]],
-    },
-  ]);
-  if (!Array.isArray(logs)) return;
-  for (const item of logs) {
-    const log = parseLog(item);
-    if (!log) continue;
-    await handlePortalLog(input.repo, log, (token) => enrich(send, token));
+  const pages = logBlockPages(fromBlock, toBlock);
+  for (const page of pages) {
+    const logs = await getLogsWithRetry(input.logger, send, page.fromBlock, page.toBlock);
+    for (const item of logs) {
+      const log = parseLog(item);
+      if (!log) continue;
+      const outcome = await handlePortalLog(input.repo, log, (token) => enrich(send, token));
+      if (outcome.needsEnrich && outcome.token) await scheduleEnrich(input.repo, outcome.token, 0);
+    }
+    await input.repo.saveChainCheckpoint({
+      chain: BSC_CHAIN,
+      blockNumber: page.toBlock,
+      coverageBlock,
+      now: new Date(),
+    });
+    input.logger.info(
+      { fromBlock: page.fromBlock, toBlock: page.toBlock, logs: logs.length },
+      "bsc catch-up page stored",
+    );
   }
-  await input.repo.saveChainCheckpoint({
-    chain: BSC_CHAIN,
-    blockNumber: toBlock,
-    coverageBlock: null,
-    now: new Date(),
-  });
-  input.logger.info({ fromBlock, toBlock, logs: logs.length }, "bsc catch-up stored");
+}
+
+async function getLogsWithRetry(
+  logger: Logger,
+  send: (method: string, params: unknown[]) => Promise<unknown>,
+  fromBlock: number,
+  toBlock: number,
+): Promise<unknown[]> {
+  let attempt = 1;
+  for (;;) {
+    try {
+      const logs = await send("eth_getLogs", [
+        {
+          address: FLAP_PORTAL,
+          fromBlock: `0x${fromBlock.toString(16)}`,
+          toBlock: `0x${toBlock.toString(16)}`,
+          topics: [[...FLAP_LOG_TOPICS]],
+        },
+      ]);
+      if (!Array.isArray(logs)) throw new Error("bsc eth_getLogs returned no list");
+      return logs;
+    } catch (error) {
+      logger.warn({ err: error, fromBlock, toBlock, attempt }, "bsc eth_getLogs failed");
+      if (attempt >= 5) throw error;
+      await delay(backoffDelayMs(attempt, () => 0));
+      attempt += 1;
+    }
+  }
 }
 
 async function recallBsc(
   input: { repo: IngestRepository; logger: Logger },
   send: (method: string, params: unknown[]) => Promise<unknown>,
-  headHint: number,
 ): Promise<void> {
-  const headHex = await send("eth_blockNumber", []);
-  const head = typeof headHex === "string" ? Number.parseInt(headHex, 16) : headHint;
+  const head = await readHead(send);
   const cursor = await input.repo.chainCheckpoint(BSC_CHAIN);
   const coverage = cursor?.coverageBlock ?? null;
   if (coverage === null) return;
-  const toBlock = head - AUDIT_QUIET_BLOCKS;
-  const fromBlock = toBlock - AUDIT_SPAN_BLOCKS;
-  if (fromBlock < coverage) return;
-  const logs = await send("eth_getLogs", [
-    {
-      address: FLAP_PORTAL,
-      fromBlock: `0x${fromBlock.toString(16)}`,
-      toBlock: `0x${toBlock.toString(16)}`,
-      topics: [[...FLAP_LOG_TOPICS]],
-    },
-  ]);
-  if (!Array.isArray(logs)) return;
-  const known = await input.repo.chainEventKeys(BSC_CHAIN, fromBlock, toBlock);
+  const toBlock = Math.max(coverage, head - AUDIT_QUIET_BLOCKS);
+  const fromBlock = Math.max(coverage, toBlock - AUDIT_HOUR_BLOCKS);
+  if (toBlock < fromBlock) return;
   let matched = 0;
   let missed = 0;
-  for (const item of logs) {
-    const log = parseLog(item);
-    if (!log) continue;
-    const key = `${log.txHash}:${log.logIndex.toString()}`;
-    if (known.has(key)) matched += 1;
-    else missed += 1;
+  const pages = logBlockPages(fromBlock, toBlock);
+  for (const page of pages) {
+    const logs = await getLogsWithRetry(input.logger, send, page.fromBlock, page.toBlock);
+    const known = await input.repo.chainEventKeys(BSC_CHAIN, page.fromBlock, page.toBlock);
+    for (const item of logs) {
+      const log = parseLog(item);
+      if (!log) continue;
+      const key = `${log.txHash}:${log.logIndex.toString()}`;
+      if (known.has(key)) matched += 1;
+      else {
+        missed += 1;
+        const outcome = await handlePortalLog(input.repo, log, (token) => enrich(send, token));
+        if (outcome.needsEnrich && outcome.token)
+          await scheduleEnrich(input.repo, outcome.token, 0);
+      }
+    }
   }
   await input.repo.insertChainAudit({
     chain: BSC_CHAIN,
@@ -344,7 +430,74 @@ async function recallBsc(
     matched,
     missed,
   });
-  input.logger.info({ fromBlock, toBlock, matched, missed }, "bsc recall window");
+  input.logger.info(
+    { chain: BSC_CHAIN, fromBlock, toBlock, expected: matched + missed, matched, missed },
+    "bsc recall window",
+  );
+}
+
+async function retryEnrichments(
+  input: { repo: IngestRepository; logger: Logger },
+  send: (method: string, params: unknown[]) => Promise<unknown>,
+): Promise<void> {
+  const due = await input.repo.dueAssetEnrich(new Date());
+  for (const row of due) {
+    const state = await enrich(send, row.address).catch(() => null);
+    if (!enrichmentMissing(state) && state) {
+      await input.repo.rememberAsset({
+        chain: row.chain,
+        address: row.address,
+        launchpad: FLAP_LAUNCHPAD,
+        quoteAddress: state.quoteToken,
+        taxBps: Math.max(state.buyTaxBps, state.sellTaxBps),
+        buyTaxBps: state.buyTaxBps,
+        sellTaxBps: state.sellTaxBps,
+        pool: state.pool !== ZERO_ADDRESS ? state.pool : null,
+        clPoolId: null,
+        creator: null,
+        createdBlock: null,
+        createdAt: new Date(),
+        txHash: "enrich",
+      });
+      await input.repo.clearAssetEnrich(row.chain, row.address);
+      continue;
+    }
+    const delayMs = enrichRetryDelayMs(row.attempt + 1);
+    if (delayMs === null) {
+      await input.repo.clearAssetEnrich(row.chain, row.address);
+      input.logger.info({ token: row.address }, "bsc enrich retries exhausted");
+      continue;
+    }
+    await scheduleEnrich(input.repo, row.address, row.attempt + 1);
+  }
+}
+
+async function scheduleEnrich(
+  repo: IngestRepository,
+  token: string,
+  attempt: number,
+): Promise<void> {
+  const delayMs = enrichRetryDelayMs(attempt);
+  if (delayMs === null) return;
+  await repo.scheduleAssetEnrich({
+    chain: BSC_CHAIN,
+    address: token,
+    attempt,
+    dueAt: new Date(Date.now() + delayMs),
+  });
+}
+
+function enrichmentMissing(state: FlapTokenState | null): boolean {
+  return state === null || state.status === 0;
+}
+
+async function readHead(
+  send: (method: string, params: unknown[]) => Promise<unknown>,
+): Promise<number> {
+  const headHex = await send("eth_blockNumber", []);
+  const head = typeof headHex === "string" ? Number.parseInt(headHex, 16) : Number.NaN;
+  if (!Number.isFinite(head)) throw new Error("bsc eth_blockNumber failed");
+  return head;
 }
 
 async function enrich(
