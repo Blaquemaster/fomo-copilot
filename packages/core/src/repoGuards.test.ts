@@ -120,6 +120,8 @@ describe("repository guards", () => {
     expect(workflow).toContain('bounded("WALLET_BACKFILL_RUN_CREDITS", "3300"');
     expect(workflow).toContain('bounded("WALLET_BACKFILL_FAIL_LIMIT", "5"');
     expect(workflow).toContain("vars.WALLET_MIN_ENTRIES");
+    expect(workflow).toContain("shrunk_rate()");
+    expect(workflow).toContain('or "0.6"');
     const bsc = readFileSync(path.join(root, "apps/ingestor/src/bsc.ts"), "utf8");
     expect(bsc).not.toContain("gopluslabs");
     expect(bsc).not.toContain("honeypot.is");
