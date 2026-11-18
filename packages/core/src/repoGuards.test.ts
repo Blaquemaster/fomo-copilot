@@ -105,6 +105,13 @@ describe("repository guards", () => {
     expect(sql).toContain("raw_events_mint_kind_idx");
     const workflow = readFileSync(path.join(root, ".github/workflows/deploy.yml"), "utf8");
     expect(workflow).toContain("wss://bsc-rpc.publicnode.com");
+    expect(workflow).toContain("vars.HELIUS_MONTHLY_CREDITS");
+    expect(workflow).toContain("vars.X_MENTION_SOURCE");
+    expect(workflow).toContain("vars.WALLET_MAX_WALLETS");
+    expect(workflow).toContain("vars.WALLET_BACKFILL_CREDIT_CAP");
+    expect(workflow).toContain('bounded("HELIUS_MONTHLY_CREDITS", "10000000"');
+    expect(workflow).toContain('pick("X_MENTION_SOURCE", "off"');
+    expect(workflow).toContain('bounded("WALLET_BACKFILL_CREDIT_CAP", "200000"');
     const bsc = readFileSync(path.join(root, "apps/ingestor/src/bsc.ts"), "utf8");
     expect(bsc).not.toContain("gopluslabs");
     expect(bsc).not.toContain("honeypot.is");

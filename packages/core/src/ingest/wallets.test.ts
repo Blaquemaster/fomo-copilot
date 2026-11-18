@@ -82,11 +82,9 @@ describe("proven wallets", () => {
 
   it("caps wallet credits at the configured share of the monthly allowance", () => {
     const allowance = allowanceCredits("developer", undefined);
-    expect(allowance).toBe(1_000_000n);
+    expect(allowance).toBe(10_000_000n);
     const cap = walletCreditCapMicros(allowance * MICROS_PER_CREDIT, 25);
-    const confirmed = walletCreditCapMicros(10_000_000n * MICROS_PER_CREDIT, 25);
-    expect(cap / MICROS_PER_CREDIT).toBe(250_000n);
-    expect(confirmed / MICROS_PER_CREDIT).toBe(2_500_000n);
+    expect(cap / MICROS_PER_CREDIT).toBe(2_500_000n);
     expect(walletBudgetOpen(cap - 1n, cap)).toBe(true);
     expect(walletBudgetOpen(cap, cap)).toBe(false);
   });

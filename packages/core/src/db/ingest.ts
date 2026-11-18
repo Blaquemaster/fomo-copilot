@@ -9,12 +9,15 @@ import {
 import {
   allowanceCredits,
   formatCredits,
+  intakeAllowanceCredits,
+  MICROS_PER_CREDIT,
   projectMonthlyCredits,
   utcMonth,
   type HeliusPlan,
 } from "../ingest/budget.js";
 import type { DecodeFailure, Observation } from "../ingest/decode.js";
 import type { FrameHourRow } from "../ingest/frameStats.js";
+import { walletCreditCapMicros } from "../ingest/wallets.js";
 import {
   DLMM_PROGRAM_ID,
   LAUNCHLAB_PROGRAMS,
@@ -1292,7 +1295,7 @@ export class IngestRepository {
       day,
     ]);
     const month = await this.monthUsage(input.now);
-    const allowance = allowanceCredits(input.plan, input.allowanceOverride);
+    const allowance = intakeAllowanceCredits(input.allowanceOverride);
     const dailyRow = daily.rows[0];
     const soakStarted = row?.soak_started_at ? new Date(row.soak_started_at) : null;
     const elapsed = soakStarted ? input.now.getTime() - soakStarted.getTime() : 0;
@@ -1355,6 +1358,12 @@ export class IngestRepository {
         `bsc recall: ${bscAudit.missed.toString()}/${bscAudit.expected.toString()} missed (${bscAudit.matched.toString()} matched)`,
       );
     }
+    const configured = allowanceCredits(input.plan, input.allowanceOverride);
+    const walletCap = walletCreditCapMicros(configured * MICROS_PER_CREDIT, 25);
+    const walletSpent = await this.featureMonthMicros("wallet_subscribe", utcMonth(input.now));
+    lines.push(
+      `wallet_subscribe: ${formatCredits(walletSpent)} / ${formatCredits(walletCap)} ${walletSpent >= walletCap ? "stopped" : "open"}`,
+    );
     return lines.join("\n");
   }
 

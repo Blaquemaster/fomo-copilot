@@ -17,16 +17,26 @@ export function selectWsMethod(plan: HeliusPlan, mode: WsMode): ResolvedWsMethod
   return "parsed";
 }
 
-/**
- * Allowance used for budget stops until the owner sets HELIUS_MONTHLY_CREDITS
- * to the confirmed plan. Not the Developer plan's 10,000,000.
- */
-export const DEFAULT_MONTHLY_CREDITS = 1_000_000;
+/** Confirmed Helius Developer allowance. Overage is $5 per extra million credits. */
+export const CONFIRMED_PLAN_CREDITS = 10_000_000;
+
+/** Used when HELIUS_MONTHLY_CREDITS is unset. The confirmed plan is 10,000,000. */
+export const DEFAULT_MONTHLY_CREDITS = CONFIRMED_PLAN_CREDITS;
 
 export function allowanceCredits(plan: HeliusPlan, override: number | undefined): bigint {
   void plan;
   if (override !== undefined) return BigInt(override);
   return BigInt(DEFAULT_MONTHLY_CREDITS);
+}
+
+/**
+ * Create/graduation intake and its gap backfill pause only against the confirmed
+ * 10,000,000 allowance. A smaller configured value must not pause them.
+ */
+export function intakeAllowanceCredits(override: number | undefined): bigint {
+  const configured = allowanceCredits("developer", override);
+  const confirmed = BigInt(CONFIRMED_PLAN_CREDITS);
+  return configured > confirmed ? configured : confirmed;
 }
 
 /**

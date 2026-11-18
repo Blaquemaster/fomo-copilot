@@ -4,6 +4,7 @@ import { planCandidateWrites, tokenIsYoung } from "./apply.js";
 import {
   MICROS_PER_CREDIT,
   allowanceCredits,
+  intakeAllowanceCredits,
   budgetLevel,
   parsedEventMicros,
   parsedScanCredits,
@@ -23,9 +24,12 @@ describe("helius method selection", () => {
     expect(selectWsMethod("free", "enhanced")).toBe("parsed");
     expect(selectWsMethod("developer", "standard")).toBe("parsed");
     expect(selectWsMethod("developer", "enhanced")).toBe("enhanced");
-    expect(allowanceCredits("free", undefined)).toBe(1_000_000n);
-    expect(allowanceCredits("developer", undefined)).toBe(1_000_000n);
+    expect(allowanceCredits("free", undefined)).toBe(10_000_000n);
+    expect(allowanceCredits("developer", undefined)).toBe(10_000_000n);
     expect(allowanceCredits("developer", 25)).toBe(25n);
+    expect(intakeAllowanceCredits(1_000_000)).toBe(10_000_000n);
+    expect(intakeAllowanceCredits(undefined)).toBe(10_000_000n);
+    expect(intakeAllowanceCredits(20_000_000)).toBe(20_000_000n);
   });
 });
 

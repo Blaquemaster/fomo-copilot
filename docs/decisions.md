@@ -10,7 +10,7 @@ The job takes mints that graduated (`pump_migrate`, `launchlab_migrate`, `dbc_mi
 
 The wallet list is no longer frozen. Once a day the scored list is applied. An empty list may fill to `WALLET_MAX_WALLETS`. After that, at most `WALLET_CHURN_PCT` (default 20, 60 of 300) of the current addresses are replaced. Empty slots under 300 may still be filled. The Helius subscription picks up the new addresses on the next websocket connect.
 
-`HELIUS_MONTHLY_CREDITS` is the allowance. When it is unset the allowance is 1,000,000, not the Developer plan's 10,000,000. Deploy writes 1,000,000 until the plan is confirmed. The wallet subscription cap is 25 percent of that allowance: 250,000 credits a month at the default, or 2,500,000 if the allowance is set to 10,000,000. Steady state for the subscription is still 1 credit per delivered wallet trade, stopped at that cap.
+Helius Developer is confirmed at 10,000,000 credits a month, with overage at $5 per million. `HELIUS_MONTHLY_CREDITS` defaults to that. Create and graduation intake and its gap backfill pause only at 90 percent of 10,000,000 (or of a larger configured allowance). A smaller value cannot pause them. The wallet subscription cap is 25 percent of the configured allowance: 2,500,000 credits a month at 10,000,000. That cap unsubscribes the wallet filters on the open socket as soon as `wallet_subscribe` reaches it. The status report prints spent, cap, and open or stopped. A daily refresh replaces the live subscription in the same connection. Wallet trades are stored in `wallet_fill` and are not written to `raw_events`. `X_MENTION_SOURCE` defaults to `off`, and a fixture is never stored when `NODE_ENV` is production.
 
 ## 2026-11-18 — Phase B wallet signal, dry-run
 

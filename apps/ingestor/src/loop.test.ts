@@ -695,6 +695,108 @@ describe("ingest loop", () => {
       ).toBe(true);
     });
     expect(vi.mocked(sendTelegramMessage)).not.toHaveBeenCalled();
+    expect(store.persistEvent).not.toHaveBeenCalled();
+    controller.abort();
+    await done;
+  });
+
+  it("unsubscribes wallet trades when the feature cap is reached and does not store them as raw events", async () => {
+    vi.mocked(sendTelegramMessage).mockClear();
+    const socket = new FakeSocket();
+    const controller = new AbortController();
+    const store = repo({
+      activeTrackedWallets: vi.fn(async () => ["tracked-wallet"]),
+      featureMonthMicros: vi.fn(async () => 2_499_999_000_000n),
+    });
+    const done = runIngestLoop({
+      env,
+      logger: logger(),
+      repo: store,
+      signal: controller.signal,
+      deps: {
+        openSocket: () => asSocket(socket),
+        warnMs: 60_000,
+        criticalMs: 120_000,
+        livenessTickMs: 60_000,
+        usageFlushMs: 60_000,
+        confirmTimeoutMs: 60_000,
+        callRpc: () => Promise.resolve(1),
+      },
+    });
+    await vi.waitFor(() => {
+      expect(socket.sent.some((frame) => frame.includes('"id":10'))).toBe(true);
+    });
+    socket.dispatchEvent(
+      new MessageEvent("message", { data: JSON.stringify({ jsonrpc: "2.0", id: 10, result: 77 }) }),
+    );
+    await delay(20);
+    socket.dispatchEvent(
+      new MessageEvent("message", {
+        data: JSON.stringify({
+          jsonrpc: "2.0",
+          method: "parsedTransactionNotification",
+          params: {
+            subscription: 77,
+            result: {
+              context: { slot: 12 },
+              value: {
+                transaction: { signature: "fill-sig", slot: 12, error: null },
+                instructions: [
+                  {
+                    programId: "6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P",
+                    instructionName: "buy",
+                    decoded: {
+                      accounts: [
+                        { name: "user", pubkey: "tracked-wallet" },
+                        { name: "mint", pubkey: "coin-mint" },
+                      ],
+                    },
+                  },
+                ],
+              },
+            },
+          },
+        }),
+      }),
+    );
+    await vi.waitFor(() => {
+      expect(socket.sent.some((frame) => frame.includes("parsedTransactionUnsubscribe"))).toBe(
+        true,
+      );
+    });
+    const unsub = JSON.parse(
+      socket.sent.find((frame) => frame.includes("parsedTransactionUnsubscribe")) ?? "{}",
+    ) as { params: number[] };
+    expect(unsub.params).toEqual([77]);
+    expect(store.persistEvent).not.toHaveBeenCalled();
+    expect(store.insertWalletFill).toHaveBeenCalled();
+    controller.abort();
+    await done;
+  });
+
+  it("does not store the x mention fixture in production", async () => {
+    const socket = new FakeSocket();
+    const controller = new AbortController();
+    const store = repo();
+    const done = runIngestLoop({
+      env: { ...env, NODE_ENV: "production", X_MENTION_SOURCE: "fixture" },
+      logger: logger(),
+      repo: store,
+      signal: controller.signal,
+      deps: {
+        openSocket: () => asSocket(socket),
+        warnMs: 60_000,
+        criticalMs: 120_000,
+        livenessTickMs: 60_000,
+        usageFlushMs: 60_000,
+        confirmTimeoutMs: 60_000,
+        callRpc: () => Promise.resolve(1),
+      },
+    });
+    await vi.waitFor(() => {
+      expect(socket.sent.some((frame) => frame.includes("parsedTransactionSubscribe"))).toBe(true);
+    });
+    expect(store.insertXMentions).not.toHaveBeenCalled();
     controller.abort();
     await done;
   });

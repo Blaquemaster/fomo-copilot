@@ -18,6 +18,7 @@ import {
   pumpTradeRetention,
   subscriptionNamesForProgram,
   allowanceCredits,
+  intakeAllowanceCredits,
   backoffDelayMs,
   backfillStopSlot,
   budgetLevel,
@@ -41,11 +42,7 @@ import {
   measureReconnectGap,
   MICROS_PER_CREDIT,
   utcMonth,
-  WALLET_TRACK_PROGRAMS,
-  WALLET_TRADE_NAMES,
-  chunkWallets,
   scoreProvenWallets,
-  walletBudgetOpen,
   walletCreditCapMicros,
   walletFillsFromParsed,
   FIXTURE_X_MENTIONS,
@@ -89,6 +86,7 @@ import {
   type RpcMeter,
 } from "./helius.js";
 import { runWalletMaintenance } from "./walletJob.js";
+import { createWalletSubscriptions } from "./walletSubs.js";
 
 const STATUS_MS = 15_000;
 const USAGE_FLUSH_MS = 15_000;
@@ -186,6 +184,7 @@ export async function runIngestLoop(input: {
       onWallets: (addresses) => {
         trackedWalletSet.clear();
         for (const address of addresses) trackedWalletSet.add(address);
+        applyLiveWalletList?.();
       },
     }).catch((error: unknown) => {
       input.logger.error({ err: error }, "wallet maintenance stopped");
@@ -314,8 +313,20 @@ async function runSocket(input: {
       includeCreatePool: input.env.PUMP_SUBSCRIBE_CREATE_POOL,
     });
     const pendingSubs = new Map<number, { method: string; programs: readonly string[] }>();
-    const walletRequestIds = new Set<number>();
-    const walletHeliusIds = new Set<number>();
+    const walletCapMicros = walletCreditCapMicros(
+      allowanceCredits(input.env.HELIUS_PLAN, input.env.HELIUS_MONTHLY_CREDITS) * MICROS_PER_CREDIT,
+      input.env.WALLET_CREDIT_BUDGET_PCT ?? 25,
+    );
+    const walletSubs = createWalletSubscriptions({
+      ws,
+      logger: input.logger,
+      capMicros: walletCapMicros,
+      spentMicros: await input.repo.featureMonthMicros("wallet_subscribe", utcMonth(new Date())),
+      wallets: () => [...trackedWalletSet],
+    });
+    applyLiveWalletList = () => {
+      walletSubs.subscribe();
+    };
     let txConfirmed = false;
     let handlerBusy = false;
     let queuedBytes = 0;
@@ -341,6 +352,7 @@ async function runSocket(input: {
       }
       try {
         await input.repo.flushAccounting({ now: new Date(), ...spent, frames });
+        walletSubs.settleFlushed(spent.featureCredits["wallet_subscribe"] ?? 0n);
       } catch (error) {
         usage.add(spent);
         stats.restore(frames);
@@ -418,16 +430,7 @@ async function runSocket(input: {
         "subscription requested",
       );
     }
-    if (method === "parsed" && (await walletBudgetAllows(input))) {
-      for (const request of subscribeTrackedWallets(ws)) {
-        pendingSubs.set(request.id, { method: request.method, programs: [] });
-        walletRequestIds.add(request.id);
-        input.logger.info(
-          { method: request.method, wallets: request.wallets, request: request.id },
-          "wallet subscription requested",
-        );
-      }
-    }
+    if (method === "parsed") walletSubs.subscribe();
     flushOnClose = flushAccounting;
     const gap = await readGap(input, meter);
     connectedAtMs = now();
@@ -455,6 +458,7 @@ async function runSocket(input: {
       flush: () => {
         void flushAccounting();
       },
+      walletMetric: () => walletSubs.metric(),
       confirm: () => {
         if (txConfirmed || dead) return;
         if (now() - connectedAtMs < confirmMs) return;
@@ -522,7 +526,7 @@ async function runSocket(input: {
           const request = pendingSubs.get(id);
           pendingSubs.delete(id);
           if (id === 1) txConfirmed = true;
-          if (walletRequestIds.has(id)) walletHeliusIds.add(result);
+          walletSubs.onConfirmed(id, result);
           input.logger.info(
             {
               subscription: result,
@@ -637,6 +641,13 @@ async function runSocket(input: {
           input.choice.method = "parsed";
         }
         stats.noteReceived("other", bytes, at);
+        if (walletSubs.ownsRequest(message["id"])) {
+          input.logger.warn(
+            { request: message["id"], message: errorMessage },
+            "wallet subscription request rejected",
+          );
+          return;
+        }
         frameInput().onRpcError(message["id"], errorMessage);
         return;
       }
@@ -645,7 +656,12 @@ async function runSocket(input: {
         typeof message["result"] === "number" &&
         typeof message["id"] === "number"
       ) {
-        if (pendingSubs.has(message["id"]) || message["id"] === 1 || message["id"] === 2) {
+        if (
+          pendingSubs.has(message["id"]) ||
+          message["id"] === 1 ||
+          message["id"] === 2 ||
+          walletSubs.ownsRequest(message["id"])
+        ) {
           frameInput().onSubscription(message["id"], message["result"]);
           usage.add({ streamedBytes: BigInt(bytes), messages: 1 });
           return;
@@ -671,7 +687,7 @@ async function runSocket(input: {
             : usageMicros({ streamedBytes: BigInt(bytes), rpcCalls: 0 });
       const programId = watchedProgramIn(text, watched);
       const venue = programId === null ? null : venueForProgram(programId);
-      const walletEvent = isWalletNotification(message, walletHeliusIds);
+      const walletEvent = isWalletNotification(message, walletSubs);
       usage.add({
         streamedBytes: BigInt(bytes),
         messages: 1,
@@ -683,7 +699,11 @@ async function runSocket(input: {
         featureCredits:
           walletEvent && creditMicros > 0n ? { wallet_subscribe: creditMicros } : undefined,
       });
-      if (walletEvent) recordWalletFills(input, message);
+      if (walletEvent) {
+        if (creditMicros > 0n) walletSubs.noteCredit(creditMicros);
+        recordWalletFills(input, message);
+        return;
+      }
       enqueueTx(text, bytes, null);
     }
 
@@ -725,6 +745,7 @@ async function runSocket(input: {
     await Promise.race([closed, abortPromise(input.signal)]);
     if (dead) throw new Error("helius websocket dead");
   } finally {
+    if (applyLiveWalletList !== null) applyLiveWalletList = null;
     await flushOnClose().catch((error: unknown) => {
       input.logger.error({ err: error }, "failed to flush ingest counters");
     });
@@ -755,6 +776,12 @@ function startTimers(input: {
   flush?: () => void;
   confirm?: () => void;
   depth?: () => void;
+  walletMetric?: () => {
+    open: boolean;
+    spentMicros: bigint;
+    capMicros: bigint;
+    subscriptions: number;
+  };
 }): void {
   const warnMs = input.input.deps?.warnMs ?? LIVENESS_WARN_MS;
   const criticalMs = input.input.deps?.criticalMs ?? LIVENESS_CRITICAL_MS;
@@ -799,6 +826,19 @@ function startTimers(input: {
   }, tickMs);
   input.bag.interval(() => {
     const paused = false;
+    const wallet = input.walletMetric?.();
+    if (wallet) {
+      input.input.logger.info(
+        {
+          metric: "wallet_subscribe",
+          open: wallet.open,
+          spentMicros: wallet.spentMicros.toString(),
+          capMicros: wallet.capMicros.toString(),
+          subscriptions: wallet.subscriptions,
+        },
+        "wallet subscription metric",
+      );
+    }
     void input.input.repo
       .writeStatus({
         state: "connected",
@@ -967,7 +1007,7 @@ async function refreshBudget(input: {
   logger: Logger;
   usage?: UsageLedger;
 }): Promise<boolean> {
-  const allowance = allowanceCredits(input.env.HELIUS_PLAN, input.env.HELIUS_MONTHLY_CREDITS);
+  const allowance = intakeAllowanceCredits(input.env.HELIUS_MONTHLY_CREDITS);
   const now = new Date();
   const cached = budgetCache.get(input.repo);
   const pending = input.usage?.creditMicros ?? 0n;
@@ -1458,6 +1498,7 @@ async function getSignatures(
 }
 
 const trackedWalletSet = new Set<string>();
+let applyLiveWalletList: (() => void) | null = null;
 
 async function prepareWalletSignals(input: {
   env: Env;
@@ -1492,7 +1533,9 @@ async function prepareWalletSignals(input: {
     },
     "wallet subscription credit impact",
   );
-  if ((input.env.X_MENTION_SOURCE ?? "fixture") === "off") return;
+  if ((input.env.X_MENTION_SOURCE ?? "off") !== "fixture" || input.env.NODE_ENV === "production") {
+    return;
+  }
   const source = new FixtureXMentionSource(FIXTURE_X_MENTIONS);
   const mentions = await source.search({});
   const stored = await input.repo.insertXMentions(
@@ -1535,60 +1578,14 @@ function recordWalletFills(
   }
 }
 
-function subscribeTrackedWallets(
-  ws: SocketLike,
-): Array<{ id: number; method: string; wallets: number }> {
-  if (ws.readyState !== 1 || trackedWalletSet.size === 0) return [];
-  const chunks = chunkWallets([...trackedWalletSet]);
-  const requests: Array<{ id: number; method: string; wallets: number }> = [];
-  chunks.forEach((wallets, index) => {
-    const id = 10 + index;
-    ws.send(
-      JSON.stringify({
-        jsonrpc: "2.0",
-        id,
-        method: "parsedTransactionSubscribe",
-        params: [
-          {
-            programs: [...WALLET_TRACK_PROGRAMS],
-            instructionNames: [...WALLET_TRADE_NAMES],
-            accounts: { include: wallets },
-            includeFailed: false,
-            includeCpi: true,
-          },
-          { commitment: "confirmed", details: "matched" },
-        ],
-      }),
-    );
-    requests.push({ id, method: "parsedTransactionSubscribe", wallets: wallets.length });
-  });
-  return requests;
-}
-
-async function walletBudgetAllows(input: {
-  env: Env;
-  repo: IngestRepository;
-  logger: Logger;
-}): Promise<boolean> {
-  const pct = input.env.WALLET_CREDIT_BUDGET_PCT ?? 25;
-  const allowance = allowanceCredits(input.env.HELIUS_PLAN, input.env.HELIUS_MONTHLY_CREDITS);
-  const cap = walletCreditCapMicros(allowance * MICROS_PER_CREDIT, pct);
-  const spent = await input.repo.featureMonthMicros("wallet_subscribe", utcMonth(new Date()));
-  const open = walletBudgetOpen(spent, cap);
-  if (!open) {
-    input.logger.warn(
-      { spent: spent.toString(), cap: cap.toString(), pct },
-      "wallet subscription paused; feature credit cap reached",
-    );
-  }
-  return open;
-}
-
-function isWalletNotification(message: unknown, ids: ReadonlySet<number>): boolean {
+function isWalletNotification(
+  message: unknown,
+  subs: { isWalletEvent: (subscriptionId: number) => boolean },
+): boolean {
   if (!isRecord(message)) return false;
   const params = message["params"];
   if (!isRecord(params) || typeof params["subscription"] !== "number") return false;
-  return ids.has(params["subscription"]);
+  return subs.isWalletEvent(params["subscription"]);
 }
 
 function subscribe(
@@ -2109,7 +2106,7 @@ async function backfillOnConnect(input: {
   deps?: IngestDeps;
 }): Promise<void> {
   const month = await input.repo.monthUsage(new Date());
-  const allowance = allowanceCredits(input.env.HELIUS_PLAN, input.env.HELIUS_MONTHLY_CREDITS);
+  const allowance = intakeAllowanceCredits(input.env.HELIUS_MONTHLY_CREDITS);
   const paused = budgetLevel(month.creditMicros, allowance) === "pause";
   await input.repo.clearCheckpoint(DLMM_PROGRAM_ID);
   if (paused) {

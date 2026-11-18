@@ -19,8 +19,10 @@ export { planCandidateWrites, tokenIsYoung, type CandidateDraft } from "./ingest
 export { encodeBase58, decodeBase58 } from "./ingest/base58.js";
 export {
   allowanceCredits,
+  CONFIRMED_PLAN_CREDITS,
   DEFAULT_MONTHLY_CREDITS,
   historyPageCredits,
+  intakeAllowanceCredits,
   budgetLevel,
   formatCredits,
   parsedEventMicros,

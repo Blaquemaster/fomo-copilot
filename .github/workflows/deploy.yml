@@ -79,9 +79,18 @@ jobs:
           POSTGRES_PASSWORD: ${{ secrets.POSTGRES_PASSWORD }}
           HELIUS_PLAN: ${{ vars.HELIUS_PLAN }}
           HELIUS_WS_MODE: ${{ vars.HELIUS_WS_MODE }}
+          HELIUS_MONTHLY_CREDITS: ${{ vars.HELIUS_MONTHLY_CREDITS }}
           INGEST_MODE: ${{ vars.INGEST_MODE }}
           INGEST_VENUES: ${{ vars.INGEST_VENUES }}
           BSC_WSS_URL: ${{ secrets.BSC_WSS_URL || vars.BSC_WSS_URL }}
+          X_MENTION_SOURCE: ${{ vars.X_MENTION_SOURCE }}
+          WALLET_MAX_WALLETS: ${{ vars.WALLET_MAX_WALLETS }}
+          WALLET_CREDIT_BUDGET_PCT: ${{ vars.WALLET_CREDIT_BUDGET_PCT }}
+          WALLET_BACKFILL_BUYS: ${{ vars.WALLET_BACKFILL_BUYS }}
+          WALLET_BACKFILL_CREDIT_CAP: ${{ vars.WALLET_BACKFILL_CREDIT_CAP }}
+          WALLET_BACKFILL_RUN_CREDITS: ${{ vars.WALLET_BACKFILL_RUN_CREDITS }}
+          WALLET_CHURN_PCT: ${{ vars.WALLET_CHURN_PCT }}
+          WALLET_REFRESH_HOURS: ${{ vars.WALLET_REFRESH_HOURS }}
         run: |
           set -euo pipefail
           umask 077
@@ -142,7 +151,7 @@ jobs:
               return raw
 
           def mention_source():
-              return pick("X_MENTION_SOURCE", "fixture", {"fixture", "off"})
+              return pick("X_MENTION_SOURCE", "off", {"fixture", "off"})
 
           def churn_pct():
               raw = os.environ.get("WALLET_CHURN_PCT", "").strip() or "20"
@@ -186,7 +195,7 @@ jobs:
               line("TELEGRAM_ADMIN_CHAT_ID", chat),
               line("HELIUS_API_KEY", helius),
               line("HELIUS_PLAN", pick("HELIUS_PLAN", "developer", {"developer", "free"})),
-              line("HELIUS_MONTHLY_CREDITS", bounded("HELIUS_MONTHLY_CREDITS", "1000000", 1000000000)),
+              line("HELIUS_MONTHLY_CREDITS", bounded("HELIUS_MONTHLY_CREDITS", "10000000", 1000000000)),
               line("HELIUS_WS_MODE", pick("HELIUS_WS_MODE", "auto", {"auto", "standard", "enhanced"})),
               line("INGEST_MODE", pick("INGEST_MODE", "dry-run", {"dry-run", "continuous"})),
               line("INGEST_VENUE", pick("INGEST_VENUE", "pump", {"pump", "meteora"})),
