@@ -8,8 +8,11 @@ import {
   PUMP_AMM_PROGRAM_ID,
   PUMP_PROGRAM_ID,
   parsedNamesForProgram,
+  LAUNCHLAB_PROGRAM_ID,
   programsForVenue,
   subscribedPrograms,
+  enabledVenues,
+  launchpadForPlatform,
   pumpTradeRetention,
   scanNamesForProgram,
   subscriptionNamesForProgram,
@@ -40,7 +43,31 @@ describe("scan instruction names", () => {
     expect(
       subscribedPrograms({ venue: "pump", includeTrades: false, includeCreatePool: false }),
     ).toEqual([PUMP_PROGRAM_ID]);
-    expect(programsForVenue("meteora")).toContain(DBC_PROGRAM_ID);
+    expect(programsForVenue("meteora")).toEqual([DBC_PROGRAM_ID, DAMM_V2_PROGRAM_ID]);
+    expect(programsForVenue("launchlab")).toEqual([LAUNCHLAB_PROGRAM_ID]);
+    expect(
+      launchpadForPlatform("4E876qZTE9FJMrBzgVtBrSrzz2TLivB5Y5QXPjB4gZL7", "launchlab").launchpad,
+    ).toBe("StonkFun");
+    expect(
+      launchpadForPlatform("FfYek5vEz23cMkWsdJwG2oa6EphsvXSHrGpdALN4g6W1", "launchlab").launchpad,
+    ).toBe("Bonk");
+    expect(launchpadForPlatform("not-a-known-config", "launchlab")).toEqual({
+      launchpad: "unknown",
+      platformConfig: "not-a-known-config",
+    });
+    expect(launchpadForPlatform("any-dbc-config", "meteora").launchpad).toBe("unknown");
+    expect(enabledVenues({ INGEST_VENUE: "pump" })).toEqual(["pump"]);
+    expect(
+      enabledVenues({ INGEST_VENUE: "pump", INGEST_VENUES: "pump,launchlab,meteora" }),
+    ).toEqual(["pump", "launchlab", "meteora"]);
+    expect(subscriptionNamesForProgram(LAUNCHLAB_PROGRAM_ID, false)).toEqual([
+      "initialize",
+      "initialize_v2",
+      "initialize_with_token_2022",
+      "migrate_to_cpswap",
+      "migrate_to_amm",
+    ]);
+    expect(scanNamesForProgram(LAUNCHLAB_PROGRAM_ID)).not.toContain("buy_exact_in");
     expect(subscriptionNamesForProgram(PUMP_PROGRAM_ID, false)).toEqual([
       "create",
       "create_v2",

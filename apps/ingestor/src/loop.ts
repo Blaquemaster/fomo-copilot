@@ -10,7 +10,10 @@ import {
   isPumpLifecycleKind,
   isPumpTradeKind,
   programsForVenue,
+  programsForVenues,
   subscribedPrograms,
+  enabledVenues,
+  venueForProgram,
   pumpTradeRetention,
   subscriptionNamesForProgram,
   allowanceCredits,
@@ -269,6 +272,12 @@ async function runSocket(input: {
     const stats = new FrameStats();
     const usage = new UsageLedger();
     const overflow = new OverflowLog();
+    const venues = enabledVenues(input.env);
+    const watched = subscribedPrograms({
+      venues,
+      includeTrades: input.env.PUMP_SUBSCRIBE_TRADES,
+      includeCreatePool: input.env.PUMP_SUBSCRIBE_CREATE_POOL,
+    });
     const pendingSubs = new Map<number, { method: string; programs: readonly string[] }>();
     let txConfirmed = false;
     let handlerBusy = false;
@@ -286,7 +295,8 @@ async function runSocket(input: {
         spent.messages === 0 &&
         spent.storedEvents === 0 &&
         spent.streamedBytes === 0n &&
-        spent.creditMicros === 0n
+        spent.creditMicros === 0n &&
+        Object.keys(spent.venueCredits).length === 0
       ) {
         return;
       }
@@ -350,11 +360,6 @@ async function runSocket(input: {
     bag.add(() => {
       ws.removeEventListener("pong", onPong);
     });
-    const watched = subscribedPrograms({
-      venue: input.env.INGEST_VENUE,
-      includeTrades: input.env.PUMP_SUBSCRIBE_TRADES,
-      includeCreatePool: input.env.PUMP_SUBSCRIBE_CREATE_POOL,
-    });
     const instructionNames = [
       ...new Set(
         watched.flatMap((programId) =>
@@ -375,13 +380,6 @@ async function runSocket(input: {
     }
     flushOnClose = flushAccounting;
     const gap = await readGap(input, meter);
-    if (gap.resetCoverage && gap.tipSlot !== null) {
-      await input.repo.recordVenueCoverage({
-        venue: input.env.INGEST_VENUE,
-        coverageSlot: gap.tipSlot,
-        now: new Date(),
-      });
-    }
     connectedAtMs = now();
     touch();
     input.logger.info(
@@ -614,15 +612,19 @@ async function runSocket(input: {
         return;
       }
       stats.noteReceived("tx", bytes, at);
+      const creditMicros =
+        method === "parsed" && frameMethod === "parsedTransactionNotification"
+          ? parsedEventMicros(1)
+          : method === "parsed"
+            ? 0n
+            : usageMicros({ streamedBytes: BigInt(bytes), rpcCalls: 0 });
+      const programId = watchedProgramIn(text, watched);
+      const venue = programId === null ? null : venueForProgram(programId);
       usage.add({
         streamedBytes: BigInt(bytes),
         messages: 1,
-        creditMicros:
-          method === "parsed" && frameMethod === "parsedTransactionNotification"
-            ? parsedEventMicros(1)
-            : method === "parsed"
-              ? 0n
-              : usageMicros({ streamedBytes: BigInt(bytes), rpcCalls: 0 }),
+        creditMicros,
+        venueCredits: venue !== null && creditMicros > 0n ? { [venue]: creditMicros } : undefined,
       });
       enqueueTx(text, bytes, null);
     }
@@ -632,8 +634,8 @@ async function runSocket(input: {
       if (rpcSignature === null && admitTxBytes(queuedBytes, bytes) === "overflow") {
         const slot = extractSlot(text);
         const programId =
-          watchedProgramIn(text, programsForVenue(input.env.INGEST_VENUE)) ??
-          programsForVenue(input.env.INGEST_VENUE)[0] ??
+          watchedProgramIn(text, programsForVenues(enabledVenues(input.env))) ??
+          programsForVenues(enabledVenues(input.env))[0] ??
           "";
         if (slot !== null) overflow.note(programId, slot);
         if (stats.noteDropped("tx", "queue_overflow", bytes, at)) {
@@ -1256,6 +1258,7 @@ async function backfillByScan(input: {
     messages: 0,
     storedEvents: 0,
     creditMicros: BigInt(scanned.creditsCharged) * MICROS_PER_CREDIT,
+    venue: venueForProgram(input.programId) ?? undefined,
   });
   const known = await input.repo.knownSignatures(scanned.matches.map((match) => match.signature));
   let eventsRecovered = 0;
@@ -1475,10 +1478,15 @@ async function readGap(
   let resetCoverage = false;
   if (lastSlot === null) {
     const cursor = await input.repo.ingestCursor();
+    const venues = enabledVenues(input.env);
+    const currentVenue =
+      cursor.venue !== null && venues.includes(cursor.venue as (typeof venues)[number])
+        ? cursor.venue
+        : venues[0];
     const decision = venueStartupCursor({
       persistedSlot: cursor.slot,
       persistedVenue: cursor.venue,
-      currentVenue: input.env.INGEST_VENUE,
+      currentVenue: currentVenue ?? input.env.INGEST_VENUE,
       tipSlot: currentSlot,
       margin: input.env.BACKFILL_SLOT_MARGIN,
       maxSpan: BACKFILL_MAX_SLOT_SPAN,
@@ -1488,7 +1496,7 @@ async function readGap(
       lastSlot = decision.slot;
       fromPersistedSlot = true;
       input.logger.info(
-        { persistedSlot: decision.slot, tipSlot: currentSlot, venue: input.env.INGEST_VENUE },
+        { persistedSlot: decision.slot, tipSlot: currentSlot, venue: currentVenue },
         "startup backfill bounded by persisted live slot",
       );
     } else if (decision.stale && cursor.slot !== null) {
@@ -1499,7 +1507,7 @@ async function readGap(
       );
     } else if (cursor.venue !== null && cursor.venue !== input.env.INGEST_VENUE) {
       input.logger.info(
-        { persistedVenue: cursor.venue, venue: input.env.INGEST_VENUE, persistedSlot: cursor.slot },
+        { persistedVenue: cursor.venue, venue: currentVenue, persistedSlot: cursor.slot },
         "ignoring persisted live slot from another venue",
       );
     }
@@ -1567,7 +1575,7 @@ async function callRpc(
   });
 }
 
-function makeMeter(repo: IngestRepository, logger: Logger): RpcMeter {
+function makeMeter(repo: IngestRepository, logger: Logger, venue?: string): RpcMeter {
   return (method: string) => {
     void repo
       .addUsage({
@@ -1576,6 +1584,7 @@ function makeMeter(repo: IngestRepository, logger: Logger): RpcMeter {
         messages: 0,
         storedEvents: 0,
         creditMicros: rpcCreditMicros(method),
+        venue,
       })
       .catch((error: unknown) => {
         logger.error({ err: error }, "failed to meter helius credits");
@@ -1760,6 +1769,32 @@ async function storeObservation(
       signature: observation.signature,
     });
   }
+  const coinVenue = venueForProgram(observation.programId);
+  if (
+    observation.mint &&
+    coinVenue !== null &&
+    (observation.kind === "pump_create" ||
+      observation.kind === "pump_create_v2" ||
+      observation.kind === "launchlab_initialize" ||
+      observation.kind === "launchlab_migrate" ||
+      observation.kind === "dbc_initialize" ||
+      observation.kind === "dbc_migration_damm_v2" ||
+      observation.kind === "damm_v2_initialize")
+  ) {
+    await input.repo.rememberCoin({
+      mint: observation.mint,
+      venue: coinVenue,
+      launchpad: observation.launchpad ?? (coinVenue === "pump" ? "Pump" : "unknown"),
+      platformConfig: observation.platformConfig ?? null,
+      quoteMint: observation.quoteMint,
+      transferFeeBps: observation.transferFeeBps ?? null,
+      pool: observation.pool,
+      creator: observation.creatorWallet,
+      createdSlot: observation.slot,
+      createdAt: receivedAt,
+      signature: observation.signature,
+    });
+  }
   if (isPumpTradeKind(observation.kind) && observation.mint) {
     const side =
       observation.kind === "pump_sell" || observation.kind === "pumpswap_sell" ? "sell" : "buy";
@@ -1814,6 +1849,7 @@ async function recoverOverflow(input: {
           messages: 0,
           storedEvents: 0,
           creditMicros: BigInt(scanned.creditsCharged) * MICROS_PER_CREDIT,
+          venue: venueForProgram(span.programId) ?? undefined,
         });
         const known = await input.repo.knownSignatures(
           scanned.matches.map((match) => match.signature),
@@ -1886,17 +1922,45 @@ async function backfillOnConnect(input: {
     input.logger.warn({}, "skipping backfill because non-essential Helius calls are paused");
     return;
   }
+  const venues = enabledVenues(input.env);
   const subscribed = subscribedPrograms({
-    venue: input.env.INGEST_VENUE,
+    venues,
     includeTrades: input.env.PUMP_SUBSCRIBE_TRADES,
     includeCreatePool: input.env.PUMP_SUBSCRIBE_CREATE_POOL,
   });
-  for (const programId of programsForVenue(input.env.INGEST_VENUE)) {
-    if (subscribed.includes(programId)) continue;
-    await input.repo.clearCheckpoint(programId);
-    input.logger.info({ programId }, "cleared checkpoint for unsubscribed program");
-  }
-  for (const programId of subscribed) {
-    await backfillProgram({ ...input, programId, paused: false });
+  const stored = await input.repo.venueCoverages();
+  const cursor = await input.repo.ingestCursor();
+  for (const venue of venues) {
+    const hasCoverage =
+      stored.has(venue) || (cursor.venue === venue && cursor.coverageSlot !== null);
+    if (!hasCoverage) {
+      for (const programId of programsForVenue(venue)) {
+        await input.repo.clearCheckpoint(programId);
+      }
+      if (input.gap.tipSlot !== null) {
+        await input.repo.recordVenueCoverage({
+          venue,
+          coverageSlot: input.gap.tipSlot,
+          now: new Date(),
+        });
+        input.logger.info(
+          { venue, coverageSlot: input.gap.tipSlot },
+          "venue coverage starts at the first live slot",
+        );
+      }
+    }
+    for (const programId of programsForVenue(venue)) {
+      if (!subscribed.includes(programId)) {
+        await input.repo.clearCheckpoint(programId);
+        input.logger.info({ programId, venue }, "cleared checkpoint for unsubscribed program");
+        continue;
+      }
+      await backfillProgram({
+        ...input,
+        programId,
+        paused: false,
+        meter: makeMeter(input.repo, input.logger, venue),
+      });
+    }
   }
 }

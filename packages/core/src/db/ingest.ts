@@ -16,8 +16,9 @@ import {
 import type { DecodeFailure, Observation } from "../ingest/decode.js";
 import type { FrameHourRow } from "../ingest/frameStats.js";
 import {
+  LAUNCHLAB_PROGRAMS,
+  METEORA_LAUNCH_PROGRAMS,
   PUMP_PROGRAMS,
-  WATCHED_PROGRAMS,
   programsForVenue,
   type IngestVenue,
 } from "../ingest/programs.js";
@@ -197,6 +198,41 @@ alter table ingest_recall_audit add column if not exists skipped boolean not nul
 alter table ingest_status add column if not exists venue text;
 alter table ingest_status add column if not exists coverage_slot bigint;
 
+create table if not exists ingest_venue_coverage (
+  venue text primary key,
+  coverage_slot bigint not null,
+  updated_at timestamptz not null default now()
+);
+
+insert into ingest_venue_coverage (venue, coverage_slot)
+select venue, coverage_slot from ingest_status
+where id = 1
+  and venue in ('pump', 'launchlab', 'meteora')
+  and coverage_slot is not null
+on conflict (venue) do nothing;
+
+create table if not exists ingest_venue_daily (
+  venue text not null,
+  day date not null,
+  credit_micros bigint not null default 0,
+  stored_events integer not null default 0,
+  primary key (venue, day)
+);
+
+create table if not exists ingest_coin (
+  mint text primary key,
+  venue text not null,
+  launchpad text not null,
+  platform_config text,
+  quote_mint text,
+  transfer_fee_bps integer,
+  pool text,
+  creator text,
+  created_slot bigint not null,
+  created_at timestamptz not null,
+  signature text not null
+);
+
 create table if not exists pump_coin (
   mint text primary key,
   bonding_curve text not null,
@@ -299,22 +335,22 @@ export async function migrate(pool: pg.Pool): Promise<void> {
       ["012_skip_stale_audits"],
     );
     await client.query(
+      "insert into schema_migrations (id) values ($1) on conflict (id) do nothing",
+      ["013_multi_venue"],
+    );
+    await client.query(
       `update ingest_recall_audit a
        set skipped = true,
-           error_reason = case
-             when s.venue = 'pump' and not (a.program_id = any($1::text[])) then 'other_venue'
-             when s.venue = 'meteora' and not (a.program_id = any($2::text[])) then 'other_venue'
-             else 'before_coverage'
-           end
-       from ingest_status s
-       where s.id = 1
-         and a.skipped = false
+           error_reason = 'before_coverage'
+       from ingest_venue_coverage c
+       where a.skipped = false
+         and a.window_start_slot < c.coverage_slot
          and (
-           (s.coverage_slot is not null and a.window_start_slot < s.coverage_slot)
-           or (s.venue = 'pump' and not (a.program_id = any($1::text[])))
-           or (s.venue = 'meteora' and not (a.program_id = any($2::text[])))
+           (c.venue = 'pump' and a.program_id = any($1::text[]))
+           or (c.venue = 'launchlab' and a.program_id = any($2::text[]))
+           or (c.venue = 'meteora' and a.program_id = any($3::text[]))
          )`,
-      [[...PUMP_PROGRAMS], [...WATCHED_PROGRAMS]],
+      [[...PUMP_PROGRAMS], [...LAUNCHLAB_PROGRAMS], [...METEORA_LAUNCH_PROGRAMS]],
     );
     await client.query("commit");
   } catch (error) {
@@ -526,6 +562,7 @@ export class IngestRepository {
     messages: number;
     storedEvents: number;
     creditMicros: bigint;
+    venue?: string;
   }): Promise<void> {
     const day = input.now.toISOString().slice(0, 10);
     const month = utcMonth(input.now);
@@ -561,6 +598,26 @@ export class IngestRepository {
          soak_started_at = coalesce(ingest_status.soak_started_at, excluded.soak_started_at)`,
       [input.creditMicros.toString(), input.now.toISOString()],
     );
+    if (input.venue && input.creditMicros !== 0n) {
+      await this.addVenueCredits(input.now, input.venue, input.creditMicros, input.storedEvents);
+    }
+  }
+
+  private async addVenueCredits(
+    now: Date,
+    venue: string,
+    creditMicros: bigint,
+    storedEvents: number,
+  ): Promise<void> {
+    const day = now.toISOString().slice(0, 10);
+    await this.pool.query(
+      `insert into ingest_venue_daily (venue, day, credit_micros, stored_events)
+       values ($1,$2,$3,$4)
+       on conflict (venue, day) do update set
+         credit_micros = ingest_venue_daily.credit_micros + excluded.credit_micros,
+         stored_events = ingest_venue_daily.stored_events + excluded.stored_events`,
+      [venue, day, creditMicros.toString(), storedEvents],
+    );
   }
 
   async flushAccounting(input: {
@@ -570,6 +627,7 @@ export class IngestRepository {
     storedEvents: number;
     creditMicros: bigint;
     frames: readonly FrameHourRow[];
+    venueCredits?: Readonly<Record<string, bigint>>;
   }): Promise<void> {
     const client = await this.pool.connect();
     try {
@@ -613,6 +671,17 @@ export class IngestRepository {
              credits_since_start = ingest_status.credits_since_start + excluded.credits_since_start,
              soak_started_at = coalesce(ingest_status.soak_started_at, excluded.soak_started_at)`,
           [input.creditMicros.toString(), input.now.toISOString()],
+        );
+      }
+      for (const [venue, micros] of Object.entries(input.venueCredits ?? {})) {
+        if (micros === 0n) continue;
+        const day = input.now.toISOString().slice(0, 10);
+        await client.query(
+          `insert into ingest_venue_daily (venue, day, credit_micros, stored_events)
+           values ($1,$2,$3,0)
+           on conflict (venue, day) do update set
+             credit_micros = ingest_venue_daily.credit_micros + excluded.credit_micros`,
+          [venue, day, micros.toString()],
         );
       }
       for (const row of input.frames) {
@@ -830,13 +899,59 @@ export class IngestRepository {
     now: Date;
   }): Promise<void> {
     await this.pool.query(
-      `insert into ingest_status (id, state, ws_method, plan, mode, venue, coverage_slot, updated_at)
-       values (1, 'starting', 'parsed', 'developer', 'dry-run', $1, $2, $3)
-       on conflict (id) do update set
-         venue = excluded.venue,
+      `insert into ingest_venue_coverage (venue, coverage_slot, updated_at)
+       values ($1, $2, $3)
+       on conflict (venue) do update set
          coverage_slot = excluded.coverage_slot,
          updated_at = excluded.updated_at`,
       [input.venue, input.coverageSlot, input.now.toISOString()],
+    );
+  }
+
+  async venueCoverages(): Promise<Map<string, number>> {
+    const result = await this.pool.query<{ venue: string; coverage_slot: string }>(
+      "select venue, coverage_slot from ingest_venue_coverage",
+    );
+    const out = new Map<string, number>();
+    for (const row of result.rows) {
+      const slot = Number(row.coverage_slot);
+      if (Number.isFinite(slot)) out.set(row.venue, slot);
+    }
+    return out;
+  }
+
+  async rememberCoin(input: {
+    mint: string;
+    venue: string;
+    launchpad: string;
+    platformConfig: string | null;
+    quoteMint: string | null;
+    transferFeeBps: number | null;
+    pool: string | null;
+    creator: string | null;
+    createdSlot: number;
+    createdAt: Date;
+    signature: string;
+  }): Promise<void> {
+    await this.pool.query(
+      `insert into ingest_coin
+        (mint, venue, launchpad, platform_config, quote_mint, transfer_fee_bps, pool, creator,
+         created_slot, created_at, signature)
+       values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)
+       on conflict (mint) do nothing`,
+      [
+        input.mint,
+        input.venue,
+        input.launchpad,
+        input.platformConfig,
+        input.quoteMint,
+        input.transferFeeBps,
+        input.pool,
+        input.creator,
+        input.createdSlot,
+        input.createdAt.toISOString(),
+        input.signature,
+      ],
     );
   }
 
@@ -987,19 +1102,30 @@ export class IngestRepository {
     const base = await this.statusBody(input);
     const since = new Date(input.now.getTime() - 7 * 24 * 60 * 60 * 1000);
     const cursor = await this.ingestCursor();
-    const venue: IngestVenue = cursor.venue === "meteora" ? "meteora" : "pump";
-    const week = await this.recallTotals(since, {
-      programIds: programsForVenue(venue),
-      coverageSlot: cursor.coverageSlot,
-    });
-    const unseen = await this.creationUnseen(venue, cursor.coverageSlot);
-    const loss =
-      week.expected === 0 ? "n/a" : `${((week.missed / week.expected) * 100).toFixed(2)}%`;
-    return [
-      base,
-      `recall loss 7d: ${loss} (${week.missed.toString()}/${week.expected.toString()})`,
-      `creation unseen: ${unseen.toString()}`,
-    ].join("\n");
+    const coverages = await this.venueCoverages();
+    const venues: IngestVenue[] =
+      coverages.size > 0
+        ? [...coverages.keys()].filter(
+            (venue): venue is IngestVenue =>
+              venue === "pump" || venue === "launchlab" || venue === "meteora",
+          )
+        : [cursor.venue === "meteora" ? "meteora" : "pump"];
+    const lines = [base];
+    for (const venue of venues) {
+      const coverageSlot = coverages.get(venue) ?? cursor.coverageSlot;
+      const week = await this.recallTotals(since, {
+        programIds: programsForVenue(venue),
+        coverageSlot,
+      });
+      const unseen = await this.creationUnseen(venue, coverageSlot);
+      const loss =
+        week.expected === 0 ? "n/a" : `${((week.missed / week.expected) * 100).toFixed(2)}%`;
+      lines.push(
+        `${venue} recall loss 7d: ${loss} (${week.missed.toString()}/${week.expected.toString()})`,
+        `${venue} creation unseen: ${unseen.toString()}`,
+      );
+    }
+    return lines.join("\n");
   }
 
   async spotCheckText(limit = 20): Promise<string> {
@@ -1081,8 +1207,17 @@ export class IngestRepository {
     coverageSlot: number | null = null,
   ): Promise<number> {
     const laterKinds =
-      venue === "pump" ? ["pump_migrate"] : ["dbc_migration_damm_v2", "dbc_curve_complete"];
-    const createKinds = venue === "pump" ? ["pump_create", "pump_create_v2"] : ["dbc_initialize"];
+      venue === "pump"
+        ? ["pump_migrate"]
+        : venue === "launchlab"
+          ? ["launchlab_migrate"]
+          : ["dbc_migration_damm_v2", "dbc_curve_complete"];
+    const createKinds =
+      venue === "pump"
+        ? ["pump_create", "pump_create_v2"]
+        : venue === "launchlab"
+          ? ["launchlab_initialize"]
+          : ["dbc_initialize"];
     const result = await this.pool.query<{ unseen: string }>(
       `select count(*)::text as unseen
        from raw_events later
@@ -1227,5 +1362,8 @@ function eventPayload(observation: Observation): Record<string, unknown> {
     virtualPool: observation.virtualPool,
     quoteMint: observation.quoteMint,
     instructionName: observation.instructionName ?? null,
+    launchpad: observation.launchpad ?? null,
+    platformConfig: observation.platformConfig ?? null,
+    transferFeeBps: observation.transferFeeBps ?? null,
   };
 }

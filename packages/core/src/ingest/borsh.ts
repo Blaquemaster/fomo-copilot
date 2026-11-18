@@ -23,12 +23,29 @@ export function readU8(input: Reader): number | null {
   return value;
 }
 
+export function readU32(input: Reader): number | null {
+  if (input.offset + 4 > input.bytes.length) return null;
+  const view = new DataView(input.bytes.buffer, input.bytes.byteOffset, input.bytes.byteLength);
+  const value = view.getUint32(input.offset, true);
+  input.offset += 4;
+  return value;
+}
+
 export function readU16(input: Reader): number | null {
   if (input.offset + 2 > input.bytes.length) return null;
   const view = new DataView(input.bytes.buffer, input.bytes.byteOffset, input.bytes.byteLength);
   const value = view.getUint16(input.offset, true);
   input.offset += 2;
   return value;
+}
+
+/** Anchor string: u32 length, then bytes. Rejects a length that would run past the buffer. */
+export function readString(input: Reader): string | null {
+  const length = readU32(input);
+  if (length === null || input.offset + length > input.bytes.length) return null;
+  const slice = input.bytes.subarray(input.offset, input.offset + length);
+  input.offset += length;
+  return new TextDecoder().decode(slice);
 }
 
 export function readU64(input: Reader): bigint | null {

@@ -58,6 +58,7 @@ describe("usage ledger", () => {
       streamedBytes: 10n,
       storedEvents: 1,
       creditMicros: 5n,
+      venueCredits: {},
     });
     expect(ledger.drain().messages).toBe(0);
   });
