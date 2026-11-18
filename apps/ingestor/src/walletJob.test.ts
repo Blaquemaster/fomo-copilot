@@ -61,6 +61,7 @@ describe("early-buyer history retry", () => {
             paginationToken: null,
             buysKept: 0,
             pages: 0,
+            failures: 0,
           },
         ],
         saveEarlyBuyers: async () => 0,

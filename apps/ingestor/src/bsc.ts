@@ -24,22 +24,13 @@ const AUDIT_EVERY_MS = 6 * 60 * 60 * 1000;
 const HEARTBEAT_MS = 20_000;
 /** Safety-net eth_getLogs. Inside the 2–5 minute window. */
 export const BSC_SWEEP_MS = 3 * 60 * 1000;
-/** No subscription logs for this long, while the chain head is still moving. */
-export const BSC_STALL_MS = 3 * 60 * 1000;
-/** Head minus the saved checkpoint. About three minutes of BSC blocks. */
-export const BSC_STALL_BLOCKS = 400;
-
+/** A quiet head with an empty sweep is not a stall. Missed logs after the checkpoint are. */
 export function bscLogStall(input: {
-  nowMs: number;
-  lastLogAtMs: number | null;
   head: number;
   checkpoint: number;
-  previousHead: number | null;
+  missedLogs: number;
 }): boolean {
-  const gap = input.head - input.checkpoint;
-  const silent = input.lastLogAtMs === null || input.nowMs - input.lastLogAtMs >= BSC_STALL_MS;
-  const headAdvanced = input.previousHead !== null && input.head > input.previousHead;
-  return (silent && headAdvanced) || gap > BSC_STALL_BLOCKS;
+  return input.missedLogs > 0 && input.head > input.checkpoint;
 }
 /** 30s, 2m, then 10m. getTokenV8Safe often fails in the create block on PublicNode. */
 export const ENRICH_RETRY_MS = [30_000, 120_000, 600_000] as const;
@@ -255,10 +246,6 @@ async function connectBsc(input: {
     ws.once("error", () => reject(new Error("bsc websocket failed to open")));
   });
   let caughtUp = false;
-  let lastSubscriptionAt = Date.now();
-  const noteSubscription = (): void => {
-    lastSubscriptionAt = Date.now();
-  };
   const onMessage = (raw: WebSocket.RawData): void => {
     let message: Record<string, unknown>;
     try {
@@ -281,7 +268,6 @@ async function connectBsc(input: {
       return;
     }
     if (message["method"] !== "eth_subscription") return;
-    noteSubscription();
     const params = message["params"];
     if (!params || typeof params !== "object") return;
     const result = (params as { result?: unknown }).result;
@@ -296,7 +282,6 @@ async function connectBsc(input: {
   let audit: ReturnType<typeof setInterval> | undefined;
   let enrichTimer: ReturnType<typeof setInterval> | undefined;
   let sweepTimer: ReturnType<typeof setInterval> | undefined;
-  let previousHead: number | null = null;
   let sweeping = false;
   try {
     await send("eth_subscribe", ["logs", portalLogFilter()]);
@@ -311,32 +296,8 @@ async function connectBsc(input: {
       if (typeof ws.ping === "function") ws.ping();
       if (pending.size > 0) return;
       void readHead(send)
-        .then(async (head) => {
+        .then(() => {
           lastBeat = Date.now();
-          const cursor = await input.repo.chainCheckpoint(BSC_CHAIN);
-          const checkpoint = cursor?.blockNumber ?? head;
-          if (
-            bscLogStall({
-              nowMs: Date.now(),
-              lastLogAtMs: lastSubscriptionAt,
-              head,
-              checkpoint,
-              previousHead,
-            })
-          ) {
-            input.logger.warn(
-              {
-                metric: "bsc_log_stall",
-                head,
-                checkpoint,
-                silentMs: Date.now() - lastSubscriptionAt,
-              },
-              "bsc log subscription stalled; reconnecting",
-            );
-            ws.close();
-            return;
-          }
-          previousHead = head;
         })
         .catch((error: unknown) => {
           input.logger.warn({ err: error }, "bsc heartbeat failed");
@@ -348,6 +309,22 @@ async function connectBsc(input: {
       if (sweeping) return;
       sweeping = true;
       void sweepFromCheckpoint(input, send)
+        .then((missed) => {
+          const head = missed.head;
+          if (
+            bscLogStall({
+              head: missed.head,
+              checkpoint: missed.checkpoint,
+              missedLogs: missed.missedLogs,
+            })
+          ) {
+            input.logger.warn(
+              { metric: "bsc_log_stall", head, missedLogs: missed.missedLogs },
+              "bsc log subscription missed logs; reconnecting",
+            );
+            ws.close();
+          }
+        })
         .catch((error: unknown) => {
           input.logger.warn({ err: error }, "bsc log sweep failed");
         })
@@ -400,12 +377,14 @@ async function acceptLog(
 async function sweepFromCheckpoint(
   input: { repo: IngestRepository; logger: Logger },
   send: (method: string, params: unknown[]) => Promise<unknown>,
-): Promise<void> {
+): Promise<{ head: number; checkpoint: number; missedLogs: number }> {
   const head = await readHead(send);
   const cursor = await input.repo.chainCheckpoint(BSC_CHAIN);
-  if (cursor === null || head < cursor.blockNumber) return;
-  await catchUp(input, send, cursor.blockNumber, head, cursor.coverageBlock);
-  input.logger.info({ fromBlock: cursor.blockNumber, toBlock: head }, "bsc log sweep stored");
+  const checkpoint = cursor?.blockNumber ?? head;
+  if (cursor === null || head < checkpoint) return { head, checkpoint, missedLogs: 0 };
+  const missedLogs = await catchUp(input, send, checkpoint, head, cursor.coverageBlock);
+  input.logger.info({ fromBlock: checkpoint, toBlock: head, missedLogs }, "bsc log sweep stored");
+  return { head, checkpoint, missedLogs };
 }
 
 async function catchUp(
@@ -414,14 +393,16 @@ async function catchUp(
   fromBlock: number,
   toBlock: number,
   coverageBlock: number | null,
-): Promise<void> {
+): Promise<number> {
   const pages = logBlockPages(fromBlock, toBlock);
+  let missed = 0;
   for (const page of pages) {
     const logs = await getLogsWithRetry(input.logger, send, page.fromBlock, page.toBlock);
     for (const item of logs) {
       const log = parseLog(item);
       if (!log) continue;
       const outcome = await handlePortalLog(input.repo, log, (token) => enrich(send, token));
+      if (outcome.stored) missed += 1;
       if (outcome.needsEnrich && outcome.token) await scheduleEnrich(input.repo, outcome.token, 0);
     }
     await input.repo.saveChainCheckpoint({
@@ -435,6 +416,7 @@ async function catchUp(
       "bsc catch-up page stored",
     );
   }
+  return missed;
 }
 
 async function getLogsWithRetry(

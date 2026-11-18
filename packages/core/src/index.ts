@@ -102,6 +102,8 @@ export {
   PROVEN_WALLET_RULE,
   chunkWallets,
   scoreProvenWallets,
+  shrunkHitRate,
+  type ScoreOptions,
   walletBudgetOpen,
   walletCreditCapMicros,
   walletFillsFromParsed,

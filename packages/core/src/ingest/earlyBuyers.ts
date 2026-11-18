@@ -36,6 +36,8 @@ export interface BackfillTarget {
   paginationToken: string | null;
   buysKept: number;
   pages: number;
+  failures?: number;
+  graduated?: boolean;
 }
 
 export interface HistoryPage {
@@ -47,11 +49,37 @@ export interface BackfillCheckpoint {
   mint: string;
   venue: string;
   account: string;
-  status: "open" | "done";
+  status: "open" | "done" | "skipped";
   paginationToken: string | null;
   buysKept: number;
   pages: number;
   creditDelta: number;
+  failures: number;
+  lastError: string | null;
+}
+
+/** Alternate losers and winners so a run cannot spend itself only on graduates. */
+export function stratifyBackfillMints<T extends { graduated?: boolean }>(
+  open: readonly T[],
+  fresh: readonly T[],
+  limit: number,
+): T[] {
+  const mixed = [...interleaveOutcome(open), ...interleaveOutcome(fresh)];
+  return mixed.slice(0, Math.max(0, limit));
+}
+
+function interleaveOutcome<T extends { graduated?: boolean }>(rows: readonly T[]): T[] {
+  const wins = rows.filter((row) => row.graduated === true);
+  const losses = rows.filter((row) => row.graduated !== true);
+  const out: T[] = [];
+  const count = Math.max(wins.length, losses.length);
+  for (let index = 0; index < count; index += 1) {
+    const loss = losses[index];
+    const win = wins[index];
+    if (loss) out.push(loss);
+    if (win) out.push(win);
+  }
+  return out;
 }
 
 /**
@@ -339,20 +367,23 @@ export async function collectEarlyBuyers(input: {
   fetchPage: (account: string, paginationToken: string | null) => Promise<HistoryPage | null>;
   save: (rows: readonly EarlyBuyerRow[]) => Promise<void>;
   checkpoint: (row: BackfillCheckpoint) => Promise<void>;
+  failLimit?: number;
 }): Promise<{
   credits: number;
   buyers: number;
   mintsDone: number;
   stopped: boolean;
   errored: boolean;
+  code: number | null;
 }> {
   let credits = 0;
   let buyers = 0;
   let mintsDone = 0;
   const buysPerMint = Math.max(1, Math.floor(input.buysPerMint));
+  const failLimit = Math.max(1, Math.floor(input.failLimit ?? 5));
   for (const mint of input.mints) {
     if (credits + historyPageCredits(1) > input.runCreditsLeft) {
-      return { credits, buyers, mintsDone, stopped: true, errored: false };
+      return { credits, buyers, mintsDone, stopped: true, errored: false, code: null };
     }
     let pages = mint.pages;
     let buysKept = mint.buysKept;
@@ -367,17 +398,51 @@ export async function collectEarlyBuyers(input: {
         buysKept,
         pages,
         creditDelta: 0,
+        failures: 0,
+        lastError: null,
       });
       mintsDone += 1;
       continue;
     }
     let finished = false;
+    let skipMint = false;
     while (pages < EARLY_BUYER_MAX_PAGES && buysKept < buysPerMint) {
       if (credits + historyPageCredits(1) > input.runCreditsLeft) {
-        return { credits, buyers, mintsDone, stopped: true, errored: false };
+        return { credits, buyers, mintsDone, stopped: true, errored: false, code: null };
       }
-      const page = await input.fetchPage(mint.account, token);
-      if (page === null) return { credits, buyers, mintsDone, stopped: true, errored: true };
+      let page: HistoryPage | null;
+      try {
+        page = await input.fetchPage(mint.account, token);
+      } catch (error) {
+        const stop = await noteHistoryFailure(input, mint, buysKept, pages, error, failLimit);
+        if (stop) {
+          return {
+            credits,
+            buyers,
+            mintsDone,
+            stopped: true,
+            errored: true,
+            code: errorCode(error),
+          };
+        }
+        skipMint = true;
+        break;
+      }
+      if (page === null) {
+        const stop = await noteHistoryFailure(
+          input,
+          mint,
+          buysKept,
+          pages,
+          "history response was empty",
+          failLimit,
+        );
+        if (stop) {
+          return { credits, buyers, mintsDone, stopped: true, errored: true, code: null };
+        }
+        skipMint = true;
+        break;
+      }
       const cost = historyPageCredits(page.transactions.length);
       credits += cost;
       const stored: EarlyBuyerRow[] = [];
@@ -403,10 +468,51 @@ export async function collectEarlyBuyers(input: {
         buysKept,
         pages,
         creditDelta: cost,
+        failures: 0,
+        lastError: null,
       });
       if (finished) break;
     }
+    if (skipMint) continue;
     if (finished) mintsDone += 1;
   }
-  return { credits, buyers, mintsDone, stopped: false, errored: false };
+  return { credits, buyers, mintsDone, stopped: false, errored: false, code: null };
+}
+
+function errorCode(error: unknown): number | null {
+  if (typeof error === "object" && error !== null && "code" in error) {
+    const code = (error as { code?: unknown }).code;
+    if (typeof code === "number") return code;
+  }
+  return null;
+}
+
+async function noteHistoryFailure(
+  input: {
+    checkpoint: (row: BackfillCheckpoint) => Promise<void>;
+    failLimit?: number;
+  },
+  mint: BackfillTarget,
+  buysKept: number,
+  pages: number,
+  error: unknown,
+  failLimit: number,
+): Promise<boolean> {
+  const failures = (mint.failures ?? 0) + 1;
+  const message = error instanceof Error ? error.message : String(error);
+  const skipped = failures >= failLimit;
+  await input.checkpoint({
+    mint: mint.mint,
+    venue: mint.venue,
+    account: mint.account,
+    status: skipped ? "skipped" : "open",
+    paginationToken: mint.paginationToken,
+    buysKept,
+    pages,
+    creditDelta: 0,
+    failures,
+    lastError: message,
+  });
+  mint.failures = failures;
+  return !skipped;
 }

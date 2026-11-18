@@ -101,6 +101,7 @@ async function runWalletPass(input: {
       buysPerMint,
       runCreditsLeft,
       fetchPage: (account, token) => fetchHistory(input, account, token),
+      failLimit: input.env.WALLET_BACKFILL_FAIL_LIMIT ?? 5,
       save: async (rows) => {
         await input.repo.saveEarlyBuyers(rows);
       },
@@ -121,11 +122,15 @@ async function runWalletPass(input: {
     return "retry";
   }
   if (result.errored) {
-    input.logger.warn({ code: null }, "early-buyer history fetch failed");
+    input.logger.warn({ code: result.code }, "early-buyer history fetch failed");
     return "retry";
   }
   const maxWallets = input.env.WALLET_MAX_WALLETS ?? 300;
-  const ranked = scoreProvenWallets(await input.repo.earlyBuys(), maxWallets);
+  const ranked = scoreProvenWallets(await input.repo.earlyBuys(), maxWallets, {
+    minEntries: input.env.WALLET_MIN_ENTRIES ?? 5,
+    minLosses: input.env.WALLET_MIN_LOSSES ?? 1,
+    botMaxEntries: input.env.WALLET_BOT_MAX_ENTRIES ?? 80,
+  });
   const active = await input.repo.activeTrackedWallets();
   const refresh = nextTrackedSet({
     ranked,

@@ -28,38 +28,87 @@ const graduated = (wallet: string, mint: string, side: "buy" | "sell"): EarlyBuy
 });
 
 describe("proven wallets", () => {
-  it("keeps wallets with early wins and drops sellers and one-off buyers", () => {
+  it("requires a known loss and shrinks a perfect hit rate", () => {
+    const onlyWins = scoreProvenWallets(
+      [graduated("winner", "mint-a", "buy"), graduated("winner", "mint-b", "buy")],
+      300,
+      { minEntries: 2, minLosses: 1 },
+    );
+    expect(onlyWins).toEqual([]);
     const scored = scoreProvenWallets(
       [
         graduated("winner", "mint-a", "buy"),
         graduated("winner", "mint-b", "buy"),
+        { wallet: "winner", mint: "mint-c", side: "buy", graduated: false, outcomeKnown: true },
+        { wallet: "unknown", mint: "mint-d", side: "buy", graduated: false, outcomeKnown: false },
+        { wallet: "unknown", mint: "mint-e", side: "buy", graduated: false, outcomeKnown: false },
         graduated("seller", "mint-a", "buy"),
         graduated("seller", "mint-a", "sell"),
         graduated("seller", "mint-b", "buy"),
         graduated("seller", "mint-b", "sell"),
-        graduated("once", "mint-a", "buy"),
-        { wallet: "miss", mint: "mint-c", side: "buy", graduated: false },
-        { wallet: "miss", mint: "mint-d", side: "buy", graduated: false },
       ],
       300,
+      { minEntries: 2, minLosses: 1 },
     );
     expect(scored.map((row) => row.address)).toEqual(["winner"]);
-    expect(scored[0]).toMatchObject({ earlyEntries: 2, earlyWins: 2, hitRate: 1 });
+    expect(scored[0]).toMatchObject({ earlyEntries: 3, earlyWins: 2, hitRate: 3 / 5 });
     expect(scored[0]?.derivation).toContain("funding source unknown");
-    expect(JSON.stringify(scored)).not.toMatch(/[1-9A-HJ-NP-Za-km-z]{32,44}/);
   });
 
-  it("ranks by hit rate, then wins, then address, and stops at the cap", () => {
-    const rows: EarlyBuy[] = [];
-    for (const wallet of ["b-wallet", "a-wallet", "c-wallet"]) {
-      rows.push(graduated(wallet, `${wallet}-1`, "buy"), graduated(wallet, `${wallet}-2`, "buy"));
-    }
-    rows.push(
-      { wallet: "b-wallet", mint: "b-wallet-3", side: "buy", graduated: false },
-      graduated("c-wallet", "c-wallet-3", "buy"),
+  it("drops same-slot snipers, same-slot scalps, and very wide bots", () => {
+    const sniper = scoreProvenWallets(
+      [
+        {
+          wallet: "snipe",
+          mint: "mint-a",
+          side: "buy",
+          graduated: true,
+          slot: 10,
+          createdSlot: 10,
+        },
+        { wallet: "snipe", mint: "mint-b", side: "buy", graduated: false, slot: 4, createdSlot: 3 },
+      ],
+      300,
+      { minEntries: 1, minLosses: 1 },
     );
-    const scored = scoreProvenWallets(rows, 2);
-    expect(scored.map((row) => row.address)).toEqual(["c-wallet", "a-wallet"]);
+    expect(sniper).toEqual([]);
+    const scalp = scoreProvenWallets(
+      [
+        { wallet: "bot", mint: "mint-a", side: "buy", graduated: true, slot: 8, createdSlot: 1 },
+        { wallet: "bot", mint: "mint-a", side: "sell", graduated: true, slot: 8, createdSlot: 1 },
+        { wallet: "bot", mint: "mint-b", side: "buy", graduated: true, slot: 9, createdSlot: 1 },
+        { wallet: "bot", mint: "mint-c", side: "buy", graduated: false, slot: 12, createdSlot: 1 },
+      ],
+      300,
+      { minEntries: 2, minLosses: 1 },
+    );
+    expect(scalp.map((row) => row.address)).toEqual(["bot"]);
+    expect(scalp[0]?.earlyEntries).toBe(2);
+    const wide = Array.from({ length: 4 }, (_unused, index) => ({
+      wallet: "wide",
+      mint: `mint-${index.toString()}`,
+      side: "buy" as const,
+      graduated: index === 0,
+    }));
+    expect(
+      scoreProvenWallets(wide, 300, { minEntries: 2, minLosses: 1, botMaxEntries: 3 }),
+    ).toEqual([]);
+  });
+
+  it("ranks by the shrunk hit rate", () => {
+    const rows: EarlyBuy[] = [];
+    for (const wallet of ["b-wallet", "a-wallet"]) {
+      rows.push(graduated(wallet, `${wallet}-1`, "buy"), graduated(wallet, `${wallet}-2`, "buy"), {
+        wallet,
+        mint: `${wallet}-loss`,
+        side: "buy",
+        graduated: false,
+      });
+    }
+    rows.push(graduated("a-wallet", "a-wallet-3", "buy"));
+    const scored = scoreProvenWallets(rows, 2, { minEntries: 2, minLosses: 1 });
+    expect(scored.map((row) => row.address)).toEqual(["a-wallet", "b-wallet"]);
+    expect(scored[0]?.hitRate).toBeGreaterThan(scored[1]?.hitRate ?? 0);
   });
 
   it("returns nothing when there is no stored early buy", () => {

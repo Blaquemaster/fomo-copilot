@@ -82,6 +82,14 @@ export const envSchema = z.object({
   WALLET_CHURN_PCT: z.coerce.number().int().min(0).max(100).optional(),
   /** Hours between early-buyer backfill and wallet-list refresh. Default 24. */
   WALLET_REFRESH_HOURS: z.coerce.number().int().min(1).max(168).optional(),
+  /** Covered early buys required before a wallet can join the proven list. Default 5. */
+  WALLET_MIN_ENTRIES: z.coerce.number().int().min(1).max(1_000).optional(),
+  /** How many of those entries must be on coins that did not graduate. Default 1. */
+  WALLET_MIN_LOSSES: z.coerce.number().int().min(0).max(1_000).optional(),
+  /** More covered buys than this is treated as a bot and left off the list. Default 80. */
+  WALLET_BOT_MAX_ENTRIES: z.coerce.number().int().min(1).max(100_000).optional(),
+  /** Consecutive history failures before a mint is skipped. Default 5. */
+  WALLET_BACKFILL_FAIL_LIMIT: z.coerce.number().int().min(1).max(100).optional(),
 });
 
 export type Env = z.infer<typeof envSchema>;

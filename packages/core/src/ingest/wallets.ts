@@ -14,9 +14,14 @@ import {
  * history. The list must be frozen before Phase D and is not tuned on a paper window.
  */
 export const PROVEN_WALLET_RULE = {
-  minEntries: 2,
+  minEntries: 5,
+  minLosses: 1,
+  botMaxEntries: 80,
+  /** Beta(1, 1). Shrunk rate is (wins + 1) / (entries + 2). */
+  priorWins: 1,
+  priorLosses: 1,
   lookback: "all stored history before Phase D",
-  earlyWindow: "non-creator buys in pump_trade or wallet_early_buy",
+  earlyWindow: "non-creator buys on coins whose outcome is known",
   winner: "mint with a stored graduation",
 } as const;
 
@@ -25,6 +30,18 @@ export interface EarlyBuy {
   mint: string;
   side: "buy" | "sell";
   graduated: boolean;
+  /** False when this mint is neither graduated nor a finished backfill loss. */
+  outcomeKnown?: boolean;
+  slot?: number | null;
+  createdSlot?: number | null;
+}
+
+export interface ScoreOptions {
+  minEntries?: number;
+  minLosses?: number;
+  botMaxEntries?: number;
+  priorWins?: number;
+  priorLosses?: number;
 }
 
 export interface ScoredWallet {
@@ -35,38 +52,74 @@ export interface ScoredWallet {
   derivation: string;
 }
 
-export function scoreProvenWallets(rows: readonly EarlyBuy[], maxWallets: number): ScoredWallet[] {
+export function shrunkHitRate(
+  wins: number,
+  entries: number,
+  priorWins = 1,
+  priorLosses = 1,
+): number {
+  const safeEntries = Math.max(0, entries);
+  const safeWins = Math.max(0, Math.min(wins, safeEntries));
+  return (safeWins + priorWins) / (safeEntries + priorWins + priorLosses);
+}
+
+export function scoreProvenWallets(
+  rows: readonly EarlyBuy[],
+  maxWallets: number,
+  options: ScoreOptions = {},
+): ScoredWallet[] {
+  const minEntries = options.minEntries ?? PROVEN_WALLET_RULE.minEntries;
+  const minLosses = options.minLosses ?? PROVEN_WALLET_RULE.minLosses;
+  const botMaxEntries = options.botMaxEntries ?? PROVEN_WALLET_RULE.botMaxEntries;
+  const priorWins = options.priorWins ?? PROVEN_WALLET_RULE.priorWins;
+  const priorLosses = options.priorLosses ?? PROVEN_WALLET_RULE.priorLosses;
   const byWallet = new Map<
     string,
-    { buys: Set<string>; sells: Set<string>; graduated: Set<string> }
+    {
+      buys: Map<string, EarlyBuy>;
+      sells: Map<string, EarlyBuy>;
+      graduated: Set<string>;
+    }
   >();
   for (const row of rows) {
-    if (!row.wallet) continue;
+    if (!row.wallet || row.outcomeKnown === false) continue;
     const bucket = byWallet.get(row.wallet) ?? {
-      buys: new Set<string>(),
-      sells: new Set<string>(),
+      buys: new Map<string, EarlyBuy>(),
+      sells: new Map<string, EarlyBuy>(),
       graduated: new Set<string>(),
     };
-    if (row.side === "buy") bucket.buys.add(row.mint);
-    else bucket.sells.add(row.mint);
+    if (row.side === "buy") bucket.buys.set(row.mint, row);
+    else bucket.sells.set(row.mint, row);
     if (row.graduated) bucket.graduated.add(row.mint);
     byWallet.set(row.wallet, bucket);
   }
   const scored: ScoredWallet[] = [];
   for (const [address, bucket] of byWallet) {
-    const earlyEntries = bucket.buys.size;
-    if (earlyEntries < PROVEN_WALLET_RULE.minEntries) continue;
-    const earlyWins = [...bucket.buys].filter((mint) => bucket.graduated.has(mint)).length;
-    if (earlyWins < 1) continue;
-    const winnerSells = [...bucket.sells].filter((mint) => bucket.graduated.has(mint)).length;
+    if (bucket.buys.size > botMaxEntries) continue;
+    const counted = [...bucket.buys.values()].filter(
+      (row) => !isSniper(row) && !isScalp(row, bucket.sells),
+    );
+    const earlyEntries = counted.length;
+    if (earlyEntries < minEntries) continue;
+    const earlyWins = counted.filter((row) => bucket.graduated.has(row.mint)).length;
+    const earlyLosses = earlyEntries - earlyWins;
+    if (earlyWins < 1 || earlyLosses < minLosses) continue;
+    const winnerSells = [...bucket.sells.values()].filter((row) => {
+      const buy = bucket.buys.get(row.mint);
+      if (buy && isScalp(buy, bucket.sells)) return false;
+      return bucket.graduated.has(row.mint);
+    }).length;
     if (winnerSells >= earlyWins) continue;
+    const snipes = [...bucket.buys.values()].filter((row) => isSniper(row)).length;
+    const scalps = [...bucket.buys.values()].filter((row) => isScalp(row, bucket.sells)).length;
+    if (snipes > earlyEntries || scalps > earlyEntries) continue;
     scored.push({
       address,
       earlyEntries,
       earlyWins,
-      hitRate: earlyWins / earlyEntries,
+      hitRate: shrunkHitRate(earlyWins, earlyEntries, priorWins, priorLosses),
       derivation:
-        "non-creator early buy from stored trades or the early-buyer backfill; win = that mint later graduated; funding source unknown so each address counts once",
+        "shrunk hit rate on covered coins, wins and losers; same-slot snipes and same-slot round trips are left out; funding source unknown so each address counts once",
     });
   }
   scored.sort((left, right) => {
@@ -75,6 +128,15 @@ export function scoreProvenWallets(rows: readonly EarlyBuy[], maxWallets: number
     return left.address < right.address ? -1 : 1;
   });
   return scored.slice(0, Math.max(0, maxWallets));
+}
+
+function isSniper(row: EarlyBuy): boolean {
+  return row.slot != null && row.createdSlot != null && row.slot === row.createdSlot;
+}
+
+function isScalp(row: EarlyBuy, sells: ReadonlyMap<string, EarlyBuy>): boolean {
+  const sell = sells.get(row.mint);
+  return sell?.slot != null && row.slot != null && sell.slot === row.slot;
 }
 
 export function chunkWallets(addresses: readonly string[], size = WALLET_SUB_CHUNK): string[][] {
