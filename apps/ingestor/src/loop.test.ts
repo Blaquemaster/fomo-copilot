@@ -112,6 +112,12 @@ function repo(overrides: Partial<IngestRepository> = {}): IngestRepository {
     recallTotals: vi.fn(async () => ({ missed: 0, expected: 0, windows: 0 })),
     creationUnseen: vi.fn(async () => 0),
     alertableCandidates: vi.fn(async () => []),
+    earlyBuys: vi.fn(async () => []),
+    activeTrackedWallets: vi.fn(async () => []),
+    saveTrackedWallets: vi.fn(async () => undefined),
+    insertWalletFill: vi.fn(async () => undefined),
+    insertXMentions: vi.fn(async () => 0),
+    featureMonthMicros: vi.fn(async () => 0n),
   };
   return { ...base, ...overrides } as unknown as IngestRepository;
 }
@@ -594,6 +600,130 @@ describe("ingest loop", () => {
     expect(subscribe).toContain("migrate_to_cpswap");
     expect(subscribe).not.toContain("buy_exact_in");
     expect(subscribe).not.toContain("LBUZKhRxPF3XUpBCjp4YzTKgLccjZhTSDM9YuVaPwxo");
+    controller.abort();
+    await done;
+  });
+
+  it("subscribes only the tracked wallets and meters a fill as wallet_subscribe", async () => {
+    vi.mocked(sendTelegramMessage).mockClear();
+    const socket = new FakeSocket();
+    const controller = new AbortController();
+    const store = repo({
+      activeTrackedWallets: vi.fn(async () => ["tracked-wallet"]),
+    });
+    const done = runIngestLoop({
+      env,
+      logger: logger(),
+      repo: store,
+      signal: controller.signal,
+      deps: {
+        openSocket: () => asSocket(socket),
+        warnMs: 60_000,
+        criticalMs: 120_000,
+        livenessTickMs: 60_000,
+        usageFlushMs: 20,
+        confirmTimeoutMs: 60_000,
+        callRpc: () => Promise.resolve(1),
+      },
+    });
+    await vi.waitFor(() => {
+      expect(socket.sent.some((frame) => frame.includes('"id":10'))).toBe(true);
+    });
+    const walletFrame = socket.sent.find((frame) => frame.includes('"id":10')) ?? "";
+    const body = JSON.parse(walletFrame) as {
+      method: string;
+      params: Array<{
+        programs: string[];
+        instructionNames: string[];
+        accounts: { include: string[] };
+      }>;
+    };
+    expect(body.method).toBe("parsedTransactionSubscribe");
+    expect(body.params[0]?.accounts.include).toEqual(["tracked-wallet"]);
+    expect(body.params[0]?.programs).toContain("LanMV9sAd7wArD4vJFi2qDdfnVhFxYSUg6eADduJ3uj");
+    expect(body.params[0]?.programs).toContain("dbcij3LWUppWqq96dh6gJWwBifmcGfLSB5D4DuSMaqN");
+    expect(body.params[0]?.instructionNames).toContain("buy_exact_in");
+    expect(body.params[0]?.instructionNames).toContain("swap");
+    socket.dispatchEvent(
+      new MessageEvent("message", { data: JSON.stringify({ jsonrpc: "2.0", id: 10, result: 77 }) }),
+    );
+    await delay(20);
+    socket.dispatchEvent(
+      new MessageEvent("message", {
+        data: JSON.stringify({
+          jsonrpc: "2.0",
+          method: "parsedTransactionNotification",
+          params: {
+            subscription: 77,
+            result: {
+              context: { slot: 12 },
+              value: {
+                transaction: { signature: "fill-sig", slot: 12, error: null },
+                instructions: [
+                  {
+                    programId: "LanMV9sAd7wArD4vJFi2qDdfnVhFxYSUg6eADduJ3uj",
+                    instructionName: "buy_exact_in",
+                    decoded: {
+                      accounts: [
+                        { name: "user", pubkey: "tracked-wallet" },
+                        { name: "base_mint", pubkey: "coin-mint" },
+                      ],
+                    },
+                  },
+                ],
+              },
+            },
+          },
+        }),
+      }),
+    );
+    await vi.waitFor(() => {
+      expect(store.insertWalletFill).toHaveBeenCalledWith(
+        expect.objectContaining({
+          signature: "fill-sig",
+          wallet: "tracked-wallet",
+          mint: "coin-mint",
+          side: "buy",
+          venue: "launchlab",
+        }),
+      );
+    });
+    await vi.waitFor(() => {
+      const calls = vi.mocked(store.flushAccounting).mock.calls;
+      expect(
+        calls.some((call) => call[0].featureCredits?.["wallet_subscribe"] === 1_000_000n),
+      ).toBe(true);
+    });
+    expect(vi.mocked(sendTelegramMessage)).not.toHaveBeenCalled();
+    controller.abort();
+    await done;
+  });
+
+  it("does not open the wallet subscription once the feature cap is spent", async () => {
+    const socket = new FakeSocket();
+    const controller = new AbortController();
+    const done = runIngestLoop({
+      env,
+      logger: logger(),
+      repo: repo({
+        activeTrackedWallets: vi.fn(async () => ["tracked-wallet"]),
+        featureMonthMicros: vi.fn(async () => 2_500_000_000_000n),
+      }),
+      signal: controller.signal,
+      deps: {
+        openSocket: () => asSocket(socket),
+        warnMs: 60_000,
+        criticalMs: 120_000,
+        livenessTickMs: 60_000,
+        usageFlushMs: 60_000,
+        confirmTimeoutMs: 60_000,
+        callRpc: () => Promise.resolve(1),
+      },
+    });
+    await vi.waitFor(() => {
+      expect(socket.sent.some((frame) => frame.includes("parsedTransactionSubscribe"))).toBe(true);
+    });
+    expect(socket.sent.some((frame) => frame.includes('"id":10'))).toBe(false);
     controller.abort();
     await done;
   });

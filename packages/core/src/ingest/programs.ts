@@ -1186,6 +1186,42 @@ export const PUMP_AMM_TRADE_NAMES = [
   "sell_v2",
 ] as const;
 
+/** Helius allows 100 accounts.include addresses per subscription. */
+export const WALLET_SUB_CHUNK = 100;
+
+/** Trade names for the wallet subscription. AND-ed with the wallet and the venue programs. */
+export const WALLET_TRADE_NAMES = uniqueNames([
+  ...PUMP_TRADE_NAMES,
+  ...PUMP_AMM_TRADE_NAMES,
+  "buy_exact_in",
+  "buy_exact_out",
+  "sell_exact_in",
+  "sell_exact_out",
+  "swap",
+  "swap2",
+  "swap2_with_transfer_hook",
+]);
+
+export const WALLET_TRACK_PROGRAMS = [
+  PUMP_PROGRAM_ID,
+  PUMP_AMM_PROGRAM_ID,
+  LAUNCHLAB_PROGRAM_ID,
+  DBC_PROGRAM_ID,
+  DAMM_V2_PROGRAM_ID,
+] as const;
+
+function uniqueNames(names: readonly string[]): readonly string[] {
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const name of names) {
+    const key = name.toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push(name);
+  }
+  return out;
+}
+
 /** Full trade rows are kept for this many slots after the coin's create. About one minute. */
 export const PUMP_TRADE_DETAIL_SLOTS = 150;
 

@@ -354,6 +354,7 @@ export class UsageLedger {
   creditMicros = 0n;
   venueCredits = new Map<string, bigint>();
   venueStored = new Map<string, number>();
+  featureCredits = new Map<string, bigint>();
 
   add(input: {
     streamedBytes?: bigint;
@@ -362,6 +363,7 @@ export class UsageLedger {
     creditMicros?: bigint;
     venueCredits?: Readonly<Record<string, bigint>>;
     venueStored?: Readonly<Record<string, number>>;
+    featureCredits?: Readonly<Record<string, bigint>>;
   }): void {
     this.streamedBytes += input.streamedBytes ?? 0n;
     this.messages += input.messages ?? 0;
@@ -373,6 +375,9 @@ export class UsageLedger {
     for (const [venue, count] of Object.entries(input.venueStored ?? {})) {
       this.venueStored.set(venue, (this.venueStored.get(venue) ?? 0) + count);
     }
+    for (const [feature, micros] of Object.entries(input.featureCredits ?? {})) {
+      this.featureCredits.set(feature, (this.featureCredits.get(feature) ?? 0n) + micros);
+    }
   }
 
   drain(): {
@@ -382,11 +387,14 @@ export class UsageLedger {
     creditMicros: bigint;
     venueCredits: Record<string, bigint>;
     venueStored: Record<string, number>;
+    featureCredits: Record<string, bigint>;
   } {
     const venueCredits: Record<string, bigint> = {};
     for (const [venue, micros] of this.venueCredits) venueCredits[venue] = micros;
     const venueStored: Record<string, number> = {};
     for (const [venue, count] of this.venueStored) venueStored[venue] = count;
+    const featureCredits: Record<string, bigint> = {};
+    for (const [feature, micros] of this.featureCredits) featureCredits[feature] = micros;
     const snapshot = {
       streamedBytes: this.streamedBytes,
       messages: this.messages,
@@ -394,6 +402,7 @@ export class UsageLedger {
       creditMicros: this.creditMicros,
       venueCredits,
       venueStored,
+      featureCredits,
     };
     this.streamedBytes = 0n;
     this.messages = 0;
@@ -401,6 +410,7 @@ export class UsageLedger {
     this.creditMicros = 0n;
     this.venueCredits = new Map();
     this.venueStored = new Map();
+    this.featureCredits = new Map();
     return snapshot;
   }
 }

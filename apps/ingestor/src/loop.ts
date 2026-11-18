@@ -40,6 +40,17 @@ import {
   livenessLevel,
   measureReconnectGap,
   MICROS_PER_CREDIT,
+  utcMonth,
+  WALLET_TRACK_PROGRAMS,
+  WALLET_TRADE_NAMES,
+  chunkWallets,
+  scoreProvenWallets,
+  walletBudgetOpen,
+  walletCreditCapMicros,
+  walletFillsFromParsed,
+  FIXTURE_X_MENTIONS,
+  FixtureXMentionSource,
+  sanitizeMentionHandle,
   isUnrecoveredGap,
   nextReconnectAlert,
   parsedEventMicros,
@@ -280,6 +291,8 @@ async function runSocket(input: {
       includeCreatePool: input.env.PUMP_SUBSCRIBE_CREATE_POOL,
     });
     const pendingSubs = new Map<number, { method: string; programs: readonly string[] }>();
+    const walletRequestIds = new Set<number>();
+    const walletHeliusIds = new Set<number>();
     let txConfirmed = false;
     let handlerBusy = false;
     let queuedBytes = 0;
@@ -298,7 +311,8 @@ async function runSocket(input: {
         spent.streamedBytes === 0n &&
         spent.creditMicros === 0n &&
         Object.keys(spent.venueCredits).length === 0 &&
-        Object.keys(spent.venueStored).length === 0
+        Object.keys(spent.venueStored).length === 0 &&
+        Object.keys(spent.featureCredits).length === 0
       ) {
         return;
       }
@@ -373,12 +387,23 @@ async function runSocket(input: {
         ),
       ),
     ];
+    await prepareWalletSignals(input);
     for (const request of subscribe(ws, method, watched, instructionNames)) {
       pendingSubs.set(request.id, request);
       input.logger.info(
         { method: request.method, programs: request.programs, request: request.id },
         "subscription requested",
       );
+    }
+    if (method === "parsed" && (await walletBudgetAllows(input))) {
+      for (const request of subscribeTrackedWallets(ws)) {
+        pendingSubs.set(request.id, { method: request.method, programs: [] });
+        walletRequestIds.add(request.id);
+        input.logger.info(
+          { method: request.method, wallets: request.wallets, request: request.id },
+          "wallet subscription requested",
+        );
+      }
     }
     flushOnClose = flushAccounting;
     const gap = await readGap(input, meter);
@@ -474,6 +499,7 @@ async function runSocket(input: {
           const request = pendingSubs.get(id);
           pendingSubs.delete(id);
           if (id === 1) txConfirmed = true;
+          if (walletRequestIds.has(id)) walletHeliusIds.add(result);
           input.logger.info(
             {
               subscription: result,
@@ -622,12 +648,19 @@ async function runSocket(input: {
             : usageMicros({ streamedBytes: BigInt(bytes), rpcCalls: 0 });
       const programId = watchedProgramIn(text, watched);
       const venue = programId === null ? null : venueForProgram(programId);
+      const walletEvent = isWalletNotification(message, walletHeliusIds);
       usage.add({
         streamedBytes: BigInt(bytes),
         messages: 1,
         creditMicros,
-        venueCredits: venue !== null && creditMicros > 0n ? { [venue]: creditMicros } : undefined,
+        venueCredits:
+          !walletEvent && venue !== null && creditMicros > 0n
+            ? { [venue]: creditMicros }
+            : undefined,
+        featureCredits:
+          walletEvent && creditMicros > 0n ? { wallet_subscribe: creditMicros } : undefined,
       });
+      if (walletEvent) recordWalletFills(input, message);
       enqueueTx(text, bytes, null);
     }
 
@@ -1399,6 +1432,143 @@ async function getSignatures(
     });
   }
   return { rawLength: result.length, oldestSignature, rows };
+}
+
+const trackedWalletSet = new Set<string>();
+
+async function prepareWalletSignals(input: {
+  env: Env;
+  logger: Logger;
+  repo: IngestRepository;
+}): Promise<void> {
+  const maxWallets = input.env.WALLET_MAX_WALLETS ?? 300;
+  trackedWalletSet.clear();
+  const active = await input.repo.activeTrackedWallets();
+  if (active.length === 0) {
+    const buys = await input.repo.earlyBuys();
+    const scored = scoreProvenWallets(buys, maxWallets);
+    await input.repo.saveTrackedWallets(scored, new Date());
+    input.logger.info(
+      { selected: scored.length, maxWallets },
+      "proven wallet list built from stored early buys",
+    );
+    for (const row of scored) trackedWalletSet.add(row.address);
+  } else {
+    for (const address of active.slice(0, maxWallets)) trackedWalletSet.add(address);
+    input.logger.info(
+      { active: trackedWalletSet.size },
+      "proven wallet list unchanged; a refresh stays a proposal until wallet-list changes are approved",
+    );
+  }
+  const pct = input.env.WALLET_CREDIT_BUDGET_PCT ?? 25;
+  const allowance = allowanceCredits(input.env.HELIUS_PLAN, input.env.HELIUS_MONTHLY_CREDITS);
+  const cap = walletCreditCapMicros(allowance * MICROS_PER_CREDIT, pct);
+  input.logger.info(
+    {
+      wallets: trackedWalletSet.size,
+      subscriptions: Math.ceil(trackedWalletSet.size / 100),
+      capCredits: (cap / MICROS_PER_CREDIT).toString(),
+      creditPerDeliveredEvent: 1,
+    },
+    "wallet subscription credit impact",
+  );
+  if ((input.env.X_MENTION_SOURCE ?? "fixture") === "off") return;
+  const source = new FixtureXMentionSource(FIXTURE_X_MENTIONS);
+  const mentions = await source.search({});
+  const stored = await input.repo.insertXMentions(
+    mentions.map((row) => ({
+      mint: row.mint,
+      ticker: row.ticker,
+      handle: sanitizeMentionHandle(row.handle),
+      postUrl: row.postUrl,
+      mentionedAt: new Date(row.mentionedAt),
+      source: "fixture",
+    })),
+  );
+  input.logger.info(
+    {
+      stored,
+      mentions: mentions.length,
+      handles: mentions.map((row) => sanitizeMentionHandle(row.handle)),
+      postUrls: mentions.map((row) => row.postUrl),
+    },
+    "x mention fixture dry-run",
+  );
+}
+
+function recordWalletFills(
+  input: { repo: IngestRepository; logger: Logger },
+  message: unknown,
+): void {
+  for (const fill of walletFillsFromParsed(message, trackedWalletSet)) {
+    void input.repo.insertWalletFill(fill).then(
+      () => {
+        input.logger.info(
+          { mint: fill.mint, wallet: fill.wallet, side: fill.side, venue: fill.venue },
+          "wallet fill dry-run",
+        );
+      },
+      (error: unknown) => {
+        input.logger.warn({ err: error }, "wallet fill not stored");
+      },
+    );
+  }
+}
+
+function subscribeTrackedWallets(
+  ws: SocketLike,
+): Array<{ id: number; method: string; wallets: number }> {
+  if (ws.readyState !== 1 || trackedWalletSet.size === 0) return [];
+  const chunks = chunkWallets([...trackedWalletSet]);
+  const requests: Array<{ id: number; method: string; wallets: number }> = [];
+  chunks.forEach((wallets, index) => {
+    const id = 10 + index;
+    ws.send(
+      JSON.stringify({
+        jsonrpc: "2.0",
+        id,
+        method: "parsedTransactionSubscribe",
+        params: [
+          {
+            programs: [...WALLET_TRACK_PROGRAMS],
+            instructionNames: [...WALLET_TRADE_NAMES],
+            accounts: { include: wallets },
+            includeFailed: false,
+            includeCpi: true,
+          },
+          { commitment: "confirmed", details: "matched" },
+        ],
+      }),
+    );
+    requests.push({ id, method: "parsedTransactionSubscribe", wallets: wallets.length });
+  });
+  return requests;
+}
+
+async function walletBudgetAllows(input: {
+  env: Env;
+  repo: IngestRepository;
+  logger: Logger;
+}): Promise<boolean> {
+  const pct = input.env.WALLET_CREDIT_BUDGET_PCT ?? 25;
+  const allowance = allowanceCredits(input.env.HELIUS_PLAN, input.env.HELIUS_MONTHLY_CREDITS);
+  const cap = walletCreditCapMicros(allowance * MICROS_PER_CREDIT, pct);
+  const spent = await input.repo.featureMonthMicros("wallet_subscribe", utcMonth(new Date()));
+  const open = walletBudgetOpen(spent, cap);
+  if (!open) {
+    input.logger.warn(
+      { spent: spent.toString(), cap: cap.toString(), pct },
+      "wallet subscription paused; feature credit cap reached",
+    );
+  }
+  return open;
+}
+
+function isWalletNotification(message: unknown, ids: ReadonlySet<number>): boolean {
+  if (!isRecord(message)) return false;
+  const params = message["params"];
+  if (!isRecord(params) || typeof params["subscription"] !== "number") return false;
+  return ids.has(params["subscription"]);
 }
 
 function subscribe(

@@ -1,5 +1,17 @@
 # Decision log
 
+## 2026-11-18 — Phase B wallet signal, dry-run
+
+The first proven-wallet list is built from stored history, before any Phase D window exists. A winner is a mint with a stored graduation (`pump_migrate`, `launchlab_migrate`, or `dbc_migration_damm_v2`). An early buy is a non-creator buy or sell already in `pump_trade`. Lookback is all of that stored history. A wallet needs at least two distinct early buys and at least one early win. It is dropped when its early sells of winners are at least its early wins. Rank is hit rate, then early wins, then address. The cap is `WALLET_MAX_WALLETS`, default 300. Funding source is unknown, so each address counts once and that limit is in the derivation note. LaunchLab and Meteora have no per-trade buyer rows yet, so selection uses `pump_trade` only. An empty table stays empty. No addresses are invented.
+
+That first list is the live set. Later refreshes are not applied. Wallet-list changes were not approved (Change 17 Q3 is unanswered), and `saveTrackedWallets` does not replace a row that already exists.
+
+The subscription is parsed transactions whose program is Pump, PumpSwap, LaunchLab, Meteora DBC, or DAMM v2, whose instruction is a trade name, and whose accounts include one of the selected wallets. Helius ANDs those filters. `accounts.include` holds at most 100 addresses, so 300 wallets are three subscriptions on the existing socket. The lifecycle subscription stays creates and graduations. Wallet notifications are metered as `wallet_subscribe` in `ingest_feature_daily` and are not also added to a venue's stream credits. They do count in the month total, because Helius charges them. Parsed delivery is 1 credit per event. The hard stop is `WALLET_CREDIT_BUDGET_PCT`, default 25 percent of the plan allowance: 2,500,000 credits on Developer (10,000,000) and 250,000 on free (1,000,000). A connect past the cap does not resubscribe. Credits already delivered on an open socket are spent. BSC wallets are later.
+
+A fill is stored when a tracked wallet is a named account on that trade and a non-quote mint is named. Buy and sell come from the instruction name. `swap` stays undirected. `coin_wallet_signal` counts buyers, buys, and sells per mint. This is dry-run. No Telegram alert is sent for a fill.
+
+X mentions use `XMentionSource`. The repo source is the fixture in `packages/core/src/ingest/fixtures/x-mentions.json`. An empty query returns that sample. There is no Scout file and no call to X. Live search is a later plug on the bot. Handles are stripped to letters, digits, and underscore. Mention rows are stored. No Telegram alert is sent for a mention.
+
 ## 2026-11-18 — Flap reconnects and catch-up
 
 `BSC_WSS_URL` defaults to `wss://bsc-rpc.publicnode.com`. That URL has no API key, so deploy always writes it and logs do not treat it as a secret. A keyed override still comes from the Actions variable or secret.

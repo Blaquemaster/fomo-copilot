@@ -137,6 +137,8 @@ Optional GitHub Actions **variables** (Settings → Secrets and variables → Ac
 
 `BSC_WSS_URL` defaults to the public keyless endpoint `wss://bsc-rpc.publicnode.com`. Deploy always writes it. Override it with the Actions variable or secret `BSC_WSS_URL` when the endpoint is a keyed provider. A BSC failure does not stop Solana.
 
+`WALLET_MAX_WALLETS` defaults to 300 and `WALLET_CREDIT_BUDGET_PCT` defaults to 25. Those are the live wallet subscription and its hard share of the monthly Helius allowance. Wallet trades are 1 credit each and are written to `ingest_feature_daily` as `wallet_subscribe`. Once that month's feature total reaches the cap, the next connect does not resubscribe. `X_MENTION_SOURCE` is `fixture` or `off`. `fixture` stores the offline sample. Live X search stays on the bot. None of these send a Telegram alert.
+
 `INGEST_VENUES=pump,launchlab,meteora` runs all three on one socket. LaunchLab is creates and graduations only (no trades). Meteora is DBC plus DAMM v2, not DLMM. A venue with no coverage row starts at the current slot and does not backfill older checkpoints. Pump keeps the coverage row copied from the old singleton. Recall alerts and `ingest_venue_daily` credits are per venue. Coins land in `ingest_coin` with `launchpad` (`Pump`, `StonkFun`, `Bonk`, or `unknown`) and `platform_config` when the instruction has one.
 
 The next deploy starts the ingestor on the filtered stream. That is safe to leave running. On the server:

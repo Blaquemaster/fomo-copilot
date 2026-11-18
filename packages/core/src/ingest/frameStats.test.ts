@@ -60,6 +60,7 @@ describe("usage ledger", () => {
       creditMicros: 5n,
       venueCredits: {},
       venueStored: {},
+      featureCredits: {},
     });
     expect(ledger.drain().messages).toBe(0);
   });

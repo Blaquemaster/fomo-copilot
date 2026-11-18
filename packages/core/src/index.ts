@@ -89,8 +89,30 @@ export {
   pumpTradeRetention,
   isPumpTradeKind,
   isPumpLifecycleKind,
+  WALLET_SUB_CHUNK,
+  WALLET_TRADE_NAMES,
+  WALLET_TRACK_PROGRAMS,
   type IngestVenue,
 } from "./ingest/programs.js";
+export {
+  PROVEN_WALLET_RULE,
+  chunkWallets,
+  scoreProvenWallets,
+  walletBudgetOpen,
+  walletCreditCapMicros,
+  walletFillsFromParsed,
+  type EarlyBuy,
+  type ScoredWallet,
+  type WalletFillDraft,
+} from "./ingest/wallets.js";
+export {
+  FIXTURE_X_MENTIONS,
+  FixtureXMentionSource,
+  sanitizeMentionHandle,
+  summarizeMentions,
+  type XMention,
+  type XMentionSource,
+} from "./ingest/xMentions.js";
 export {
   BSC_CHAIN,
   FLAP_LAUNCHPAD,
