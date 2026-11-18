@@ -81,7 +81,7 @@ jobs:
           HELIUS_WS_MODE: ${{ vars.HELIUS_WS_MODE }}
           INGEST_MODE: ${{ vars.INGEST_MODE }}
           INGEST_VENUES: ${{ vars.INGEST_VENUES }}
-          BSC_WSS_URL: ${{ secrets.BSC_WSS_URL }}
+          BSC_WSS_URL: ${{ secrets.BSC_WSS_URL || vars.BSC_WSS_URL }}
         run: |
           set -euo pipefail
           umask 077
@@ -107,9 +107,7 @@ jobs:
               return value
 
           def bsc_url():
-              value = os.environ.get("BSC_WSS_URL", "").strip()
-              if not value:
-                  return ""
+              value = os.environ.get("BSC_WSS_URL", "").strip() or "wss://bsc-rpc.publicnode.com"
               if not value.startswith("wss://") and not value.startswith("ws://"):
                   raise SystemExit("BSC_WSS_URL must start with wss://")
               return value
@@ -165,7 +163,7 @@ jobs:
               line("INGEST_MODE", pick("INGEST_MODE", "dry-run", {"dry-run", "continuous"})),
               line("INGEST_VENUE", pick("INGEST_VENUE", "pump", {"pump", "meteora"})),
               line("INGEST_VENUES", venues()),
-              *([line("BSC_WSS_URL", bsc)] if bsc else []),
+              line("BSC_WSS_URL", bsc),
               line("PUMP_SUBSCRIBE_TRADES", pick("PUMP_SUBSCRIBE_TRADES", "false", {"true", "false"})),
               line("PUMP_SUBSCRIBE_CREATE_POOL", pick("PUMP_SUBSCRIBE_CREATE_POOL", "false", {"true", "false"})),
               line("BACKFILL_SLOT_MARGIN", slot_margin()),

@@ -91,6 +91,10 @@ describe("repository guards", () => {
     expect(sql).toContain("Pump.fun");
     expect(sql).toContain("BONK.fun");
     expect(sql).toContain("015_bsc_flap");
+    expect(sql).toContain("016_bsc_reliability");
+    expect(sql).toContain("raw_events_mint_kind_idx");
+    const workflow = readFileSync(path.join(root, ".github/workflows/deploy.yml"), "utf8");
+    expect(workflow).toContain("wss://bsc-rpc.publicnode.com");
     const bsc = readFileSync(path.join(root, "apps/ingestor/src/bsc.ts"), "utf8");
     expect(bsc).not.toContain("gopluslabs");
     expect(bsc).not.toContain("honeypot.is");

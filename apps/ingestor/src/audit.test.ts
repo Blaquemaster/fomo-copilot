@@ -35,6 +35,7 @@ const env = {
   PUMP_SUBSCRIBE_CREATE_POOL: false,
   PUMP_TRADE_DETAIL_SLOTS: 150,
   BACKFILL_SLOT_MARGIN: 0,
+  BSC_WSS_URL: "wss://bsc-rpc.publicnode.com",
 } as Env;
 
 function logger() {

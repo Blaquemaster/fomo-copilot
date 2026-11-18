@@ -135,7 +135,7 @@ Optional GitHub Actions **variables** (Settings → Secrets and variables → Ac
 | `INGEST_MODE`    | `dry-run`                | `dry-run` or `continuous`. Dry-run still stores events. Leave it on dry-run for the 24 hour soak.                                               |
 | `INGEST_VENUES`  | `pump,launchlab,meteora` | Comma-separated `pump`, `launchlab`, and `meteora`. Replaces `INGEST_VENUE` when set. `INGEST_VENUE` still selects one venue if this is absent. |
 
-Optional secret `BSC_WSS_URL` (a `wss://` URL, Alchemy or similar). When it is unset, deploy does not write it and the ingestor stays on Solana. When it is set, Flap creates and graduations on BNB Chain run in the same process. A BSC failure does not stop Solana. The URL is a secret because it contains the provider key.
+`BSC_WSS_URL` defaults to the public keyless endpoint `wss://bsc-rpc.publicnode.com`. Deploy always writes it. Override it with the Actions variable or secret `BSC_WSS_URL` when the endpoint is a keyed provider. A BSC failure does not stop Solana.
 
 `INGEST_VENUES=pump,launchlab,meteora` runs all three on one socket. LaunchLab is creates and graduations only (no trades). Meteora is DBC plus DAMM v2, not DLMM. A venue with no coverage row starts at the current slot and does not backfill older checkpoints. Pump keeps the coverage row copied from the old singleton. Recall alerts and `ingest_venue_daily` credits are per venue. Coins land in `ingest_coin` with `launchpad` (`Pump`, `StonkFun`, `Bonk`, or `unknown`) and `platform_config` when the instruction has one.
 
