@@ -27,6 +27,7 @@ export const PROVEN_WALLET_RULE = {
   minLosses: 1,
   botMaxEntries: 80,
   /** Beta(1, 1). Shrunk rate is (wins + 1) / (entries + 2). */
+  minShrunkRate: 0.6,
   priorWins: 1,
   priorLosses: 1,
   lookback: "all stored history before Phase D",
@@ -51,6 +52,7 @@ export interface ScoreOptions {
   minEntries?: number;
   minLosses?: number;
   botMaxEntries?: number;
+  minShrunkRate?: number;
   priorWins?: number;
   priorLosses?: number;
 }
@@ -82,6 +84,7 @@ export function scoreProvenWallets(
   const minEntries = options.minEntries ?? PROVEN_WALLET_RULE.minEntries;
   const minLosses = options.minLosses ?? PROVEN_WALLET_RULE.minLosses;
   const botMaxEntries = options.botMaxEntries ?? PROVEN_WALLET_RULE.botMaxEntries;
+  const minShrunkRate = options.minShrunkRate ?? PROVEN_WALLET_RULE.minShrunkRate;
   const priorWins = options.priorWins ?? PROVEN_WALLET_RULE.priorWins;
   const priorLosses = options.priorLosses ?? PROVEN_WALLET_RULE.priorLosses;
   const byWallet = new Map<
@@ -124,11 +127,13 @@ export function scoreProvenWallets(
     const snipes = [...bucket.buys.values()].filter((row) => isSniper(row)).length;
     const scalps = [...bucket.buys.values()].filter((row) => isScalp(row, bucket.sells)).length;
     if (snipes > earlyEntries || scalps > earlyEntries) continue;
+    const hitRate = shrunkHitRate(earlyWins, earlyEntries, priorWins, priorLosses);
+    if (hitRate < minShrunkRate) continue;
     scored.push({
       address,
       earlyEntries,
       earlyWins,
-      hitRate: shrunkHitRate(earlyWins, earlyEntries, priorWins, priorLosses),
+      hitRate,
       derivation:
         "shrunk hit rate on covered coins, wins and losers; same-slot snipes and same-slot round trips are left out; funding source unknown so each address counts once",
     });

@@ -143,6 +143,7 @@ async function runWalletPass(input: {
     {
       minEntries: input.env.WALLET_MIN_ENTRIES ?? 5,
       minLosses: input.env.WALLET_MIN_LOSSES ?? 1,
+      minShrunkRate: input.env.WALLET_MIN_SHRUNK_RATE ?? 0.6,
       botMaxEntries: input.env.WALLET_BOT_MAX_ENTRIES ?? 80,
     },
   );

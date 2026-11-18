@@ -90,6 +90,8 @@ export const envSchema = z.object({
   WALLET_MIN_ENTRIES: z.coerce.number().int().min(1).max(1_000).optional(),
   /** How many of those entries must be on coins that did not graduate. Default 1. */
   WALLET_MIN_LOSSES: z.coerce.number().int().min(0).max(1_000).optional(),
+  /** Lowest shrunk hit rate that can join the proven list. Default 0.6. */
+  WALLET_MIN_SHRUNK_RATE: z.coerce.number().min(0).max(1).optional(),
   /** More covered buys than this is treated as a bot and left off the list. Default 80. */
   WALLET_BOT_MAX_ENTRIES: z.coerce.number().int().min(1).max(100_000).optional(),
   /** Consecutive history failures before a mint is skipped. Default 5. */

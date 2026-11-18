@@ -95,6 +95,7 @@ jobs:
           WALLET_LOSS_AGE_METEORA_MINUTES: ${{ vars.WALLET_LOSS_AGE_METEORA_MINUTES }}
           WALLET_MIN_ENTRIES: ${{ vars.WALLET_MIN_ENTRIES }}
           WALLET_MIN_LOSSES: ${{ vars.WALLET_MIN_LOSSES }}
+          WALLET_MIN_SHRUNK_RATE: ${{ vars.WALLET_MIN_SHRUNK_RATE }}
           WALLET_BOT_MAX_ENTRIES: ${{ vars.WALLET_BOT_MAX_ENTRIES }}
           WALLET_BACKFILL_FAIL_LIMIT: ${{ vars.WALLET_BACKFILL_FAIL_LIMIT }}
         run: |
@@ -158,6 +159,16 @@ jobs:
 
           def mention_source():
               return pick("X_MENTION_SOURCE", "off", {"fixture", "off"})
+
+          def shrunk_rate():
+              raw = os.environ.get("WALLET_MIN_SHRUNK_RATE", "").strip() or "0.6"
+              try:
+                  value = float(raw)
+              except ValueError:
+                  raise SystemExit("WALLET_MIN_SHRUNK_RATE must be a number from 0 to 1")
+              if value != value or not 0 <= value <= 1:
+                  raise SystemExit("WALLET_MIN_SHRUNK_RATE must be a number from 0 to 1")
+              return raw
 
           def loss_floor():
               raw = os.environ.get("WALLET_MIN_LOSSES", "").strip() or "1"
@@ -225,6 +236,7 @@ jobs:
               line("WALLET_LOSS_AGE_METEORA_MINUTES", bounded("WALLET_LOSS_AGE_METEORA_MINUTES", "60", 10080)),
               line("WALLET_MIN_ENTRIES", bounded("WALLET_MIN_ENTRIES", "5", 1000)),
               line("WALLET_MIN_LOSSES", loss_floor()),
+              line("WALLET_MIN_SHRUNK_RATE", shrunk_rate()),
               line("WALLET_BOT_MAX_ENTRIES", bounded("WALLET_BOT_MAX_ENTRIES", "80", 100000)),
               line("WALLET_BACKFILL_FAIL_LIMIT", bounded("WALLET_BACKFILL_FAIL_LIMIT", "5", 100)),
               line("PUMP_SUBSCRIBE_TRADES", pick("PUMP_SUBSCRIBE_TRADES", "false", {"true", "false"})),

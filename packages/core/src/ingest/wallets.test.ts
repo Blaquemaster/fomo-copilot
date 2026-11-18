@@ -105,7 +105,7 @@ describe("proven wallets", () => {
         { wallet: "bot", mint: "mint-c", side: "buy", graduated: false, slot: 12, createdSlot: 1 },
       ],
       300,
-      { minEntries: 2, minLosses: 1 },
+      { minEntries: 2, minLosses: 1, minShrunkRate: 0 },
     );
     expect(scalp.map((row) => row.address)).toEqual(["bot"]);
     expect(scalp[0]?.earlyEntries).toBe(2);
@@ -118,6 +118,25 @@ describe("proven wallets", () => {
     expect(
       scoreProvenWallets(wide, 300, { minEntries: 2, minLosses: 1, botMaxEntries: 3 }),
     ).toEqual([]);
+  });
+
+  it("drops a wallet whose shrunk rate is under 0.6", () => {
+    const scored = scoreProvenWallets(
+      [
+        graduated("low", "low-w1", "buy"),
+        graduated("low", "low-w2", "buy"),
+        { wallet: "low", mint: "low-l1", side: "buy", graduated: false },
+        { wallet: "low", mint: "low-l2", side: "buy", graduated: false },
+        { wallet: "low", mint: "low-l3", side: "buy", graduated: false },
+        graduated("kept", "kept-w1", "buy"),
+        graduated("kept", "kept-w2", "buy"),
+        { wallet: "kept", mint: "kept-l1", side: "buy", graduated: false },
+      ],
+      300,
+      { minEntries: 3, minLosses: 1 },
+    );
+    expect(scored.map((row) => row.address)).toEqual(["kept"]);
+    expect(scored[0]).toMatchObject({ earlyEntries: 3, earlyWins: 2, hitRate: 0.6 });
   });
 
   it("ranks by the shrunk hit rate", () => {
