@@ -1,5 +1,13 @@
 # Decision log
 
+## 2026-11-18 — Launchpad display names
+
+FOMO's display names used here are `Pump.fun`, `BONK.fun`, `StonkFun`, and `Raydium Launchlab`. Existing `ingest_coin` rows are updated on migrate. Raydium's own platform `4Bu96XjU84XjPDSpveTVf6LYGCkfW5FK7SNkREWcEfV4` is tagged `Raydium Launchlab` (on-chain name `Raydium`, site raydium.io, the SDK's default platform id).
+
+The three common unknown LaunchLab configs are not BONK.fun. `2TDPJJPV6nvTEqXABxrqno6Uzpipxxvh1zjLN3SMYn69` is Float (`floatlaunch.xyz`). `CB6mNV9YCH21gDD97CcEgc3sGNZxnLA6ymYx8fNsKbKY` is named `My Launch Platform`. `2RN8d2W5YBZFq8PcQvgcX9t8jKzgZcjiyxvYSkk4CadN` has an empty name. None of those names are on FOMO's list, so they stay `unknown` with the config id stored. Bags, Believe, and Jupiter Studio still have no published stable DBC config list.
+
+A DAMM v2 initialize is not a new Meteora launch. `ingest_coin` is written for DBC creates and DBC migrations only, and migrate deletes Meteora coin rows that have neither. The stale DLMM checkpoint is deleted on migrate and on each startup. Per-venue `stored_events` is incremented when an event for that venue is stored, not left at 0.
+
 ## 2026-11-18 — Pump, LaunchLab, and Meteora run together
 
 `INGEST_VENUES` replaces the single-venue switch. When it is unset, `INGEST_VENUE` still selects one venue. Production sets `pump,launchlab,meteora`. Each venue has its own coverage row in `ingest_venue_coverage` and its own recall total. A venue with no coverage row starts at the tip and its old checkpoints are deleted, so Meteora does not walk the gap from the November 17 shutdown. Pump coverage copied from the old singleton is kept.

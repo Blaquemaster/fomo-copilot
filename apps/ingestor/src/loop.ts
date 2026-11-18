@@ -6,6 +6,7 @@ import {
   IngestRepository,
   LIVENESS_CRITICAL_MS,
   LIVENESS_WARN_MS,
+  DLMM_PROGRAM_ID,
   WATCHED_PROGRAMS,
   isPumpLifecycleKind,
   isPumpTradeKind,
@@ -296,7 +297,8 @@ async function runSocket(input: {
         spent.storedEvents === 0 &&
         spent.streamedBytes === 0n &&
         spent.creditMicros === 0n &&
-        Object.keys(spent.venueCredits).length === 0
+        Object.keys(spent.venueCredits).length === 0 &&
+        Object.keys(spent.venueStored).length === 0
       ) {
         return;
       }
@@ -862,6 +864,8 @@ async function persistDecoded(
       const kept = await storeObservation(input, observation, byteLength, receivedAt, source);
       if (!kept) continue;
       stored += 1;
+      const venue = venueForProgram(observation.programId);
+      if (venue !== null) input.usage?.add({ venueStored: { [venue]: 1 } });
     } catch (error) {
       input.logger.error({ err: error }, "failed to store ingest event");
       input.overflow?.note(observation.programId, observation.slot);
@@ -1778,13 +1782,12 @@ async function storeObservation(
       observation.kind === "launchlab_initialize" ||
       observation.kind === "launchlab_migrate" ||
       observation.kind === "dbc_initialize" ||
-      observation.kind === "dbc_migration_damm_v2" ||
-      observation.kind === "damm_v2_initialize")
+      observation.kind === "dbc_migration_damm_v2")
   ) {
     await input.repo.rememberCoin({
       mint: observation.mint,
       venue: coinVenue,
-      launchpad: observation.launchpad ?? (coinVenue === "pump" ? "Pump" : "unknown"),
+      launchpad: observation.launchpad ?? (coinVenue === "pump" ? "Pump.fun" : "unknown"),
       platformConfig: observation.platformConfig ?? null,
       quoteMint: observation.quoteMint,
       transferFeeBps: observation.transferFeeBps ?? null,
@@ -1918,6 +1921,7 @@ async function backfillOnConnect(input: {
   const month = await input.repo.monthUsage(new Date());
   const allowance = allowanceCredits(input.env.HELIUS_PLAN, input.env.HELIUS_MONTHLY_CREDITS);
   const paused = budgetLevel(month.creditMicros, allowance) === "pause";
+  await input.repo.clearCheckpoint(DLMM_PROGRAM_ID);
   if (paused) {
     input.logger.warn({}, "skipping backfill because non-essential Helius calls are paused");
     return;

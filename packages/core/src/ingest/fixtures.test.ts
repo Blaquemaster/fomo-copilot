@@ -281,7 +281,7 @@ describe("mainnet transaction fixtures", () => {
       expect.arrayContaining([
         expect.objectContaining({
           kind: "launchlab_initialize",
-          launchpad: "Bonk",
+          launchpad: "BONK.fun",
           platformConfig: "FfYek5vEz23cMkWsdJwG2oa6EphsvXSHrGpdALN4g6W1",
           transferFeeBps: null,
         }),
