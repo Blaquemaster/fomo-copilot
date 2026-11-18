@@ -1510,7 +1510,11 @@ async function prepareWalletSignals(input: {
   const active = await input.repo.activeTrackedWallets();
   if (active.length === 0) {
     const buys = await input.repo.earlyBuys();
-    const scored = scoreProvenWallets(buys, maxWallets);
+    const scored = scoreProvenWallets(buys, maxWallets, {
+      minEntries: input.env.WALLET_MIN_ENTRIES ?? 5,
+      minLosses: input.env.WALLET_MIN_LOSSES ?? 1,
+      botMaxEntries: input.env.WALLET_BOT_MAX_ENTRIES ?? 80,
+    });
     await input.repo.saveTrackedWallets(scored, new Date());
     input.logger.info(
       { selected: scored.length, maxWallets },

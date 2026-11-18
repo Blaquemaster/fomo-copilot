@@ -1,5 +1,13 @@
 # Decision log
 
+## 2026-11-18 — Balanced early-buyer sample and a shrunk hit rate
+
+Each backfill run interleaves finished-open rows and then fresh mints, one coin that did not graduate for each coin that did, until one side runs out. A mint that fails history fetches five times in a row is marked `skipped` with the error and the run moves on. Fewer failures stop the run without marking the daily job finished.
+
+A wallet's hit rate uses only coins whose outcome is known: a stored graduation is a win, and a finished backfill with no graduation is a loss. Coins still unresolved are left out. The wallet needs five covered buys and at least one loss. The rate is a Beta(1, 1) shrink, `(wins + 1) / (entries + 2)`. Buys in the create slot, and buys sold in that same slot, are not entries. More than 80 covered buys excludes the wallet. Same-slot snipes or scalps that outnumber the remaining entries also exclude it.
+
+A Flap reconnect happens only when the head is past the checkpoint and the three-minute `eth_getLogs` sweep stores a log the subscription did not. A quiet head with an empty sweep stays connected.
+
 ## 2026-11-18 — History version 1, and a Flap stall sweep
 
 `getTransactionsForAddress` is called with `maxSupportedTransactionVersion: 1`. A page can mix legacy, v0, and v1 transactions. v0 and v1 account indexes include `meta.loadedAddresses` after the static keys. A failed history call is logged with the RPC code, the wallet job is not marked finished, and the next try waits one minute, then two, four, and at most ten minutes.

@@ -17,6 +17,7 @@ import {
 } from "../ingest/budget.js";
 import type { DecodeFailure, Observation } from "../ingest/decode.js";
 import type { FrameHourRow } from "../ingest/frameStats.js";
+import { stratifyBackfillMints } from "../ingest/earlyBuyers.js";
 import { walletCreditCapMicros } from "../ingest/wallets.js";
 import {
   DLMM_PROGRAM_ID,
@@ -344,8 +345,13 @@ create table if not exists wallet_backfill_mint (
   buys_kept integer not null default 0,
   pages integer not null default 0,
   credits integer not null default 0,
+  failures integer not null default 0,
+  last_error text,
   updated_at timestamptz not null
 );
+
+alter table wallet_backfill_mint add column if not exists failures integer not null default 0;
+alter table wallet_backfill_mint add column if not exists last_error text;
 
 create table if not exists wallet_job (
   id integer primary key,
@@ -542,6 +548,10 @@ export async function migrate(pool: pg.Pool): Promise<void> {
     await client.query(
       "insert into schema_migrations (id) values ($1) on conflict (id) do nothing",
       ["018_wallet_backfill"],
+    );
+    await client.query(
+      "insert into schema_migrations (id) values ($1) on conflict (id) do nothing",
+      ["019_wallet_balance"],
     );
     await client.query(
       `update ingest_recall_audit a
@@ -1368,33 +1378,59 @@ export class IngestRepository {
   }
 
   async earlyBuys(): Promise<
-    Array<{ wallet: string; mint: string; side: "buy" | "sell"; graduated: boolean }>
+    Array<{
+      wallet: string;
+      mint: string;
+      side: "buy" | "sell";
+      graduated: boolean;
+      outcomeKnown: boolean;
+      slot: number | null;
+      createdSlot: number | null;
+    }>
   > {
     const result = await this.pool.query<{
       wallet: string;
       mint: string;
       side: string;
       graduated: boolean;
+      outcome_known: boolean;
+      slot: string | null;
+      created_slot: string | null;
     }>(
-      `select t.wallet, t.mint, t.side,
+      `select t.wallet, t.mint, t.side, t.slot, c.created_slot,
               exists (
                 select 1 from raw_events g
                 where g.mint = t.mint
                   and g.event_kind in ('pump_migrate', 'launchlab_migrate', 'dbc_migration_damm_v2')
-              ) as graduated
+              ) as graduated,
+              (
+                exists (
+                  select 1 from raw_events g
+                  where g.mint = t.mint
+                    and g.event_kind in ('pump_migrate', 'launchlab_migrate', 'dbc_migration_damm_v2')
+                )
+                or exists (
+                  select 1 from wallet_backfill_mint b
+                  where b.mint = t.mint and b.status = 'done'
+                )
+              ) as outcome_known
        from (
-         select trader as wallet, mint, side from pump_trade
+         select trader as wallet, mint, side, slot from pump_trade
          where trader is not null and is_creator = false and side in ('buy', 'sell')
          union all
-         select wallet, mint, side from wallet_early_buy
+         select wallet, mint, side, slot from wallet_early_buy
          where is_creator = false and side in ('buy', 'sell')
-       ) t`,
+       ) t
+       left join ingest_coin c on c.mint = t.mint`,
     );
     return result.rows.map((row) => ({
       wallet: row.wallet,
       mint: row.mint,
       side: row.side === "sell" ? "sell" : "buy",
       graduated: row.graduated,
+      outcomeKnown: row.outcome_known,
+      slot: row.slot === null ? null : Number(row.slot),
+      createdSlot: row.created_slot === null ? null : Number(row.created_slot),
     }));
   }
 
@@ -1574,8 +1610,10 @@ export class IngestRepository {
       paginationToken: string | null;
       buysKept: number;
       pages: number;
+      failures: number;
     }>
   > {
+    const half = Math.max(1, Math.floor(limit / 2));
     const result = await this.pool.query<{
       mint: string;
       venue: string;
@@ -1585,7 +1623,8 @@ export class IngestRepository {
       pagination_token: string | null;
       buys_kept: number;
       pages: number;
-      sort: number;
+      failures: number;
+      stage: string;
     }>(
       `with coins as (
          select c.mint,
@@ -1603,39 +1642,40 @@ export class IngestRepository {
        ),
        open_rows as (
          select c.mint, c.venue, c.account, c.creator, c.graduated,
-                b.pagination_token, b.buys_kept, b.pages, 0 as sort
+                b.pagination_token, b.buys_kept, b.pages, b.failures, 'open' as stage
          from coins c
          join wallet_backfill_mint b on b.mint = c.mint
          where b.status = 'open'
+         limit $1
        ),
        fresh_winners as (
          select c.mint, c.venue, c.account, c.creator, c.graduated,
-                null::text as pagination_token, 0 as buys_kept, 0 as pages, 1 as sort
+                null::text as pagination_token, 0 as buys_kept, 0 as pages, 0 as failures,
+                'fresh' as stage
          from coins c
          where c.graduated
            and not exists (select 1 from wallet_backfill_mint b where b.mint = c.mint)
          order by c.mint
-         limit $1
+         limit $2
        ),
        fresh_losses as (
          select c.mint, c.venue, c.account, c.creator, c.graduated,
-                null::text as pagination_token, 0 as buys_kept, 0 as pages, 2 as sort
+                null::text as pagination_token, 0 as buys_kept, 0 as pages, 0 as failures,
+                'fresh' as stage
          from coins c
          where not c.graduated
            and not exists (select 1 from wallet_backfill_mint b where b.mint = c.mint)
          order by c.mint
-         limit $1
+         limit $2
        )
        select * from open_rows
        union all
        select * from fresh_winners
        union all
-       select * from fresh_losses
-       order by sort, mint
-       limit $1`,
-      [limit],
+       select * from fresh_losses`,
+      [limit, half],
     );
-    return result.rows.map((row) => ({
+    const mapped = result.rows.map((row) => ({
       mint: row.mint,
       venue: row.venue,
       account: row.account,
@@ -1644,7 +1684,14 @@ export class IngestRepository {
       paginationToken: row.pagination_token,
       buysKept: row.buys_kept,
       pages: row.pages,
+      failures: row.failures,
+      stage: row.stage,
     }));
+    return stratifyBackfillMints(
+      mapped.filter((row) => row.stage === "open"),
+      mapped.filter((row) => row.stage === "fresh"),
+      limit,
+    );
   }
 
   async saveEarlyBuyers(
@@ -1691,11 +1738,14 @@ export class IngestRepository {
     buysKept: number;
     pages: number;
     creditDelta: number;
+    failures?: number;
+    lastError?: string | null;
   }): Promise<void> {
     await this.pool.query(
       `insert into wallet_backfill_mint
-        (mint, venue, account, status, pagination_token, buys_kept, pages, credits, updated_at)
-       values ($1,$2,$3,$4,$5,$6,$7,$8, now())
+        (mint, venue, account, status, pagination_token, buys_kept, pages, credits, failures,
+         last_error, updated_at)
+       values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10, now())
        on conflict (mint) do update set
          venue = excluded.venue,
          account = excluded.account,
@@ -1704,6 +1754,8 @@ export class IngestRepository {
          buys_kept = excluded.buys_kept,
          pages = excluded.pages,
          credits = wallet_backfill_mint.credits + excluded.credits,
+         failures = excluded.failures,
+         last_error = excluded.last_error,
          updated_at = now()`,
       [
         input.mint,
@@ -1714,6 +1766,8 @@ export class IngestRepository {
         input.buysKept,
         input.pages,
         input.creditDelta,
+        input.failures ?? 0,
+        input.lastError ?? null,
       ],
     );
   }

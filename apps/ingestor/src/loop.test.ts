@@ -846,6 +846,7 @@ describe("ingest loop", () => {
           paginationToken: null,
           buysKept: 0,
           pages: 0,
+          failures: 0,
         },
       ]),
       saveEarlyBuyers: vi.fn(async () => 0),

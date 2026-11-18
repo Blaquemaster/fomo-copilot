@@ -16,6 +16,7 @@ import {
   collectEarlyBuyers,
   earlyBuyerHistoryParams,
   earlyBuyersFromHistory,
+  stratifyBackfillMints,
   type BackfillTarget,
 } from "./earlyBuyers.js";
 
@@ -168,18 +169,53 @@ describe("collectEarlyBuyers", () => {
     expect(second.credits).toBe(0);
   });
 
-  it("does not checkpoint a mint when the history call fails", async () => {
-    const checkpoint = vi.fn(async () => undefined);
-    const result = await collectEarlyBuyers({
-      mints: [target("mint-a")],
+  it("stops on the first history failure and skips the mint after the limit", async () => {
+    const notes: string[] = [];
+    const once = await collectEarlyBuyers({
+      mints: [target("mint-a"), target("mint-b")],
       buysPerMint: 50,
       runCreditsLeft: 30,
+      failLimit: 2,
       fetchPage: async () => null,
       save: async () => undefined,
-      checkpoint,
+      checkpoint: async (row) => {
+        notes.push(`${row.mint}:${row.status}:${row.failures.toString()}`);
+      },
     });
-    expect(result.stopped).toBe(true);
-    expect(checkpoint).not.toHaveBeenCalled();
+    expect(once.errored).toBe(true);
+    expect(notes).toEqual(["mint-a:open:1"]);
+    const skipped = await collectEarlyBuyers({
+      mints: [
+        { ...target("mint-a"), failures: 1 },
+        { ...target("mint-b"), account: "other" },
+      ],
+      buysPerMint: 50,
+      runCreditsLeft: 30,
+      failLimit: 2,
+      fetchPage: async (account) =>
+        account === "pool" ? null : { transactions: [], paginationToken: null },
+      save: async () => undefined,
+      checkpoint: async (row) => {
+        notes.push(`${row.mint}:${row.status}:${row.failures.toString()}`);
+      },
+    });
+    expect(notes).toContain("mint-a:skipped:2");
+    expect(skipped.errored).toBe(false);
+    expect(skipped.mintsDone).toBe(1);
+  });
+
+  it("interleaves winners and losers in one run", () => {
+    const rows = stratifyBackfillMints(
+      [],
+      [
+        { mint: "w1", graduated: true },
+        { mint: "w2", graduated: true },
+        { mint: "l1", graduated: false },
+        { mint: "l2", graduated: false },
+      ],
+      3,
+    );
+    expect(rows.map((row) => row.mint)).toEqual(["l1", "w1", "l2"]);
   });
 });
 

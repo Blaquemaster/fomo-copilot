@@ -94,6 +94,9 @@ describe("repository guards", () => {
     expect(sql).toContain("016_bsc_reliability");
     expect(sql).toContain("017_wallet_signal");
     expect(sql).toContain("018_wallet_backfill");
+    expect(sql).toContain("019_wallet_balance");
+    expect(sql).toContain("add column if not exists failures integer");
+    expect(sql).toContain("add column if not exists last_error text");
     expect(sql).toContain("create table if not exists wallet_early_buy");
     expect(sql).toContain("create table if not exists wallet_backfill_mint");
     expect(sql).toContain("create table if not exists wallet_job");
@@ -112,6 +115,8 @@ describe("repository guards", () => {
     expect(workflow).toContain('bounded("HELIUS_MONTHLY_CREDITS", "10000000"');
     expect(workflow).toContain('pick("X_MENTION_SOURCE", "off"');
     expect(workflow).toContain('bounded("WALLET_BACKFILL_CREDIT_CAP", "200000"');
+    expect(workflow).toContain('bounded("WALLET_BACKFILL_FAIL_LIMIT", "5"');
+    expect(workflow).toContain("vars.WALLET_MIN_ENTRIES");
     const bsc = readFileSync(path.join(root, "apps/ingestor/src/bsc.ts"), "utf8");
     expect(bsc).not.toContain("gopluslabs");
     expect(bsc).not.toContain("honeypot.is");

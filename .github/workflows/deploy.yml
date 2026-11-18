@@ -91,6 +91,10 @@ jobs:
           WALLET_BACKFILL_RUN_CREDITS: ${{ vars.WALLET_BACKFILL_RUN_CREDITS }}
           WALLET_CHURN_PCT: ${{ vars.WALLET_CHURN_PCT }}
           WALLET_REFRESH_HOURS: ${{ vars.WALLET_REFRESH_HOURS }}
+          WALLET_MIN_ENTRIES: ${{ vars.WALLET_MIN_ENTRIES }}
+          WALLET_MIN_LOSSES: ${{ vars.WALLET_MIN_LOSSES }}
+          WALLET_BOT_MAX_ENTRIES: ${{ vars.WALLET_BOT_MAX_ENTRIES }}
+          WALLET_BACKFILL_FAIL_LIMIT: ${{ vars.WALLET_BACKFILL_FAIL_LIMIT }}
         run: |
           set -euo pipefail
           umask 077
@@ -153,6 +157,12 @@ jobs:
           def mention_source():
               return pick("X_MENTION_SOURCE", "off", {"fixture", "off"})
 
+          def loss_floor():
+              raw = os.environ.get("WALLET_MIN_LOSSES", "").strip() or "1"
+              if not raw.isdigit() or int(raw) > 1000:
+                  raise SystemExit("WALLET_MIN_LOSSES must be an integer from 0 to 1000")
+              return raw
+
           def churn_pct():
               raw = os.environ.get("WALLET_CHURN_PCT", "").strip() or "20"
               if not raw.isdigit() or int(raw) > 100:
@@ -209,6 +219,10 @@ jobs:
               line("WALLET_BACKFILL_RUN_CREDITS", bounded("WALLET_BACKFILL_RUN_CREDITS", "10000", 100000000)),
               line("WALLET_CHURN_PCT", churn_pct()),
               line("WALLET_REFRESH_HOURS", bounded("WALLET_REFRESH_HOURS", "24", 168)),
+              line("WALLET_MIN_ENTRIES", bounded("WALLET_MIN_ENTRIES", "5", 1000)),
+              line("WALLET_MIN_LOSSES", loss_floor()),
+              line("WALLET_BOT_MAX_ENTRIES", bounded("WALLET_BOT_MAX_ENTRIES", "80", 100000)),
+              line("WALLET_BACKFILL_FAIL_LIMIT", bounded("WALLET_BACKFILL_FAIL_LIMIT", "5", 100)),
               line("PUMP_SUBSCRIBE_TRADES", pick("PUMP_SUBSCRIBE_TRADES", "false", {"true", "false"})),
               line("PUMP_SUBSCRIBE_CREATE_POOL", pick("PUMP_SUBSCRIBE_CREATE_POOL", "false", {"true", "false"})),
               line("BACKFILL_SLOT_MARGIN", slot_margin()),
