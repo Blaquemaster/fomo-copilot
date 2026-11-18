@@ -77,8 +77,8 @@ async function runWalletPass(input: {
   fetchPage?: (account: string, paginationToken: string | null) => Promise<HistoryPage | null>;
   onWallets?: (addresses: readonly string[]) => void;
 }): Promise<"ok" | "retry"> {
-  const monthCap = input.env.WALLET_BACKFILL_CREDIT_CAP ?? 200_000;
-  const runCap = input.env.WALLET_BACKFILL_RUN_CREDITS ?? 10_000;
+  const monthCap = input.env.WALLET_BACKFILL_CREDIT_CAP ?? 600_000;
+  const runCap = input.env.WALLET_BACKFILL_RUN_CREDITS ?? 3_300;
   const buysPerMint = input.env.WALLET_BACKFILL_BUYS ?? 50;
   const spent = await input.repo.featureMonthMicros(WALLET_BACKFILL_FEATURE, utcMonth(new Date()));
   const monthLeft = creditsLeft(BigInt(monthCap) * MICROS_PER_CREDIT, spent);

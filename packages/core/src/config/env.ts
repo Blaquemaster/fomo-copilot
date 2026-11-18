@@ -74,9 +74,9 @@ export const envSchema = z.object({
   X_MENTION_SOURCE: z.enum(["fixture", "off"]).optional(),
   /** Non-creator buys to keep from the start of each mint. Default 50. */
   WALLET_BACKFILL_BUYS: z.coerce.number().int().min(1).max(500).optional(),
-  /** Early-buyer backfill credits per calendar month. Default 200000. */
+  /** Early-buyer backfill credits per calendar month. Default 600000. */
   WALLET_BACKFILL_CREDIT_CAP: z.coerce.number().int().min(1).max(100_000_000).optional(),
-  /** Early-buyer backfill credits per run. Default 10000. */
+  /** Early-buyer backfill credits per run. Default 3300. */
   WALLET_BACKFILL_RUN_CREDITS: z.coerce.number().int().min(1).max(100_000_000).optional(),
   /** Share of the live wallet list that a daily refresh may replace. Default 20. */
   WALLET_CHURN_PCT: z.coerce.number().int().min(0).max(100).optional(),

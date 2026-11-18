@@ -302,7 +302,7 @@ async function connectBsc(input: {
     const head = await readHead(send);
     const cursor = await input.repo.chainCheckpoint(BSC_CHAIN);
     const fromBlock = cursor?.blockNumber ?? head;
-    await catchUp(input, send, fromBlock, head, cursor === null ? head : null);
+    await catchUpBscLogs(input, send, fromBlock, head, cursor === null ? head : null);
     caughtUp = true;
     let lastBeat = Date.now();
     heartbeat = setInterval(() => {
@@ -346,7 +346,7 @@ async function connectBsc(input: {
         });
     }, BSC_SWEEP_MS);
     audit = setInterval(() => {
-      void recallBsc(input, send).catch((error: unknown) => {
+      void auditBscLogs(input, send).catch((error: unknown) => {
         input.logger.error({ err: error }, "bsc recall failed");
       });
     }, AUDIT_EVERY_MS);
@@ -395,25 +395,23 @@ async function sweepFromCheckpoint(
   const cursor = await input.repo.chainCheckpoint(BSC_CHAIN);
   const checkpoint = cursor?.blockNumber ?? head;
   if (cursor === null || head < checkpoint) return { head, checkpoint, missedLogs: 0 };
-  const missedLogs = await catchUp(input, send, checkpoint, head, cursor.coverageBlock);
+  const missedLogs = await catchUpBscLogs(input, send, checkpoint, head, cursor.coverageBlock);
   input.logger.info({ fromBlock: checkpoint, toBlock: head, missedLogs }, "bsc log sweep stored");
   return { head, checkpoint, missedLogs };
 }
 
-async function catchUp(
+/** Startup catch-up and the 3-minute sweep. The checkpoint is the block last queried. */
+export async function catchUpBscLogs(
   input: { repo: IngestRepository; logger: Logger },
   send: (method: string, params: unknown[]) => Promise<unknown>,
   fromBlock: number,
   toBlock: number,
   coverageBlock: number | null,
 ): Promise<number> {
-  const pages = logBlockPages(fromBlock, toBlock);
+  const pages = await servedLogPages(input.logger, send, fromBlock, toBlock);
   let missed = 0;
   for (const page of pages) {
-    const range = clampLogRange(page.fromBlock, page.toBlock, toBlock);
-    if (!range) continue;
-    const logs = await getLogsWithRetry(input.logger, send, range.fromBlock, range.toBlock);
-    for (const item of logs) {
+    for (const item of page.logs) {
       const log = parseLog(item);
       if (!log) continue;
       const outcome = await handlePortalLog(input.repo, log, (token) => enrich(send, token));
@@ -427,11 +425,40 @@ async function catchUp(
       now: new Date(),
     });
     input.logger.info(
-      { fromBlock: page.fromBlock, toBlock: page.toBlock, logs: logs.length },
+      { fromBlock: page.fromBlock, toBlock: page.toBlock, logs: page.logs.length },
       "bsc catch-up page stored",
     );
   }
   return missed;
+}
+
+interface ServedLogPage {
+  fromBlock: number;
+  toBlock: number;
+  logs: unknown[];
+}
+
+/**
+ * Pages stop at the head the node just reported. The next page starts at that
+ * block, so a lagging node cannot move the cursor past logs it did not return.
+ */
+async function servedLogPages(
+  logger: Logger,
+  send: (method: string, params: unknown[]) => Promise<unknown>,
+  fromBlock: number,
+  toBlock: number,
+): Promise<ServedLogPage[]> {
+  const pages: ServedLogPage[] = [];
+  let from = fromBlock;
+  while (from <= toBlock) {
+    const plannedTo = Math.min(toBlock, from + LOG_PAGE_BLOCKS - 1);
+    const page = await getLogsWithRetry(logger, send, from, plannedTo);
+    if (!page) break;
+    pages.push(page);
+    if (page.toBlock < plannedTo || page.toBlock >= toBlock) break;
+    from = page.toBlock;
+  }
+  return pages;
 }
 
 async function getLogsWithRetry(
@@ -439,12 +466,12 @@ async function getLogsWithRetry(
   send: (method: string, params: unknown[]) => Promise<unknown>,
   fromBlock: number,
   toBlock: number,
-): Promise<unknown[]> {
-  const head = await readHead(send);
-  const range = clampLogRange(fromBlock, toBlock, head);
-  if (!range) return [];
+): Promise<ServedLogPage | null> {
   let attempt = 1;
   for (;;) {
+    const head = await readHead(send);
+    const range = clampLogRange(fromBlock, toBlock, head);
+    if (!range) return null;
     try {
       const logs = await send("eth_getLogs", [
         {
@@ -455,7 +482,7 @@ async function getLogsWithRetry(
         },
       ]);
       if (!Array.isArray(logs)) throw new Error("bsc eth_getLogs returned no list");
-      return logs;
+      return { logs, fromBlock: range.fromBlock, toBlock: range.toBlock };
     } catch (error) {
       logger.warn({ err: error, fromBlock, toBlock, attempt }, "bsc eth_getLogs failed");
       if (attempt >= 5) throw error;
@@ -465,7 +492,8 @@ async function getLogsWithRetry(
   }
 }
 
-async function recallBsc(
+/** Six-hour recall. The audited window ends at the last block the node served. */
+export async function auditBscLogs(
   input: { repo: IngestRepository; logger: Logger },
   send: (method: string, params: unknown[]) => Promise<unknown>,
 ): Promise<void> {
@@ -473,18 +501,17 @@ async function recallBsc(
   const cursor = await input.repo.chainCheckpoint(BSC_CHAIN);
   const coverage = cursor?.coverageBlock ?? null;
   if (coverage === null) return;
-  const toBlock = Math.max(coverage, head - AUDIT_QUIET_BLOCKS);
-  const fromBlock = Math.max(coverage, toBlock - AUDIT_HOUR_BLOCKS);
-  if (toBlock < fromBlock) return;
+  const plannedTo = Math.max(coverage, head - AUDIT_QUIET_BLOCKS);
+  const fromBlock = Math.max(coverage, plannedTo - AUDIT_HOUR_BLOCKS);
+  if (plannedTo < fromBlock) return;
+  const pages = await servedLogPages(input.logger, send, fromBlock, plannedTo);
+  const servedTo = pages[pages.length - 1]?.toBlock;
+  if (servedTo === undefined) return;
   let matched = 0;
   let missed = 0;
-  const pages = logBlockPages(fromBlock, toBlock);
   for (const page of pages) {
-    const range = clampLogRange(page.fromBlock, page.toBlock, toBlock);
-    if (!range) continue;
-    const logs = await getLogsWithRetry(input.logger, send, range.fromBlock, range.toBlock);
     const known = await input.repo.chainEventKeys(BSC_CHAIN, page.fromBlock, page.toBlock);
-    for (const item of logs) {
+    for (const item of page.logs) {
       const log = parseLog(item);
       if (!log) continue;
       const key = `${log.txHash}:${log.logIndex.toString()}`;
@@ -501,13 +528,13 @@ async function recallBsc(
     chain: BSC_CHAIN,
     ranAt: new Date(),
     fromBlock,
-    toBlock,
+    toBlock: servedTo,
     expected: matched + missed,
     matched,
     missed,
   });
   input.logger.info(
-    { chain: BSC_CHAIN, fromBlock, toBlock, expected: matched + missed, matched, missed },
+    { chain: BSC_CHAIN, fromBlock, toBlock: servedTo, expected: matched + missed, matched, missed },
     "bsc recall window",
   );
 }

@@ -4,7 +4,9 @@
 
 `tracked_wallet.scoring_version` is 2 for lists built by these rules. Existing rows default to 1, so the next refresh replaces the whole live set once and resubscribes, instead of keeping the old 100% wallets under the 20% churn cap. Later refreshes use the churn cap again.
 
-A coin that has not graduated is a loss only after 2 hours on Pump and LaunchLab, or 1 hour on Meteora DBC. Younger coins stay unresolved. Graduation is read again on every scoring pass. The sniper check uses the wallet's earliest buy on that coin. The backfill and rescore run every 4 hours. Each run is still at most 10,000 credits and the month is still 200,000, so that pace spends the month cap in about three days and then keeps rescoring without more history calls. The Flap sweep clamps `toBlock` to the node head from `eth_blockNumber`.
+A coin that has not graduated is a loss only after 2 hours on Pump and LaunchLab, or 1 hour on Meteora DBC. Younger coins stay unresolved. Graduation is read again on every scoring pass. The sniper check uses the wallet's earliest buy on that coin. The backfill and rescore run every 4 hours. Deploy defaults are 3,300 credits per run and 600,000 a month, about 20,000 a day across the month. The upper limits stay 100,000,000. After the month cap, scoring continues without more history calls.
+
+The Flap sweep still clamps `eth_getLogs` `toBlock` to the node head. The checkpoint and the six-hour recall window stop at that served block. A later page starts there, so a lagging PublicNode cannot move the cursor past logs it did not return.
 
 ## 2026-11-18 — Balanced early-buyer sample and a shrunk hit rate
 

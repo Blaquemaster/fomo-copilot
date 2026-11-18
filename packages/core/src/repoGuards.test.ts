@@ -116,7 +116,8 @@ describe("repository guards", () => {
     expect(workflow).toContain("vars.WALLET_BACKFILL_CREDIT_CAP");
     expect(workflow).toContain('bounded("HELIUS_MONTHLY_CREDITS", "10000000"');
     expect(workflow).toContain('pick("X_MENTION_SOURCE", "off"');
-    expect(workflow).toContain('bounded("WALLET_BACKFILL_CREDIT_CAP", "200000"');
+    expect(workflow).toContain('bounded("WALLET_BACKFILL_CREDIT_CAP", "600000"');
+    expect(workflow).toContain('bounded("WALLET_BACKFILL_RUN_CREDITS", "3300"');
     expect(workflow).toContain('bounded("WALLET_BACKFILL_FAIL_LIMIT", "5"');
     expect(workflow).toContain("vars.WALLET_MIN_ENTRIES");
     const bsc = readFileSync(path.join(root, "apps/ingestor/src/bsc.ts"), "utf8");
