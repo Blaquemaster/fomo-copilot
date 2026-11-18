@@ -1,3 +1,5 @@
+import { readFileSync } from "node:fs";
+
 import { describe, expect, it, vi } from "vitest";
 
 import { encodeBase58 } from "./base58.js";
@@ -31,6 +33,9 @@ describe("early-buyer history cost", () => {
     expect(config.sortOrder).toBe("asc");
     expect(config.limit).toBe(100);
     expect(config.filters.status).toBe("succeeded");
+    expect(
+      (params[1] as { maxSupportedTransactionVersion: number }).maxSupportedTransactionVersion,
+    ).toBe(1);
     expect(earlyBuyerHistoryParams("curve", "10:1")[1]).toMatchObject({ paginationToken: "10:1" });
     expect(historyPageCredits(0)).toBe(10);
     expect(historyPageCredits(100)).toBe(10);
@@ -76,6 +81,50 @@ describe("early buyers from a history transaction", () => {
     expect(swap).toMatchObject([{ wallet: "buyer-wallet", side: "buy", venue: "meteora" }]);
     expect(
       earlyBuyersFromHistory(dbcSwap(null, null), {
+        mint: "coin-mint",
+        venue: "meteora",
+        creator: null,
+      }),
+    ).toEqual([]);
+  });
+
+  it("reads the buyer from a real DBC swap, including a v1 lookup-table mint", () => {
+    const fixture = JSON.parse(
+      readFileSync(new URL("./fixtures/dbc-curve-2.json", import.meta.url), "utf8"),
+    ) as { result: unknown };
+    const rows = earlyBuyersFromHistory(fixture.result, {
+      mint: "H5Y83QAiJu3p8aWerLm7UM4oucXDmuExXHMKwjc2pY8x",
+      venue: "meteora",
+      creator: "not-the-payer",
+    });
+    expect(rows).toEqual([
+      expect.objectContaining({
+        wallet: "7cQYCokFPFptuQtTo1f1gYBbUtGgycjZxi8FbeMBTjgY",
+        side: "buy",
+        venue: "meteora",
+        mint: "H5Y83QAiJu3p8aWerLm7UM4oucXDmuExXHMKwjc2pY8x",
+      }),
+    ]);
+    const versioned = versionedSwap(1);
+    expect(
+      earlyBuyersFromHistory(versioned, {
+        mint: "coin-mint",
+        venue: "meteora",
+        creator: null,
+      }),
+    ).toEqual([expect.objectContaining({ wallet: "buyer-wallet", side: "buy" })]);
+    const legacy = versionedSwap("legacy");
+    (legacy as { version: unknown }).version = "legacy";
+    const legacyMeta = (legacy as { meta: { loadedAddresses?: unknown } }).meta;
+    delete legacyMeta.loadedAddresses;
+    expect(
+      earlyBuyersFromHistory(legacy, { mint: "coin-mint", venue: "meteora", creator: null })[0]
+        ?.wallet,
+    ).toBe("buyer-wallet");
+    const unsupported = versionedSwap(1) as { version: number };
+    unsupported.version = 2;
+    expect(
+      earlyBuyersFromHistory(unsupported, {
         mint: "coin-mint",
         venue: "meteora",
         creator: null,
@@ -233,6 +282,51 @@ function dbcSwap(pre: string | null, post: string | null): unknown {
     preBalances,
     postBalances,
   );
+}
+
+function versionedSwap(version: 0 | 1 | "legacy"): unknown {
+  const staticKeys = [
+    "pool-authority",
+    "config",
+    "pool",
+    "input-token",
+    "output-token",
+    "base-vault",
+    "quote-vault",
+  ];
+  const loaded = ["coin-mint", "quote-mint", "buyer-wallet", DBC_PROGRAM_ID];
+  const keys = [...staticKeys, ...loaded];
+  return {
+    slot: 9,
+    version: version === "legacy" ? "legacy" : version,
+    transaction: {
+      signatures: ["sig"],
+      message: {
+        accountKeys: version === "legacy" ? keys : staticKeys,
+        instructions: [
+          {
+            programIdIndex: keys.length - 1,
+            accounts: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 10, 10, 10, 10],
+            data: encodeBase58(Uint8Array.from(DISC.ixDbcSwap)),
+          },
+        ],
+      },
+    },
+    meta: {
+      err: null,
+      loadedAddresses:
+        version === "legacy" ? undefined : { writable: loaded.slice(0, 3), readonly: [loaded[3]] },
+      preTokenBalances: [],
+      postTokenBalances: [
+        {
+          accountIndex: keys.indexOf("output-token"),
+          owner: "buyer-wallet",
+          mint: "coin-mint",
+          uiTokenAmount: { amount: 5 },
+        },
+      ],
+    },
+  };
 }
 
 function transaction(

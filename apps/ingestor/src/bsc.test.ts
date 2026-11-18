@@ -4,6 +4,10 @@ import { FLAP_LAUNCHPAD, TOPIC_TAX_SET } from "@fomo/core";
 import type { IngestRepository } from "@fomo/core";
 
 import {
+  BSC_STALL_BLOCKS,
+  BSC_STALL_MS,
+  BSC_SWEEP_MS,
+  bscLogStall,
   enrichRetryDelayMs,
   handlePortalLog,
   logBlockPages,
@@ -98,5 +102,38 @@ describe("bsc flap intake", () => {
     expect(enrichRetryDelayMs(1)).toBe(120_000);
     expect(enrichRetryDelayMs(2)).toBe(600_000);
     expect(enrichRetryDelayMs(3)).toBeNull();
+  });
+
+  it("reconnects when the log subscription is quiet while the head moves, or the checkpoint falls behind", () => {
+    expect(BSC_SWEEP_MS).toBeGreaterThanOrEqual(2 * 60 * 1000);
+    expect(BSC_SWEEP_MS).toBeLessThanOrEqual(5 * 60 * 1000);
+    const now = 1_000_000;
+    expect(
+      bscLogStall({
+        nowMs: now,
+        lastLogAtMs: now - 10_000,
+        head: 500,
+        checkpoint: 490,
+        previousHead: 480,
+      }),
+    ).toBe(false);
+    expect(
+      bscLogStall({
+        nowMs: now,
+        lastLogAtMs: now - BSC_STALL_MS,
+        head: 800,
+        checkpoint: 790,
+        previousHead: 700,
+      }),
+    ).toBe(true);
+    expect(
+      bscLogStall({
+        nowMs: now,
+        lastLogAtMs: now,
+        head: 1_000,
+        checkpoint: 1_000 - BSC_STALL_BLOCKS - 1,
+        previousHead: 1_000,
+      }),
+    ).toBe(true);
   });
 });

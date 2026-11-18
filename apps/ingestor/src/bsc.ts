@@ -22,6 +22,25 @@ const AUDIT_HOUR_BLOCKS = 8_000;
 const AUDIT_QUIET_BLOCKS = 20;
 const AUDIT_EVERY_MS = 6 * 60 * 60 * 1000;
 const HEARTBEAT_MS = 20_000;
+/** Safety-net eth_getLogs. Inside the 2–5 minute window. */
+export const BSC_SWEEP_MS = 3 * 60 * 1000;
+/** No subscription logs for this long, while the chain head is still moving. */
+export const BSC_STALL_MS = 3 * 60 * 1000;
+/** Head minus the saved checkpoint. About three minutes of BSC blocks. */
+export const BSC_STALL_BLOCKS = 400;
+
+export function bscLogStall(input: {
+  nowMs: number;
+  lastLogAtMs: number | null;
+  head: number;
+  checkpoint: number;
+  previousHead: number | null;
+}): boolean {
+  const gap = input.head - input.checkpoint;
+  const silent = input.lastLogAtMs === null || input.nowMs - input.lastLogAtMs >= BSC_STALL_MS;
+  const headAdvanced = input.previousHead !== null && input.head > input.previousHead;
+  return (silent && headAdvanced) || gap > BSC_STALL_BLOCKS;
+}
 /** 30s, 2m, then 10m. getTokenV8Safe often fails in the create block on PublicNode. */
 export const ENRICH_RETRY_MS = [30_000, 120_000, 600_000] as const;
 
@@ -236,6 +255,10 @@ async function connectBsc(input: {
     ws.once("error", () => reject(new Error("bsc websocket failed to open")));
   });
   let caughtUp = false;
+  let lastSubscriptionAt = Date.now();
+  const noteSubscription = (): void => {
+    lastSubscriptionAt = Date.now();
+  };
   const onMessage = (raw: WebSocket.RawData): void => {
     let message: Record<string, unknown>;
     try {
@@ -258,6 +281,7 @@ async function connectBsc(input: {
       return;
     }
     if (message["method"] !== "eth_subscription") return;
+    noteSubscription();
     const params = message["params"];
     if (!params || typeof params !== "object") return;
     const result = (params as { result?: unknown }).result;
@@ -271,6 +295,9 @@ async function connectBsc(input: {
   let heartbeat: ReturnType<typeof setInterval> | undefined;
   let audit: ReturnType<typeof setInterval> | undefined;
   let enrichTimer: ReturnType<typeof setInterval> | undefined;
+  let sweepTimer: ReturnType<typeof setInterval> | undefined;
+  let previousHead: number | null = null;
+  let sweeping = false;
   try {
     await send("eth_subscribe", ["logs", portalLogFilter()]);
     input.logger.info({ chain: BSC_CHAIN, portal: FLAP_PORTAL }, "bsc flap subscription started");
@@ -284,8 +311,32 @@ async function connectBsc(input: {
       if (typeof ws.ping === "function") ws.ping();
       if (pending.size > 0) return;
       void readHead(send)
-        .then(() => {
+        .then(async (head) => {
           lastBeat = Date.now();
+          const cursor = await input.repo.chainCheckpoint(BSC_CHAIN);
+          const checkpoint = cursor?.blockNumber ?? head;
+          if (
+            bscLogStall({
+              nowMs: Date.now(),
+              lastLogAtMs: lastSubscriptionAt,
+              head,
+              checkpoint,
+              previousHead,
+            })
+          ) {
+            input.logger.warn(
+              {
+                metric: "bsc_log_stall",
+                head,
+                checkpoint,
+                silentMs: Date.now() - lastSubscriptionAt,
+              },
+              "bsc log subscription stalled; reconnecting",
+            );
+            ws.close();
+            return;
+          }
+          previousHead = head;
         })
         .catch((error: unknown) => {
           input.logger.warn({ err: error }, "bsc heartbeat failed");
@@ -293,6 +344,17 @@ async function connectBsc(input: {
         });
       if (Date.now() - lastBeat > HEARTBEAT_MS * 3) ws.close();
     }, HEARTBEAT_MS);
+    sweepTimer = setInterval(() => {
+      if (sweeping) return;
+      sweeping = true;
+      void sweepFromCheckpoint(input, send)
+        .catch((error: unknown) => {
+          input.logger.warn({ err: error }, "bsc log sweep failed");
+        })
+        .finally(() => {
+          sweeping = false;
+        });
+    }, BSC_SWEEP_MS);
     audit = setInterval(() => {
       void recallBsc(input, send).catch((error: unknown) => {
         input.logger.error({ err: error }, "bsc recall failed");
@@ -311,6 +373,7 @@ async function connectBsc(input: {
     if (heartbeat) clearInterval(heartbeat);
     if (audit) clearInterval(audit);
     if (enrichTimer) clearInterval(enrichTimer);
+    if (sweepTimer) clearInterval(sweepTimer);
     ws.off("message", onMessage);
     if (ws.readyState === WebSocket.OPEN) ws.close();
   }
@@ -332,6 +395,17 @@ async function acceptLog(
       now: new Date(),
     });
   }
+}
+
+async function sweepFromCheckpoint(
+  input: { repo: IngestRepository; logger: Logger },
+  send: (method: string, params: unknown[]) => Promise<unknown>,
+): Promise<void> {
+  const head = await readHead(send);
+  const cursor = await input.repo.chainCheckpoint(BSC_CHAIN);
+  if (cursor === null || head < cursor.blockNumber) return;
+  await catchUp(input, send, cursor.blockNumber, head, cursor.coverageBlock);
+  input.logger.info({ fromBlock: cursor.blockNumber, toBlock: head }, "bsc log sweep stored");
 }
 
 async function catchUp(

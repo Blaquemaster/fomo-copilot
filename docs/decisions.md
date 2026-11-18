@@ -1,5 +1,13 @@
 # Decision log
 
+## 2026-11-18 — History version 1, and a Flap stall sweep
+
+`getTransactionsForAddress` is called with `maxSupportedTransactionVersion: 1`. A page can mix legacy, v0, and v1 transactions. v0 and v1 account indexes include `meta.loadedAddresses` after the static keys. A failed history call is logged with the RPC code, the wallet job is not marked finished, and the next try waits one minute, then two, four, and at most ten minutes.
+
+DBC buyers are read from `swap`, `swap2`, and `swap2_with_transfer_hook`. The side is the payer's base-token balance change, or, when that balance is missing, whether the input token account is the base mint. The check uses the real swap in `dbc-curve-2.json`.
+
+A BSC log subscription can stay open while it stops delivering. Every three minutes `eth_getLogs` walks from the saved checkpoint to the head, in the same 500-block pages, and duplicate logs are ignored. The socket reconnects when no subscription log has arrived for three minutes while the head is moving, or when the head is more than 400 blocks ahead of the checkpoint.
+
 ## 2026-11-18 — Early-buyer backfill and a daily wallet refresh
 
 `PUMP_SUBSCRIBE_TRADES` stays off, so `pump_trade` does not fill the proven-wallet list. A backfill reads each mint's oldest transactions with `getTransactionsForAddress` (`sortOrder: asc`, `transactionDetails: full`, limit 100, succeeded only). That is 10 credits per 100 transactions returned, and it can start at the first transaction. `getSignaturesForAddress` is newest-first, so reaching the same early buys would walk the whole curve and then cost one `getTransaction` per signature.
