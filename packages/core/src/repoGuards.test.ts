@@ -93,6 +93,10 @@ describe("repository guards", () => {
     expect(sql).toContain("015_bsc_flap");
     expect(sql).toContain("016_bsc_reliability");
     expect(sql).toContain("017_wallet_signal");
+    expect(sql).toContain("018_wallet_backfill");
+    expect(sql).toContain("create table if not exists wallet_early_buy");
+    expect(sql).toContain("create table if not exists wallet_backfill_mint");
+    expect(sql).toContain("create table if not exists wallet_job");
     expect(sql).toContain("create table if not exists tracked_wallet");
     expect(sql).toContain("create table if not exists wallet_fill");
     expect(sql).toContain("create table if not exists coin_wallet_signal");

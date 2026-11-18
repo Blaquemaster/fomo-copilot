@@ -72,6 +72,16 @@ export const envSchema = z.object({
   WALLET_CREDIT_BUDGET_PCT: z.coerce.number().int().min(1).max(100).optional(),
   /** fixture reads the repo sample. off stores nothing. Live search stays on the bot. */
   X_MENTION_SOURCE: z.enum(["fixture", "off"]).optional(),
+  /** Non-creator buys to keep from the start of each mint. Default 50. */
+  WALLET_BACKFILL_BUYS: z.coerce.number().int().min(1).max(500).optional(),
+  /** Early-buyer backfill credits per calendar month. Default 200000. */
+  WALLET_BACKFILL_CREDIT_CAP: z.coerce.number().int().min(1).max(100_000_000).optional(),
+  /** Early-buyer backfill credits per run. Default 10000. */
+  WALLET_BACKFILL_RUN_CREDITS: z.coerce.number().int().min(1).max(100_000_000).optional(),
+  /** Share of the live wallet list that a daily refresh may replace. Default 20. */
+  WALLET_CHURN_PCT: z.coerce.number().int().min(0).max(100).optional(),
+  /** Hours between early-buyer backfill and wallet-list refresh. Default 24. */
+  WALLET_REFRESH_HOURS: z.coerce.number().int().min(1).max(168).optional(),
 });
 
 export type Env = z.infer<typeof envSchema>;

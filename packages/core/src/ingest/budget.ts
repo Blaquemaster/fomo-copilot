@@ -17,9 +17,27 @@ export function selectWsMethod(plan: HeliusPlan, mode: WsMode): ResolvedWsMethod
   return "parsed";
 }
 
+/**
+ * Allowance used for budget stops until the owner sets HELIUS_MONTHLY_CREDITS
+ * to the confirmed plan. Not the Developer plan's 10,000,000.
+ */
+export const DEFAULT_MONTHLY_CREDITS = 1_000_000;
+
 export function allowanceCredits(plan: HeliusPlan, override: number | undefined): bigint {
+  void plan;
   if (override !== undefined) return BigInt(override);
-  return PLAN_CREDITS[plan];
+  return BigInt(DEFAULT_MONTHLY_CREDITS);
+}
+
+/**
+ * getTransactionsForAddress full responses: 10 credits per 100 transactions
+ * returned, rounded up, with a 10-credit minimum. A failed response is free.
+ * https://www.helius.dev/docs/billing/credits
+ */
+export function historyPageCredits(returned: number): number {
+  const count = Number.isFinite(returned) ? Math.max(0, Math.floor(returned)) : 0;
+  if (count === 0) return 10;
+  return Math.max(10, Math.ceil(count / 100) * 10);
 }
 
 /**

@@ -2,7 +2,7 @@ import { readFileSync } from "node:fs";
 
 import { describe, expect, it } from "vitest";
 
-import { MICROS_PER_CREDIT, PLAN_CREDITS } from "./budget.js";
+import { MICROS_PER_CREDIT, allowanceCredits } from "./budget.js";
 import {
   LAUNCHLAB_PROGRAM_ID,
   PUMP_PROGRAM_ID,
@@ -11,11 +11,13 @@ import {
 } from "./programs.js";
 import {
   chunkWallets,
+  nextTrackedSet,
   scoreProvenWallets,
   walletBudgetOpen,
   walletCreditCapMicros,
   walletFillsFromParsed,
   type EarlyBuy,
+  type ScoredWallet,
 } from "./wallets.js";
 
 const graduated = (wallet: string, mint: string, side: "buy" | "sell"): EarlyBuy => ({
@@ -79,12 +81,38 @@ describe("proven wallets", () => {
   });
 
   it("caps wallet credits at the configured share of the monthly allowance", () => {
-    const developer = walletCreditCapMicros(PLAN_CREDITS.developer * MICROS_PER_CREDIT, 25);
-    const free = walletCreditCapMicros(PLAN_CREDITS.free * MICROS_PER_CREDIT, 25);
-    expect(developer / MICROS_PER_CREDIT).toBe(2_500_000n);
-    expect(free / MICROS_PER_CREDIT).toBe(250_000n);
-    expect(walletBudgetOpen(developer - 1n, developer)).toBe(true);
-    expect(walletBudgetOpen(developer, developer)).toBe(false);
+    const allowance = allowanceCredits("developer", undefined);
+    expect(allowance).toBe(1_000_000n);
+    const cap = walletCreditCapMicros(allowance * MICROS_PER_CREDIT, 25);
+    const confirmed = walletCreditCapMicros(10_000_000n * MICROS_PER_CREDIT, 25);
+    expect(cap / MICROS_PER_CREDIT).toBe(250_000n);
+    expect(confirmed / MICROS_PER_CREDIT).toBe(2_500_000n);
+    expect(walletBudgetOpen(cap - 1n, cap)).toBe(true);
+    expect(walletBudgetOpen(cap, cap)).toBe(false);
+  });
+
+  it("refreshes the live set and replaces at most the churn cap", () => {
+    const ranked = ["a", "b", "c", "f", "g"].map((address) => scored(address));
+    const first = nextTrackedSet({ ranked, active: [], maxWallets: 3, maxChurnPct: 20 });
+    expect(first.keep).toEqual(["a", "b", "c"]);
+    expect(first.replaced).toBe(0);
+    const refresh = nextTrackedSet({
+      ranked,
+      active: ["a", "b", "c", "d", "e"],
+      maxWallets: 5,
+      maxChurnPct: 20,
+    });
+    expect(refresh.replaced).toBe(1);
+    expect(refresh.added).toBe(1);
+    expect(refresh.keep).toHaveLength(5);
+    expect(refresh.keep.filter((address) => address === "d" || address === "e")).toHaveLength(1);
+    const unchanged = nextTrackedSet({
+      ranked: [],
+      active: ["a"],
+      maxWallets: 5,
+      maxChurnPct: 20,
+    });
+    expect(unchanged).toMatchObject({ keep: ["a"], replaced: 0, added: 0, upsert: [] });
   });
 
   it("reads a tracked buy, sell, and undirected swap from a parsed notification", () => {
@@ -120,6 +148,16 @@ describe("proven wallets", () => {
     expect(fills.every((fill) => fill.wallet === "tracked-wallet")).toBe(true);
   });
 });
+
+function scored(address: string): ScoredWallet {
+  return {
+    address,
+    earlyEntries: 2,
+    earlyWins: 2,
+    hitRate: 1,
+    derivation: "test",
+  };
+}
 
 function notification(instructions: unknown[]): unknown {
   return {

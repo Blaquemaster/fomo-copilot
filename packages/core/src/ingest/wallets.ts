@@ -16,7 +16,7 @@ import {
 export const PROVEN_WALLET_RULE = {
   minEntries: 2,
   lookback: "all stored history before Phase D",
-  earlyWindow: "pump_trade rows, non-creator buys",
+  earlyWindow: "non-creator buys in pump_trade or wallet_early_buy",
   winner: "mint with a stored graduation",
 } as const;
 
@@ -66,7 +66,7 @@ export function scoreProvenWallets(rows: readonly EarlyBuy[], maxWallets: number
       earlyWins,
       hitRate: earlyWins / earlyEntries,
       derivation:
-        "non-creator early buy in stored pump_trade; win = that mint later graduated; funding source unknown so each address counts once",
+        "non-creator early buy from stored trades or the early-buyer backfill; win = that mint later graduated; funding source unknown so each address counts once",
     });
   }
   scored.sort((left, right) => {
@@ -92,6 +92,67 @@ export function walletCreditCapMicros(allowanceMicros: bigint, budgetPct: number
 
 export function walletBudgetOpen(spentMicros: bigint, capMicros: bigint): boolean {
   return spentMicros < capMicros;
+}
+
+export interface WalletRefresh {
+  keep: string[];
+  upsert: ScoredWallet[];
+  replaced: number;
+  added: number;
+}
+
+/**
+ * Daily refresh. An empty live set may fill up to maxWallets. After that, at most
+ * maxChurnPct of the current addresses are replaced. Empty slots under the cap
+ * may still be filled. Wallets that fell out of the ranked set are dropped first.
+ * An empty ranking leaves the live set untouched.
+ */
+export function nextTrackedSet(input: {
+  ranked: readonly ScoredWallet[];
+  active: readonly string[];
+  maxWallets: number;
+  maxChurnPct: number;
+}): WalletRefresh {
+  const maxWallets = Math.max(0, Math.floor(input.maxWallets));
+  if (input.ranked.length === 0 || maxWallets === 0) {
+    return { keep: [...input.active], upsert: [], replaced: 0, added: 0 };
+  }
+  if (input.active.length === 0) {
+    const upsert = input.ranked.slice(0, maxWallets);
+    return {
+      keep: upsert.map((row) => row.address),
+      upsert,
+      replaced: 0,
+      added: upsert.length,
+    };
+  }
+  const pct = Number.isFinite(input.maxChurnPct)
+    ? Math.max(0, Math.min(100, Math.floor(input.maxChurnPct)))
+    : 0;
+  const maxReplace = Math.floor((input.active.length * pct) / 100);
+  const rank = new Map(input.ranked.map((row, index) => [row.address, index]));
+  const activeSet = new Set(input.active);
+  const fallen = input.active.filter((address) => {
+    const place = rank.get(address);
+    return place === undefined || place >= maxWallets;
+  });
+  fallen.sort((left, right) => {
+    const leftRank = rank.get(left);
+    const rightRank = rank.get(right);
+    if (leftRank === undefined && rightRank !== undefined) return -1;
+    if (rightRank === undefined && leftRank !== undefined) return 1;
+    if (leftRank === undefined && rightRank === undefined) return left < right ? 1 : -1;
+    return (rightRank ?? 0) - (leftRank ?? 0);
+  });
+  const dropped = new Set(fallen.slice(0, maxReplace));
+  const kept = input.active.filter((address) => !dropped.has(address));
+  const room = Math.max(0, maxWallets - kept.length);
+  const added = input.ranked.filter((row) => !activeSet.has(row.address)).slice(0, room);
+  const keep = [...kept, ...added.map((row) => row.address)];
+  const upsert = keep
+    .map((address) => input.ranked.find((row) => row.address === address))
+    .filter((row): row is ScoredWallet => row !== undefined);
+  return { keep, upsert, replaced: dropped.size, added: added.length };
 }
 
 export interface WalletFillDraft {

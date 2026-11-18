@@ -73,6 +73,7 @@ import {
   usageMicros,
   type DecodeFailure,
   type Env,
+  type HistoryPage,
   type Logger,
   type Observation,
   type ResolvedWsMethod,
@@ -87,6 +88,7 @@ import {
   scanInstructionHistory,
   type RpcMeter,
 } from "./helius.js";
+import { runWalletMaintenance } from "./walletJob.js";
 
 const STATUS_MS = 15_000;
 const USAGE_FLUSH_MS = 15_000;
@@ -139,6 +141,12 @@ export interface IngestDeps {
   /** How long to wait for a subscribe result before alerting. Default 10 seconds. */
   confirmTimeoutMs?: number;
   scanHistory?: typeof scanInstructionHistory;
+  /** Production runs this. Tests skip it unless they set it true. */
+  walletMaintenance?: boolean;
+  fetchEarlyBuyerPage?: (
+    account: string,
+    paginationToken: string | null,
+  ) => Promise<HistoryPage | null>;
 }
 
 interface LiveCursor {
@@ -167,6 +175,21 @@ export async function runIngestLoop(input: {
       { plan: input.env.HELIUS_PLAN },
       "enhanced websockets are not used on this plan; using the filtered parsed stream",
     );
+  }
+  if (input.deps === undefined || input.deps.walletMaintenance === true) {
+    void runWalletMaintenance({
+      env: input.env,
+      logger: input.logger,
+      repo: input.repo,
+      signal: input.signal,
+      fetchPage: input.deps?.fetchEarlyBuyerPage,
+      onWallets: (addresses) => {
+        trackedWalletSet.clear();
+        for (const address of addresses) trackedWalletSet.add(address);
+      },
+    }).catch((error: unknown) => {
+      input.logger.error({ err: error }, "wallet maintenance stopped");
+    });
   }
   const heapMs = input.deps?.heapSampleMs ?? 5 * 60 * 1000;
   const heapTimer =
@@ -1455,10 +1478,7 @@ async function prepareWalletSignals(input: {
     for (const row of scored) trackedWalletSet.add(row.address);
   } else {
     for (const address of active.slice(0, maxWallets)) trackedWalletSet.add(address);
-    input.logger.info(
-      { active: trackedWalletSet.size },
-      "proven wallet list unchanged; a refresh stays a proposal until wallet-list changes are approved",
-    );
+    input.logger.info({ active: trackedWalletSet.size }, "proven wallet list loaded");
   }
   const pct = input.env.WALLET_CREDIT_BUDGET_PCT ?? 25;
   const allowance = allowanceCredits(input.env.HELIUS_PLAN, input.env.HELIUS_MONTHLY_CREDITS);

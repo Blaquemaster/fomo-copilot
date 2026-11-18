@@ -24,6 +24,7 @@ describe("helius method selection", () => {
     expect(selectWsMethod("developer", "standard")).toBe("parsed");
     expect(selectWsMethod("developer", "enhanced")).toBe("enhanced");
     expect(allowanceCredits("free", undefined)).toBe(1_000_000n);
+    expect(allowanceCredits("developer", undefined)).toBe(1_000_000n);
     expect(allowanceCredits("developer", 25)).toBe(25n);
   });
 });

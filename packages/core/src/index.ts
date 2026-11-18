@@ -19,6 +19,8 @@ export { planCandidateWrites, tokenIsYoung, type CandidateDraft } from "./ingest
 export { encodeBase58, decodeBase58 } from "./ingest/base58.js";
 export {
   allowanceCredits,
+  DEFAULT_MONTHLY_CREDITS,
+  historyPageCredits,
   budgetLevel,
   formatCredits,
   parsedEventMicros,
@@ -101,10 +103,24 @@ export {
   walletBudgetOpen,
   walletCreditCapMicros,
   walletFillsFromParsed,
+  nextTrackedSet,
   type EarlyBuy,
+  type WalletRefresh,
   type ScoredWallet,
   type WalletFillDraft,
 } from "./ingest/wallets.js";
+export {
+  EARLY_BUYER_MAX_PAGES,
+  EARLY_BUYER_PAGE_LIMIT,
+  WALLET_BACKFILL_FEATURE,
+  collectEarlyBuyers,
+  earlyBuyerHistoryParams,
+  earlyBuyersFromHistory,
+  type BackfillCheckpoint,
+  type BackfillTarget,
+  type EarlyBuyerRow,
+  type HistoryPage,
+} from "./ingest/earlyBuyers.js";
 export {
   FIXTURE_X_MENTIONS,
   FixtureXMentionSource,

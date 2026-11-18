@@ -727,6 +727,63 @@ describe("ingest loop", () => {
     controller.abort();
     await done;
   });
+
+  it("backfills early buyers on a schedule and does not alert Telegram", async () => {
+    vi.mocked(sendTelegramMessage).mockClear();
+    const socket = new FakeSocket();
+    const controller = new AbortController();
+    const store = repo({
+      walletJobFinishedAt: vi.fn(async () => null),
+      nextBackfillMints: vi.fn(async () => [
+        {
+          mint: "coin-mint",
+          venue: "launchlab",
+          account: "pool",
+          creator: null,
+          graduated: true,
+          paginationToken: null,
+          buysKept: 0,
+          pages: 0,
+        },
+      ]),
+      saveEarlyBuyers: vi.fn(async () => 0),
+      saveBackfillCheckpoint: vi.fn(async () => undefined),
+      recordFeatureSpend: vi.fn(async () => undefined),
+      applyWalletRefresh: vi.fn(async () => undefined),
+      markWalletJob: vi.fn(async () => undefined),
+    });
+    const done = runIngestLoop({
+      env,
+      logger: logger(),
+      repo: store,
+      signal: controller.signal,
+      deps: {
+        walletMaintenance: true,
+        fetchEarlyBuyerPage: async () => ({ transactions: [], paginationToken: null }),
+        openSocket: () => asSocket(socket),
+        warnMs: 60_000,
+        criticalMs: 120_000,
+        livenessTickMs: 60_000,
+        usageFlushMs: 60_000,
+        confirmTimeoutMs: 60_000,
+        callRpc: () => Promise.resolve(1),
+      },
+    });
+    await vi.waitFor(() => {
+      expect(store.recordFeatureSpend).toHaveBeenCalledWith(
+        expect.objectContaining({
+          feature: "wallet_backfill",
+          creditMicros: 10_000_000n,
+        }),
+      );
+    });
+    await vi.waitFor(() => {
+      expect(store.markWalletJob).toHaveBeenCalled();
+    });
+    expect(vi.mocked(sendTelegramMessage)).not.toHaveBeenCalled();
+    controller.abort();
+    await done;
+  });
 });
 
 describe("short backfill", () => {
