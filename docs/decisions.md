@@ -1,5 +1,13 @@
 # Decision log
 
+## 2026-11-18 — BNB Chain Flap, beside Solana
+
+Flap creates and graduations are read from the BNB Chain Portal `0xe2cE6ab80874Fa9Fa2aAE65D277Dd6B8e65C9De0`. The socket subscribes to `TokenCreated`, `FlapTokenTaxSet`, `LaunchedToDEX`, and `FlapTokenCLPoolCreated`. Trades are not subscribed. `getTokenV8Safe` runs once per create. Coins are stored in `ingest_asset` with primary key `(chain, address)` and launchpad `Flap`, including the tax rate. Checkpoints are block numbers in `ingest_chain_checkpoint`. A reconnect catch-up is one `eth_getLogs` of at most 500 blocks. A wider gap is left unrecovered so a public RPC range limit is not walked. A recall every six hours compares one 200-block window with `eth_getLogs`.
+
+`BSC_WSS_URL` is optional. When it is unset, the process is Solana-only. The BSC loop catches its own errors and does not stop the Helius loop. GoPlus and Honeypot.is request URLs exist as `flapScreenRequests` and are not called.
+
+Alchemy's free tier is about 30 million compute units a month. This path is one logs subscription, one `eth_call` (26 CU) per create, and one `eth_getLogs` (60 CU) per recall. At a few hundred Flap creates an hour that is a few million CU a month. The live topic hash was not confirmed against a BSC node; public `eth_getLogs` was rejected. The topics are keccak256 of the signatures in the Flap indexer doc.
+
 ## 2026-11-18 — Launchpad display names
 
 FOMO's display names used here are `Pump.fun`, `BONK.fun`, `StonkFun`, and `Raydium Launchlab`. Existing `ingest_coin` rows are updated on migrate. Raydium's own platform `4Bu96XjU84XjPDSpveTVf6LYGCkfW5FK7SNkREWcEfV4` is tagged `Raydium Launchlab` (on-chain name `Raydium`, site raydium.io, the SDK's default platform id).

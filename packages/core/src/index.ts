@@ -92,6 +92,21 @@ export {
   type IngestVenue,
 } from "./ingest/programs.js";
 export {
+  BSC_CHAIN,
+  FLAP_LAUNCHPAD,
+  FLAP_LOG_TOPICS,
+  FLAP_PORTAL,
+  TOPIC_LAUNCHED_TO_DEX,
+  TOPIC_TAX_SET,
+  TOPIC_TOKEN_CREATED,
+  decodePortalLog,
+  decodeTokenStateV8,
+  encodeGetTokenV8Safe,
+  flapScreenRequests,
+  type FlapEvent,
+  type FlapTokenState,
+} from "./ingest/flap.js";
+export {
   BACKFILL_MAX_SLOT_SPAN,
   BACKFILL_PAGE_CAP,
   BACKFILL_TX_CAP,

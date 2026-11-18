@@ -3,6 +3,16 @@ title = "fomo-copilot"
 [extend]
 useDefault = true
 
-[allowlist]
+[[allowlists]]
 description = "Mainnet transaction fixtures. Account keys and lookup-table addresses are public chain data."
 paths = ['''packages/core/src/ingest/fixtures/''']
+
+[[allowlists]]
+description = "Public Flap Portal event topic0 hashes from the indexer doc. Not credentials."
+regexTarget = "match"
+regexes = [
+  '''(?i)0x504e7f360b2e5fe33cbaaae4c593bc55305328341bf79009e43e0e3b7f699603''',
+  '''(?i)0x6e4f47630b8745b8cacbd44f42a8a33e7eea7cc08ef22fc7630f4f385784ff7d''',
+  '''(?i)0xb1acc4d02e54a5f769cd0b689d82b8b5d5be55f2557a17d9d202e227cff2d335''',
+  '''(?i)0x1546924f4680b1b2e093fd251c437c8781d81a21ed8ad1895e1f2c9b78db0cd0''',
+]

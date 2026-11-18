@@ -90,6 +90,12 @@ describe("repository guards", () => {
     expect(sql).toContain("014_launchpad_tags");
     expect(sql).toContain("Pump.fun");
     expect(sql).toContain("BONK.fun");
+    expect(sql).toContain("015_bsc_flap");
+    const bsc = readFileSync(path.join(root, "apps/ingestor/src/bsc.ts"), "utf8");
+    expect(bsc).not.toContain("gopluslabs");
+    expect(bsc).not.toContain("honeypot.is");
+    expect(sql).toContain("create table if not exists ingest_asset");
+    expect(sql).toContain("primary key (chain, address)");
     expect(sql).toContain("create table if not exists ingest_venue_coverage");
     expect(sql).toContain("create table if not exists ingest_coin");
     expect(sql).toContain("create table if not exists ingest_venue_daily");
