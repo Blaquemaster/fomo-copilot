@@ -79,9 +79,18 @@ jobs:
           POSTGRES_PASSWORD: ${{ secrets.POSTGRES_PASSWORD }}
           HELIUS_PLAN: ${{ vars.HELIUS_PLAN }}
           HELIUS_WS_MODE: ${{ vars.HELIUS_WS_MODE }}
+          HELIUS_MONTHLY_CREDITS: ${{ vars.HELIUS_MONTHLY_CREDITS }}
           INGEST_MODE: ${{ vars.INGEST_MODE }}
           INGEST_VENUES: ${{ vars.INGEST_VENUES }}
           BSC_WSS_URL: ${{ secrets.BSC_WSS_URL || vars.BSC_WSS_URL }}
+          X_MENTION_SOURCE: ${{ vars.X_MENTION_SOURCE }}
+          WALLET_MAX_WALLETS: ${{ vars.WALLET_MAX_WALLETS }}
+          WALLET_CREDIT_BUDGET_PCT: ${{ vars.WALLET_CREDIT_BUDGET_PCT }}
+          WALLET_BACKFILL_BUYS: ${{ vars.WALLET_BACKFILL_BUYS }}
+          WALLET_BACKFILL_CREDIT_CAP: ${{ vars.WALLET_BACKFILL_CREDIT_CAP }}
+          WALLET_BACKFILL_RUN_CREDITS: ${{ vars.WALLET_BACKFILL_RUN_CREDITS }}
+          WALLET_CHURN_PCT: ${{ vars.WALLET_CHURN_PCT }}
+          WALLET_REFRESH_HOURS: ${{ vars.WALLET_REFRESH_HOURS }}
         run: |
           set -euo pipefail
           umask 077
@@ -129,6 +138,33 @@ jobs:
                   raise SystemExit("INGEST_VENUES must list at least one venue")
               return ",".join(parts)
 
+          def wallet_cap():
+              raw = os.environ.get("WALLET_MAX_WALLETS", "").strip() or "300"
+              if not raw.isdigit() or not 1 <= int(raw) <= 1000:
+                  raise SystemExit("WALLET_MAX_WALLETS must be an integer from 1 to 1000")
+              return raw
+
+          def wallet_budget():
+              raw = os.environ.get("WALLET_CREDIT_BUDGET_PCT", "").strip() or "25"
+              if not raw.isdigit() or not 1 <= int(raw) <= 100:
+                  raise SystemExit("WALLET_CREDIT_BUDGET_PCT must be an integer from 1 to 100")
+              return raw
+
+          def mention_source():
+              return pick("X_MENTION_SOURCE", "off", {"fixture", "off"})
+
+          def churn_pct():
+              raw = os.environ.get("WALLET_CHURN_PCT", "").strip() or "20"
+              if not raw.isdigit() or int(raw) > 100:
+                  raise SystemExit("WALLET_CHURN_PCT must be an integer from 0 to 100")
+              return raw
+
+          def bounded(name, default, upper):
+              raw = os.environ.get(name, "").strip() or default
+              if not raw.isdigit() or not 1 <= int(raw) <= upper:
+                  raise SystemExit(f"{name} must be an integer from 1 to {upper}")
+              return raw
+
           def slot_margin():
               raw = os.environ.get("BACKFILL_SLOT_MARGIN", "").strip() or "16"
               if not raw.isdigit() or int(raw) > 10000:
@@ -159,11 +195,20 @@ jobs:
               line("TELEGRAM_ADMIN_CHAT_ID", chat),
               line("HELIUS_API_KEY", helius),
               line("HELIUS_PLAN", pick("HELIUS_PLAN", "developer", {"developer", "free"})),
+              line("HELIUS_MONTHLY_CREDITS", bounded("HELIUS_MONTHLY_CREDITS", "10000000", 1000000000)),
               line("HELIUS_WS_MODE", pick("HELIUS_WS_MODE", "auto", {"auto", "standard", "enhanced"})),
               line("INGEST_MODE", pick("INGEST_MODE", "dry-run", {"dry-run", "continuous"})),
               line("INGEST_VENUE", pick("INGEST_VENUE", "pump", {"pump", "meteora"})),
               line("INGEST_VENUES", venues()),
               line("BSC_WSS_URL", bsc),
+              line("WALLET_MAX_WALLETS", wallet_cap()),
+              line("WALLET_CREDIT_BUDGET_PCT", wallet_budget()),
+              line("X_MENTION_SOURCE", mention_source()),
+              line("WALLET_BACKFILL_BUYS", bounded("WALLET_BACKFILL_BUYS", "50", 500)),
+              line("WALLET_BACKFILL_CREDIT_CAP", bounded("WALLET_BACKFILL_CREDIT_CAP", "200000", 100000000)),
+              line("WALLET_BACKFILL_RUN_CREDITS", bounded("WALLET_BACKFILL_RUN_CREDITS", "10000", 100000000)),
+              line("WALLET_CHURN_PCT", churn_pct()),
+              line("WALLET_REFRESH_HOURS", bounded("WALLET_REFRESH_HOURS", "24", 168)),
               line("PUMP_SUBSCRIBE_TRADES", pick("PUMP_SUBSCRIBE_TRADES", "false", {"true", "false"})),
               line("PUMP_SUBSCRIBE_CREATE_POOL", pick("PUMP_SUBSCRIBE_CREATE_POOL", "false", {"true", "false"})),
               line("BACKFILL_SLOT_MARGIN", slot_margin()),

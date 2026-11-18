@@ -9,12 +9,15 @@ import {
 import {
   allowanceCredits,
   formatCredits,
+  intakeAllowanceCredits,
+  MICROS_PER_CREDIT,
   projectMonthlyCredits,
   utcMonth,
   type HeliusPlan,
 } from "../ingest/budget.js";
 import type { DecodeFailure, Observation } from "../ingest/decode.js";
 import type { FrameHourRow } from "../ingest/frameStats.js";
+import { walletCreditCapMicros } from "../ingest/wallets.js";
 import {
   DLMM_PROGRAM_ID,
   LAUNCHLAB_PROGRAMS,
@@ -272,6 +275,83 @@ create table if not exists ingest_asset_enrich (
 
 create index if not exists ingest_asset_enrich_due_idx on ingest_asset_enrich (due_at);
 
+create table if not exists tracked_wallet (
+  address text primary key,
+  hit_rate double precision not null,
+  early_entries integer not null,
+  early_wins integer not null,
+  derivation text not null,
+  active boolean not null,
+  selected_at timestamptz not null
+);
+
+create table if not exists wallet_fill (
+  signature text not null,
+  event_index integer not null,
+  slot bigint not null,
+  mint text not null,
+  wallet text not null,
+  side text not null,
+  venue text not null,
+  primary key (signature, event_index, wallet)
+);
+
+create table if not exists coin_wallet_signal (
+  mint text primary key,
+  tracked_buyers integer not null,
+  tracked_buys integer not null,
+  tracked_sells integer not null,
+  updated_at timestamptz not null
+);
+
+create table if not exists coin_x_mention (
+  post_url text primary key,
+  mint text,
+  ticker text,
+  handle text not null,
+  mentioned_at timestamptz not null,
+  source text not null
+);
+
+create table if not exists ingest_feature_daily (
+  feature text not null,
+  day date not null,
+  credit_micros bigint not null default 0,
+  stored_events integer not null default 0,
+  primary key (feature, day)
+);
+
+create table if not exists wallet_early_buy (
+  signature text not null,
+  event_index integer not null,
+  slot bigint not null,
+  mint text not null,
+  wallet text not null,
+  side text not null,
+  venue text not null,
+  is_creator boolean not null default false,
+  primary key (signature, event_index, wallet)
+);
+
+create index if not exists wallet_early_buy_mint_idx on wallet_early_buy (mint);
+
+create table if not exists wallet_backfill_mint (
+  mint text primary key,
+  venue text not null,
+  account text not null,
+  status text not null,
+  pagination_token text,
+  buys_kept integer not null default 0,
+  pages integer not null default 0,
+  credits integer not null default 0,
+  updated_at timestamptz not null
+);
+
+create table if not exists wallet_job (
+  id integer primary key,
+  finished_at timestamptz
+);
+
 create table if not exists ingest_chain_event (
   chain text not null,
   tx_hash text not null,
@@ -454,6 +534,14 @@ export async function migrate(pool: pg.Pool): Promise<void> {
     await client.query(
       "insert into schema_migrations (id) values ($1) on conflict (id) do nothing",
       ["016_bsc_reliability"],
+    );
+    await client.query(
+      "insert into schema_migrations (id) values ($1) on conflict (id) do nothing",
+      ["017_wallet_signal"],
+    );
+    await client.query(
+      "insert into schema_migrations (id) values ($1) on conflict (id) do nothing",
+      ["018_wallet_backfill"],
     );
     await client.query(
       `update ingest_recall_audit a
@@ -746,6 +834,7 @@ export class IngestRepository {
     frames: readonly FrameHourRow[];
     venueCredits?: Readonly<Record<string, bigint>>;
     venueStored?: Readonly<Record<string, number>>;
+    featureCredits?: Readonly<Record<string, bigint>>;
   }): Promise<void> {
     const client = await this.pool.connect();
     try {
@@ -807,6 +896,17 @@ export class IngestRepository {
              credit_micros = ingest_venue_daily.credit_micros + excluded.credit_micros,
              stored_events = ingest_venue_daily.stored_events + excluded.stored_events`,
           [venue, day, micros.toString(), storedEvents],
+        );
+      }
+      for (const [feature, micros] of Object.entries(input.featureCredits ?? {})) {
+        if (micros === 0n) continue;
+        const day = input.now.toISOString().slice(0, 10);
+        await client.query(
+          `insert into ingest_feature_daily (feature, day, credit_micros, stored_events)
+           values ($1,$2,$3,0)
+           on conflict (feature, day) do update set
+             credit_micros = ingest_feature_daily.credit_micros + excluded.credit_micros`,
+          [feature, day, micros.toString()],
         );
       }
       for (const row of input.frames) {
@@ -1195,7 +1295,7 @@ export class IngestRepository {
       day,
     ]);
     const month = await this.monthUsage(input.now);
-    const allowance = allowanceCredits(input.plan, input.allowanceOverride);
+    const allowance = intakeAllowanceCredits(input.allowanceOverride);
     const dailyRow = daily.rows[0];
     const soakStarted = row?.soak_started_at ? new Date(row.soak_started_at) : null;
     const elapsed = soakStarted ? input.now.getTime() - soakStarted.getTime() : 0;
@@ -1258,7 +1358,431 @@ export class IngestRepository {
         `bsc recall: ${bscAudit.missed.toString()}/${bscAudit.expected.toString()} missed (${bscAudit.matched.toString()} matched)`,
       );
     }
+    const configured = allowanceCredits(input.plan, input.allowanceOverride);
+    const walletCap = walletCreditCapMicros(configured * MICROS_PER_CREDIT, 25);
+    const walletSpent = await this.featureMonthMicros("wallet_subscribe", utcMonth(input.now));
+    lines.push(
+      `wallet_subscribe: ${formatCredits(walletSpent)} / ${formatCredits(walletCap)} ${walletSpent >= walletCap ? "stopped" : "open"}`,
+    );
     return lines.join("\n");
+  }
+
+  async earlyBuys(): Promise<
+    Array<{ wallet: string; mint: string; side: "buy" | "sell"; graduated: boolean }>
+  > {
+    const result = await this.pool.query<{
+      wallet: string;
+      mint: string;
+      side: string;
+      graduated: boolean;
+    }>(
+      `select t.wallet, t.mint, t.side,
+              exists (
+                select 1 from raw_events g
+                where g.mint = t.mint
+                  and g.event_kind in ('pump_migrate', 'launchlab_migrate', 'dbc_migration_damm_v2')
+              ) as graduated
+       from (
+         select trader as wallet, mint, side from pump_trade
+         where trader is not null and is_creator = false and side in ('buy', 'sell')
+         union all
+         select wallet, mint, side from wallet_early_buy
+         where is_creator = false and side in ('buy', 'sell')
+       ) t`,
+    );
+    return result.rows.map((row) => ({
+      wallet: row.wallet,
+      mint: row.mint,
+      side: row.side === "sell" ? "sell" : "buy",
+      graduated: row.graduated,
+    }));
+  }
+
+  async activeTrackedWallets(): Promise<string[]> {
+    const result = await this.pool.query<{ address: string }>(
+      "select address from tracked_wallet where active = true order by hit_rate desc, early_wins desc, address",
+    );
+    return result.rows.map((row) => row.address);
+  }
+
+  async saveTrackedWallets(
+    rows: Array<{
+      address: string;
+      hitRate: number;
+      earlyEntries: number;
+      earlyWins: number;
+      derivation: string;
+    }>,
+    now: Date,
+  ): Promise<void> {
+    for (const row of rows) {
+      await this.pool.query(
+        `insert into tracked_wallet
+          (address, hit_rate, early_entries, early_wins, derivation, active, selected_at)
+         values ($1,$2,$3,$4,$5,true,$6)
+         on conflict (address) do update set
+           hit_rate = excluded.hit_rate,
+           early_entries = excluded.early_entries,
+           early_wins = excluded.early_wins,
+           derivation = excluded.derivation,
+           active = true,
+           selected_at = excluded.selected_at`,
+        [
+          row.address,
+          row.hitRate,
+          row.earlyEntries,
+          row.earlyWins,
+          row.derivation,
+          now.toISOString(),
+        ],
+      );
+    }
+  }
+
+  async insertWalletFill(input: {
+    signature: string;
+    eventIndex: number;
+    slot: number;
+    mint: string;
+    wallet: string;
+    side: "buy" | "sell" | "swap";
+    venue: string;
+  }): Promise<void> {
+    const inserted = await this.pool.query(
+      `insert into wallet_fill
+        (signature, event_index, slot, mint, wallet, side, venue)
+       values ($1,$2,$3,$4,$5,$6,$7)
+       on conflict (signature, event_index, wallet) do nothing`,
+      [
+        input.signature,
+        input.eventIndex,
+        input.slot,
+        input.mint,
+        input.wallet,
+        input.side,
+        input.venue,
+      ],
+    );
+    if ((inserted.rowCount ?? 0) === 0) return;
+    await this.pool.query(
+      `insert into coin_wallet_signal
+        (mint, tracked_buyers, tracked_buys, tracked_sells, updated_at)
+       values ($1, $2, $3, $4, now())
+       on conflict (mint) do update set
+         tracked_buys = coin_wallet_signal.tracked_buys + excluded.tracked_buys,
+         tracked_sells = coin_wallet_signal.tracked_sells + excluded.tracked_sells,
+         tracked_buyers = (
+           select count(distinct wallet) from wallet_fill
+           where mint = excluded.mint and side in ('buy', 'swap')
+         ),
+         updated_at = now()`,
+      [
+        input.mint,
+        input.side === "sell" ? 0 : 1,
+        input.side === "buy" ? 1 : 0,
+        input.side === "sell" ? 1 : 0,
+      ],
+    );
+  }
+
+  async insertXMentions(
+    rows: Array<{
+      mint: string | null;
+      ticker: string | null;
+      handle: string;
+      postUrl: string;
+      mentionedAt: Date;
+      source: string;
+    }>,
+  ): Promise<number> {
+    let stored = 0;
+    for (const row of rows) {
+      const result = await this.pool.query(
+        `insert into coin_x_mention (post_url, mint, ticker, handle, mentioned_at, source)
+         values ($1,$2,$3,$4,$5,$6)
+         on conflict (post_url) do nothing`,
+        [row.postUrl, row.mint, row.ticker, row.handle, row.mentionedAt.toISOString(), row.source],
+      );
+      stored += result.rowCount ?? 0;
+    }
+    return stored;
+  }
+
+  async featureMonthMicros(feature: string, month: string): Promise<bigint> {
+    const result = await this.pool.query<{ micros: string }>(
+      `select coalesce(sum(credit_micros), 0)::text as micros
+       from ingest_feature_daily
+       where feature = $1 and to_char(day, 'YYYY-MM') = $2`,
+      [feature, month],
+    );
+    return BigInt(result.rows[0]?.micros ?? "0");
+  }
+
+  async recordFeatureSpend(input: {
+    feature: string;
+    creditMicros: bigint;
+    storedEvents: number;
+    now: Date;
+  }): Promise<void> {
+    if (input.creditMicros <= 0n && input.storedEvents <= 0) return;
+    const day = input.now.toISOString().slice(0, 10);
+    const month = utcMonth(input.now);
+    const client = await this.pool.connect();
+    try {
+      await client.query("begin");
+      if (input.creditMicros > 0n) {
+        await client.query(
+          `insert into ingest_daily (day, streamed_bytes, messages, stored_events, credit_micros)
+           values ($1, 0, 0, $2, $3)
+           on conflict (day) do update set
+             stored_events = ingest_daily.stored_events + excluded.stored_events,
+             credit_micros = ingest_daily.credit_micros + excluded.credit_micros`,
+          [day, input.storedEvents, input.creditMicros.toString()],
+        );
+        await client.query(
+          `insert into ingest_month (month, credit_micros)
+           values ($1, $2)
+           on conflict (month) do update set
+             credit_micros = ingest_month.credit_micros + excluded.credit_micros`,
+          [month, input.creditMicros.toString()],
+        );
+      }
+      await client.query(
+        `insert into ingest_feature_daily (feature, day, credit_micros, stored_events)
+         values ($1, $2, $3, $4)
+         on conflict (feature, day) do update set
+           credit_micros = ingest_feature_daily.credit_micros + excluded.credit_micros,
+           stored_events = ingest_feature_daily.stored_events + excluded.stored_events`,
+        [input.feature, day, input.creditMicros.toString(), input.storedEvents],
+      );
+      await client.query("commit");
+    } catch (error) {
+      await client.query("rollback");
+      throw error;
+    } finally {
+      client.release();
+    }
+  }
+
+  async nextBackfillMints(limit: number): Promise<
+    Array<{
+      mint: string;
+      venue: string;
+      account: string;
+      creator: string | null;
+      graduated: boolean;
+      paginationToken: string | null;
+      buysKept: number;
+      pages: number;
+    }>
+  > {
+    const result = await this.pool.query<{
+      mint: string;
+      venue: string;
+      account: string;
+      creator: string | null;
+      graduated: boolean;
+      pagination_token: string | null;
+      buys_kept: number;
+      pages: number;
+      sort: number;
+    }>(
+      `with coins as (
+         select c.mint,
+                c.venue,
+                coalesce(p.bonding_curve, c.pool) as account,
+                coalesce(p.creator, c.creator) as creator,
+                exists (
+                  select 1 from raw_events g
+                  where g.mint = c.mint
+                    and g.event_kind in ('pump_migrate', 'launchlab_migrate', 'dbc_migration_damm_v2')
+                ) as graduated
+         from ingest_coin c
+         left join pump_coin p on p.mint = c.mint
+         where coalesce(p.bonding_curve, c.pool) is not null
+       ),
+       open_rows as (
+         select c.mint, c.venue, c.account, c.creator, c.graduated,
+                b.pagination_token, b.buys_kept, b.pages, 0 as sort
+         from coins c
+         join wallet_backfill_mint b on b.mint = c.mint
+         where b.status = 'open'
+       ),
+       fresh_winners as (
+         select c.mint, c.venue, c.account, c.creator, c.graduated,
+                null::text as pagination_token, 0 as buys_kept, 0 as pages, 1 as sort
+         from coins c
+         where c.graduated
+           and not exists (select 1 from wallet_backfill_mint b where b.mint = c.mint)
+         order by c.mint
+         limit $1
+       ),
+       fresh_losses as (
+         select c.mint, c.venue, c.account, c.creator, c.graduated,
+                null::text as pagination_token, 0 as buys_kept, 0 as pages, 2 as sort
+         from coins c
+         where not c.graduated
+           and not exists (select 1 from wallet_backfill_mint b where b.mint = c.mint)
+         order by c.mint
+         limit $1
+       )
+       select * from open_rows
+       union all
+       select * from fresh_winners
+       union all
+       select * from fresh_losses
+       order by sort, mint
+       limit $1`,
+      [limit],
+    );
+    return result.rows.map((row) => ({
+      mint: row.mint,
+      venue: row.venue,
+      account: row.account,
+      creator: row.creator,
+      graduated: row.graduated,
+      paginationToken: row.pagination_token,
+      buysKept: row.buys_kept,
+      pages: row.pages,
+    }));
+  }
+
+  async saveEarlyBuyers(
+    rows: ReadonlyArray<{
+      signature: string;
+      eventIndex: number;
+      slot: number;
+      mint: string;
+      wallet: string;
+      side: string;
+      venue: string;
+      isCreator: boolean;
+    }>,
+  ): Promise<number> {
+    let stored = 0;
+    for (const row of rows) {
+      const result = await this.pool.query(
+        `insert into wallet_early_buy
+          (signature, event_index, slot, mint, wallet, side, venue, is_creator)
+         values ($1,$2,$3,$4,$5,$6,$7,$8)
+         on conflict (signature, event_index, wallet) do nothing`,
+        [
+          row.signature,
+          row.eventIndex,
+          row.slot,
+          row.mint,
+          row.wallet,
+          row.side,
+          row.venue,
+          row.isCreator,
+        ],
+      );
+      stored += result.rowCount ?? 0;
+    }
+    return stored;
+  }
+
+  async saveBackfillCheckpoint(input: {
+    mint: string;
+    venue: string;
+    account: string;
+    status: string;
+    paginationToken: string | null;
+    buysKept: number;
+    pages: number;
+    creditDelta: number;
+  }): Promise<void> {
+    await this.pool.query(
+      `insert into wallet_backfill_mint
+        (mint, venue, account, status, pagination_token, buys_kept, pages, credits, updated_at)
+       values ($1,$2,$3,$4,$5,$6,$7,$8, now())
+       on conflict (mint) do update set
+         venue = excluded.venue,
+         account = excluded.account,
+         status = excluded.status,
+         pagination_token = excluded.pagination_token,
+         buys_kept = excluded.buys_kept,
+         pages = excluded.pages,
+         credits = wallet_backfill_mint.credits + excluded.credits,
+         updated_at = now()`,
+      [
+        input.mint,
+        input.venue,
+        input.account,
+        input.status,
+        input.paginationToken,
+        input.buysKept,
+        input.pages,
+        input.creditDelta,
+      ],
+    );
+  }
+
+  async walletJobFinishedAt(): Promise<Date | null> {
+    const result = await this.pool.query<{ finished_at: Date | null }>(
+      "select finished_at from wallet_job where id = 1",
+    );
+    return result.rows[0]?.finished_at ?? null;
+  }
+
+  async markWalletJob(now: Date): Promise<void> {
+    await this.pool.query(
+      `insert into wallet_job (id, finished_at) values (1, $1)
+       on conflict (id) do update set finished_at = excluded.finished_at`,
+      [now.toISOString()],
+    );
+  }
+
+  async applyWalletRefresh(
+    input: {
+      keep: readonly string[];
+      upsert: ReadonlyArray<{
+        address: string;
+        hitRate: number;
+        earlyEntries: number;
+        earlyWins: number;
+        derivation: string;
+      }>;
+    },
+    now: Date,
+  ): Promise<void> {
+    if (input.keep.length === 0) return;
+    const client = await this.pool.connect();
+    try {
+      await client.query("begin");
+      await client.query(
+        "update tracked_wallet set active = false where active = true and address <> all($1::text[])",
+        [input.keep],
+      );
+      for (const row of input.upsert) {
+        await client.query(
+          `insert into tracked_wallet
+            (address, hit_rate, early_entries, early_wins, derivation, active, selected_at)
+           values ($1,$2,$3,$4,$5,true,$6)
+           on conflict (address) do update set
+             hit_rate = excluded.hit_rate,
+             early_entries = excluded.early_entries,
+             early_wins = excluded.early_wins,
+             derivation = excluded.derivation,
+             active = true,
+             selected_at = excluded.selected_at`,
+          [
+            row.address,
+            row.hitRate,
+            row.earlyEntries,
+            row.earlyWins,
+            row.derivation,
+            now.toISOString(),
+          ],
+        );
+      }
+      await client.query("commit");
+    } catch (error) {
+      await client.query("rollback");
+      throw error;
+    } finally {
+      client.release();
+    }
   }
 
   async spotCheckText(limit = 20): Promise<string> {

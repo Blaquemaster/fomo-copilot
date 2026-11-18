@@ -120,6 +120,11 @@ export const DISC = {
   ixLaunchlabInitializeToken2022: bytes(37, 190, 126, 222, 44, 154, 171, 17),
   ixLaunchlabMigrateAmm: bytes(207, 82, 192, 145, 254, 207, 145, 223),
   ixLaunchlabMigrateCpswap: bytes(136, 92, 200, 103, 28, 218, 144, 140),
+  /** sha256("global:<name>")[..8] from raydium_launchpad.json buy/sell instructions. */
+  ixLaunchlabBuyExactIn: bytes(250, 234, 13, 123, 213, 156, 19, 236),
+  ixLaunchlabBuyExactOut: bytes(24, 211, 116, 40, 105, 3, 153, 56),
+  ixLaunchlabSellExactIn: bytes(149, 39, 222, 155, 211, 124, 152, 26),
+  ixLaunchlabSellExactOut: bytes(95, 200, 71, 34, 8, 9, 11, 166),
 } as const;
 
 /** initialize and initialize_v2 share this account order. */
@@ -192,6 +197,25 @@ export const LAUNCHLAB_MIGRATE_CPSWAP_ACCOUNTS = [
   "system_program",
   "rent_program",
   "metadata_program",
+] as const;
+
+/** buy_exact_in/out and sell_exact_in/out share this account order. payer is the trader. */
+export const LAUNCHLAB_TRADE_ACCOUNTS = [
+  "payer",
+  "authority",
+  "global_config",
+  "platform_config",
+  "pool_state",
+  "user_base_token",
+  "user_quote_token",
+  "base_vault",
+  "quote_vault",
+  "base_token_mint",
+  "quote_token_mint",
+  "base_token_program",
+  "quote_token_program",
+  "event_authority",
+  "program",
 ] as const;
 
 export const LAUNCHLAB_MIGRATE_AMM_ACCOUNTS = [
@@ -1185,6 +1209,42 @@ export const PUMP_AMM_TRADE_NAMES = [
   "sell",
   "sell_v2",
 ] as const;
+
+/** Helius allows 100 accounts.include addresses per subscription. */
+export const WALLET_SUB_CHUNK = 100;
+
+/** Trade names for the wallet subscription. AND-ed with the wallet and the venue programs. */
+export const WALLET_TRADE_NAMES = uniqueNames([
+  ...PUMP_TRADE_NAMES,
+  ...PUMP_AMM_TRADE_NAMES,
+  "buy_exact_in",
+  "buy_exact_out",
+  "sell_exact_in",
+  "sell_exact_out",
+  "swap",
+  "swap2",
+  "swap2_with_transfer_hook",
+]);
+
+export const WALLET_TRACK_PROGRAMS = [
+  PUMP_PROGRAM_ID,
+  PUMP_AMM_PROGRAM_ID,
+  LAUNCHLAB_PROGRAM_ID,
+  DBC_PROGRAM_ID,
+  DAMM_V2_PROGRAM_ID,
+] as const;
+
+function uniqueNames(names: readonly string[]): readonly string[] {
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const name of names) {
+    const key = name.toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push(name);
+  }
+  return out;
+}
 
 /** Full trade rows are kept for this many slots after the coin's create. About one minute. */
 export const PUMP_TRADE_DETAIL_SLOTS = 150;

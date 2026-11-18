@@ -19,6 +19,10 @@ export { planCandidateWrites, tokenIsYoung, type CandidateDraft } from "./ingest
 export { encodeBase58, decodeBase58 } from "./ingest/base58.js";
 export {
   allowanceCredits,
+  CONFIRMED_PLAN_CREDITS,
+  DEFAULT_MONTHLY_CREDITS,
+  historyPageCredits,
+  intakeAllowanceCredits,
   budgetLevel,
   formatCredits,
   parsedEventMicros,
@@ -89,8 +93,44 @@ export {
   pumpTradeRetention,
   isPumpTradeKind,
   isPumpLifecycleKind,
+  WALLET_SUB_CHUNK,
+  WALLET_TRADE_NAMES,
+  WALLET_TRACK_PROGRAMS,
   type IngestVenue,
 } from "./ingest/programs.js";
+export {
+  PROVEN_WALLET_RULE,
+  chunkWallets,
+  scoreProvenWallets,
+  walletBudgetOpen,
+  walletCreditCapMicros,
+  walletFillsFromParsed,
+  nextTrackedSet,
+  type EarlyBuy,
+  type WalletRefresh,
+  type ScoredWallet,
+  type WalletFillDraft,
+} from "./ingest/wallets.js";
+export {
+  EARLY_BUYER_MAX_PAGES,
+  EARLY_BUYER_PAGE_LIMIT,
+  WALLET_BACKFILL_FEATURE,
+  collectEarlyBuyers,
+  earlyBuyerHistoryParams,
+  earlyBuyersFromHistory,
+  type BackfillCheckpoint,
+  type BackfillTarget,
+  type EarlyBuyerRow,
+  type HistoryPage,
+} from "./ingest/earlyBuyers.js";
+export {
+  FIXTURE_X_MENTIONS,
+  FixtureXMentionSource,
+  sanitizeMentionHandle,
+  summarizeMentions,
+  type XMention,
+  type XMentionSource,
+} from "./ingest/xMentions.js";
 export {
   BSC_CHAIN,
   FLAP_LAUNCHPAD,

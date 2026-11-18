@@ -5,7 +5,7 @@ import {
   IngestRepository,
   programsForVenue,
   enabledVenues,
-  allowanceCredits,
+  intakeAllowanceCredits,
   budgetLevel,
   createPool,
   decodeRpcTransaction,
@@ -46,7 +46,7 @@ export async function runRecallAudit(input: {
 }): Promise<void> {
   const now = input.now ?? Date.now;
   const month = await input.repo.monthUsage(new Date(now()));
-  const allowance = allowanceCredits(input.env.HELIUS_PLAN, input.env.HELIUS_MONTHLY_CREDITS);
+  const allowance = intakeAllowanceCredits(input.env.HELIUS_MONTHLY_CREDITS);
   if (budgetLevel(month.creditMicros, allowance) === "pause") {
     input.logger.warn({}, "skipping recall audit because non-essential Helius calls are paused");
     return;
