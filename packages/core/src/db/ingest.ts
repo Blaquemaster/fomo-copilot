@@ -16,6 +16,7 @@ import {
 import type { DecodeFailure, Observation } from "../ingest/decode.js";
 import type { FrameHourRow } from "../ingest/frameStats.js";
 import {
+  DLMM_PROGRAM_ID,
   LAUNCHLAB_PROGRAMS,
   METEORA_LAUNCH_PROGRAMS,
   PUMP_PROGRAMS,
@@ -339,6 +340,49 @@ export async function migrate(pool: pg.Pool): Promise<void> {
       ["013_multi_venue"],
     );
     await client.query(
+      "insert into schema_migrations (id) values ($1) on conflict (id) do nothing",
+      ["014_launchpad_tags"],
+    );
+    await client.query("delete from ingest_checkpoint where program_id = $1", [DLMM_PROGRAM_ID]);
+    await client.query(`update ingest_coin set launchpad = 'Pump.fun' where launchpad = 'Pump'`);
+    await client.query(`update ingest_coin set launchpad = 'BONK.fun' where launchpad = 'Bonk'`);
+    await client.query(
+      `update ingest_coin
+       set launchpad = 'Raydium Launchlab'
+       where platform_config = '4Bu96XjU84XjPDSpveTVf6LYGCkfW5FK7SNkREWcEfV4'
+         and launchpad = 'unknown'`,
+    );
+    await client.query(
+      `update ingest_coin
+       set launchpad = case platform_config
+         when '4E876qZTE9FJMrBzgVtBrSrzz2TLivB5Y5QXPjB4gZL7' then 'StonkFun'
+         when '6BwHHDg3u1854jC8PDLXvR4spTcLNaoBxLJNGC4nTESt' then 'StonkFun'
+         when 'CUqSiwPs6C4WyntMgaFazLp7wYQfaLp5URbjUP9V7SNi' then 'StonkFun'
+         when 'FfYek5vEz23cMkWsdJwG2oa6EphsvXSHrGpdALN4g6W1' then 'BONK.fun'
+         when '82NMHVCKwehXgbXMyzL41mvv3sdkypaMCtTxvJ4CtTzm' then 'BONK.fun'
+         when '4Bu96XjU84XjPDSpveTVf6LYGCkfW5FK7SNkREWcEfV4' then 'Raydium Launchlab'
+         else launchpad
+       end
+       where venue = 'launchlab'
+         and platform_config in (
+           '4E876qZTE9FJMrBzgVtBrSrzz2TLivB5Y5QXPjB4gZL7',
+           '6BwHHDg3u1854jC8PDLXvR4spTcLNaoBxLJNGC4nTESt',
+           'CUqSiwPs6C4WyntMgaFazLp7wYQfaLp5URbjUP9V7SNi',
+           'FfYek5vEz23cMkWsdJwG2oa6EphsvXSHrGpdALN4g6W1',
+           '82NMHVCKwehXgbXMyzL41mvv3sdkypaMCtTxvJ4CtTzm',
+           '4Bu96XjU84XjPDSpveTVf6LYGCkfW5FK7SNkREWcEfV4'
+         )`,
+    );
+    await client.query(
+      `delete from ingest_coin c
+       where c.venue = 'meteora'
+         and not exists (
+           select 1 from raw_events e
+           where e.mint = c.mint
+             and e.event_kind in ('dbc_initialize', 'dbc_migration_damm_v2')
+         )`,
+    );
+    await client.query(
       `update ingest_recall_audit a
        set skipped = true,
            error_reason = 'before_coverage'
@@ -628,6 +672,7 @@ export class IngestRepository {
     creditMicros: bigint;
     frames: readonly FrameHourRow[];
     venueCredits?: Readonly<Record<string, bigint>>;
+    venueStored?: Readonly<Record<string, number>>;
   }): Promise<void> {
     const client = await this.pool.connect();
     try {
@@ -673,15 +718,22 @@ export class IngestRepository {
           [input.creditMicros.toString(), input.now.toISOString()],
         );
       }
-      for (const [venue, micros] of Object.entries(input.venueCredits ?? {})) {
-        if (micros === 0n) continue;
+      const venueNames = new Set([
+        ...Object.keys(input.venueCredits ?? {}),
+        ...Object.keys(input.venueStored ?? {}),
+      ]);
+      for (const venue of venueNames) {
+        const micros = input.venueCredits?.[venue] ?? 0n;
+        const storedEvents = input.venueStored?.[venue] ?? 0;
+        if (micros === 0n && storedEvents === 0) continue;
         const day = input.now.toISOString().slice(0, 10);
         await client.query(
           `insert into ingest_venue_daily (venue, day, credit_micros, stored_events)
-           values ($1,$2,$3,0)
+           values ($1,$2,$3,$4)
            on conflict (venue, day) do update set
-             credit_micros = ingest_venue_daily.credit_micros + excluded.credit_micros`,
-          [venue, day, micros.toString()],
+             credit_micros = ingest_venue_daily.credit_micros + excluded.credit_micros,
+             stored_events = ingest_venue_daily.stored_events + excluded.stored_events`,
+          [venue, day, micros.toString(), storedEvents],
         );
       }
       for (const row of input.frames) {

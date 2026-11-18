@@ -353,6 +353,7 @@ export class UsageLedger {
   storedEvents = 0;
   creditMicros = 0n;
   venueCredits = new Map<string, bigint>();
+  venueStored = new Map<string, number>();
 
   add(input: {
     streamedBytes?: bigint;
@@ -360,6 +361,7 @@ export class UsageLedger {
     storedEvents?: number;
     creditMicros?: bigint;
     venueCredits?: Readonly<Record<string, bigint>>;
+    venueStored?: Readonly<Record<string, number>>;
   }): void {
     this.streamedBytes += input.streamedBytes ?? 0n;
     this.messages += input.messages ?? 0;
@@ -367,6 +369,9 @@ export class UsageLedger {
     this.creditMicros += input.creditMicros ?? 0n;
     for (const [venue, micros] of Object.entries(input.venueCredits ?? {})) {
       this.venueCredits.set(venue, (this.venueCredits.get(venue) ?? 0n) + micros);
+    }
+    for (const [venue, count] of Object.entries(input.venueStored ?? {})) {
+      this.venueStored.set(venue, (this.venueStored.get(venue) ?? 0) + count);
     }
   }
 
@@ -376,21 +381,26 @@ export class UsageLedger {
     storedEvents: number;
     creditMicros: bigint;
     venueCredits: Record<string, bigint>;
+    venueStored: Record<string, number>;
   } {
     const venueCredits: Record<string, bigint> = {};
     for (const [venue, micros] of this.venueCredits) venueCredits[venue] = micros;
+    const venueStored: Record<string, number> = {};
+    for (const [venue, count] of this.venueStored) venueStored[venue] = count;
     const snapshot = {
       streamedBytes: this.streamedBytes,
       messages: this.messages,
       storedEvents: this.storedEvents,
       creditMicros: this.creditMicros,
       venueCredits,
+      venueStored,
     };
     this.streamedBytes = 0n;
     this.messages = 0;
     this.storedEvents = 0;
     this.creditMicros = 0n;
     this.venueCredits = new Map();
+    this.venueStored = new Map();
     return snapshot;
   }
 }

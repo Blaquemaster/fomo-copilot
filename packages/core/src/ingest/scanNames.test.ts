@@ -50,7 +50,13 @@ describe("scan instruction names", () => {
     ).toBe("StonkFun");
     expect(
       launchpadForPlatform("FfYek5vEz23cMkWsdJwG2oa6EphsvXSHrGpdALN4g6W1", "launchlab").launchpad,
-    ).toBe("Bonk");
+    ).toBe("BONK.fun");
+    expect(
+      launchpadForPlatform("4Bu96XjU84XjPDSpveTVf6LYGCkfW5FK7SNkREWcEfV4", "launchlab").launchpad,
+    ).toBe("Raydium Launchlab");
+    expect(
+      launchpadForPlatform("2TDPJJPV6nvTEqXABxrqno6Uzpipxxvh1zjLN3SMYn69", "launchlab").launchpad,
+    ).toBe("unknown");
     expect(launchpadForPlatform("not-a-known-config", "launchlab")).toEqual({
       launchpad: "unknown",
       platformConfig: "not-a-known-config",

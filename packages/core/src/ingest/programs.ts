@@ -1135,17 +1135,24 @@ export const LAUNCHLAB_LIFECYCLE_NAMES = [
 /**
  * PlatformConfig accounts whose on-chain name was read from mainnet.
  * StonkFun ids are the live pricing response (standard, reward, community) and
- * each account's name field is "StonkFun". Bonk ids are PlatformConfig accounts
+ * each account's name field is "StonkFun". BONK.fun ids are PlatformConfig accounts
  * owned by LaunchLab whose name field is "letsbonk.fun". FfYek5… is the config
  * Bitquery and the LetsBonk listener document; 82NMHV… is the second account
- * with the same on-chain name.
+ * with the same on-chain name. 2RN8d2…, CB6mNV…, and 2TDPJJ… stay unmapped:
+ * empty name, the SDK placeholder "My Launch Platform", and Float
+ * (floatlaunch.xyz), which is not a FOMO launchpad name.
  */
 export const LAUNCHLAB_PLATFORM_LAUNCHPADS: Readonly<Record<string, string>> = {
   "4E876qZTE9FJMrBzgVtBrSrzz2TLivB5Y5QXPjB4gZL7": "StonkFun",
   "6BwHHDg3u1854jC8PDLXvR4spTcLNaoBxLJNGC4nTESt": "StonkFun",
   CUqSiwPs6C4WyntMgaFazLp7wYQfaLp5URbjUP9V7SNi: "StonkFun",
-  FfYek5vEz23cMkWsdJwG2oa6EphsvXSHrGpdALN4g6W1: "Bonk",
-  "82NMHVCKwehXgbXMyzL41mvv3sdkypaMCtTxvJ4CtTzm": "Bonk",
+  FfYek5vEz23cMkWsdJwG2oa6EphsvXSHrGpdALN4g6W1: "BONK.fun",
+  "82NMHVCKwehXgbXMyzL41mvv3sdkypaMCtTxvJ4CtTzm": "BONK.fun",
+  /**
+   * Raydium's own LaunchLab platform. SDK default platform id, on-chain name
+   * "Raydium", website https://raydium.io/.
+   */
+  "4Bu96XjU84XjPDSpveTVf6LYGCkfW5FK7SNkREWcEfV4": "Raydium Launchlab",
 };
 
 /**
@@ -1161,7 +1168,7 @@ export function launchpadForPlatform(
   platformConfig: string | null,
   venue: IngestVenue,
 ): { launchpad: string; platformConfig: string | null } {
-  if (venue === "pump") return { launchpad: "Pump", platformConfig };
+  if (venue === "pump") return { launchpad: "Pump.fun", platformConfig };
   if (platformConfig === null) return { launchpad: LAUNCHPAD_UNKNOWN, platformConfig: null };
   const table = venue === "launchlab" ? LAUNCHLAB_PLATFORM_LAUNCHPADS : METEORA_CONFIG_LAUNCHPADS;
   return {

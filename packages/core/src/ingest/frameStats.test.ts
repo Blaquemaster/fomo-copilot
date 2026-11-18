@@ -59,6 +59,7 @@ describe("usage ledger", () => {
       storedEvents: 1,
       creditMicros: 5n,
       venueCredits: {},
+      venueStored: {},
     });
     expect(ledger.drain().messages).toBe(0);
   });
