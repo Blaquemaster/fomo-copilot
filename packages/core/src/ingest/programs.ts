@@ -1,3 +1,5 @@
+import { ConfigError } from "../config/error.js";
+
 /**
  * Official Meteora program ids. Same address on mainnet and devnet.
  * DBC: https://docs.meteora.ag/developer-guides/dbc
@@ -27,13 +29,24 @@ export const PUMP_PROGRAM_ID = "6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P";
  */
 export const PUMP_AMM_PROGRAM_ID = "pAMMBay6oceH9fJKBRHGP5D4bD4sWpmSwMn52FMfXEA";
 
+/**
+ * Raydium LaunchLab. IDL address field, raydium_launchpad 0.2.0:
+ * https://github.com/raydium-io/raydium-idl/blob/master/raydium_launchpad/raydium_launchpad.json
+ */
+export const LAUNCHLAB_PROGRAM_ID = "LanMV9sAd7wArD4vJFi2qDdfnVhFxYSUg6eADduJ3uj";
+
 export const WATCHED_PROGRAMS = [DBC_PROGRAM_ID, DAMM_V2_PROGRAM_ID, DLMM_PROGRAM_ID] as const;
 
 export const PUMP_PROGRAMS = [PUMP_PROGRAM_ID, PUMP_AMM_PROGRAM_ID] as const;
 
-export type IngestVenue = "pump" | "meteora";
+/** DBC launches and DAMM v2 migrations. DLMM is not a launchpad and stays off the socket. */
+export const METEORA_LAUNCH_PROGRAMS = [DBC_PROGRAM_ID, DAMM_V2_PROGRAM_ID] as const;
 
-export type PoolType = "dbc" | "damm_v2" | "dlmm" | "pump" | "pumpswap";
+export const LAUNCHLAB_PROGRAMS = [LAUNCHLAB_PROGRAM_ID] as const;
+
+export type IngestVenue = "pump" | "launchlab" | "meteora";
+
+export type PoolType = "dbc" | "damm_v2" | "dlmm" | "pump" | "pumpswap" | "launchlab";
 
 export type EventKind =
   | "dbc_initialize"
@@ -48,7 +61,9 @@ export type EventKind =
   | "pump_migrate"
   | "pumpswap_create_pool"
   | "pumpswap_buy"
-  | "pumpswap_sell";
+  | "pumpswap_sell"
+  | "launchlab_initialize"
+  | "launchlab_migrate";
 
 /** Quote mints the official DBC migration keeper treats as the quote side. */
 export const QUOTE_MINTS = new Set([
@@ -99,7 +114,120 @@ export const DISC = {
   ixPumpAmmBuyV2: bytes(184, 23, 238, 97, 103, 197, 211, 61),
   ixPumpAmmSell: bytes(51, 230, 133, 164, 1, 127, 131, 173),
   ixPumpAmmSellV2: bytes(93, 246, 130, 60, 231, 233, 64, 178),
+  /** sha256("global:<name>")[..8] from raydium_launchpad.json 0.2.0. */
+  ixLaunchlabInitialize: bytes(175, 175, 109, 31, 13, 152, 155, 237),
+  ixLaunchlabInitializeV2: bytes(67, 153, 175, 39, 218, 16, 38, 32),
+  ixLaunchlabInitializeToken2022: bytes(37, 190, 126, 222, 44, 154, 171, 17),
+  ixLaunchlabMigrateAmm: bytes(207, 82, 192, 145, 254, 207, 145, 223),
+  ixLaunchlabMigrateCpswap: bytes(136, 92, 200, 103, 28, 218, 144, 140),
 } as const;
+
+/** initialize and initialize_v2 share this account order. */
+export const LAUNCHLAB_INIT_ACCOUNTS = [
+  "payer",
+  "creator",
+  "global_config",
+  "platform_config",
+  "authority",
+  "pool_state",
+  "base_mint",
+  "quote_mint",
+  "base_vault",
+  "quote_vault",
+  "metadata_account",
+  "base_token_program",
+  "quote_token_program",
+  "metadata_program",
+  "system_program",
+  "rent_program",
+  "event_authority",
+  "program",
+] as const;
+
+/** initialize_with_token_2022 drops the metadata accounts. */
+export const LAUNCHLAB_INIT_TOKEN2022_ACCOUNTS = [
+  "payer",
+  "creator",
+  "global_config",
+  "platform_config",
+  "authority",
+  "pool_state",
+  "base_mint",
+  "quote_mint",
+  "base_vault",
+  "quote_vault",
+  "base_token_program",
+  "quote_token_program",
+  "system_program",
+  "event_authority",
+  "program",
+] as const;
+
+export const LAUNCHLAB_MIGRATE_CPSWAP_ACCOUNTS = [
+  "payer",
+  "base_mint",
+  "quote_mint",
+  "platform_config",
+  "cpswap_program",
+  "cpswap_pool",
+  "cpswap_authority",
+  "cpswap_lp_mint",
+  "cpswap_base_vault",
+  "cpswap_quote_vault",
+  "cpswap_config",
+  "cpswap_create_pool_fee",
+  "cpswap_observation",
+  "lock_program",
+  "lock_authority",
+  "lock_lp_vault",
+  "authority",
+  "pool_state",
+  "global_config",
+  "base_vault",
+  "quote_vault",
+  "pool_lp_token",
+  "base_token_program",
+  "quote_token_program",
+  "associated_token_program",
+  "system_program",
+  "rent_program",
+  "metadata_program",
+] as const;
+
+export const LAUNCHLAB_MIGRATE_AMM_ACCOUNTS = [
+  "payer",
+  "base_mint",
+  "quote_mint",
+  "openbook_program",
+  "market",
+  "request_queue",
+  "event_queue",
+  "bids",
+  "asks",
+  "market_vault_signer",
+  "market_base_vault",
+  "market_quote_vault",
+  "amm_program",
+  "amm_pool",
+  "amm_authority",
+  "amm_open_orders",
+  "amm_lp_mint",
+  "amm_base_vault",
+  "amm_quote_vault",
+  "amm_target_orders",
+  "amm_config",
+  "amm_create_fee_destination",
+  "authority",
+  "pool_state",
+  "global_config",
+  "base_vault",
+  "quote_vault",
+  "pool_lp_token",
+  "spl_token_program",
+  "associated_token_program",
+  "system_program",
+  "rent_program",
+] as const;
 
 /**
  * migration_damm_v2 account order from the DBC IDL.
@@ -813,6 +941,86 @@ export const INSTRUCTION_LAYOUTS: ReadonlyArray<{
       "quote_mint",
     ),
   },
+  {
+    programId: LAUNCHLAB_PROGRAM_ID,
+    disc: DISC.ixLaunchlabInitialize,
+    layout: layout(
+      "launchlab_initialize",
+      "launchlab",
+      LAUNCHLAB_INIT_ACCOUNTS,
+      "initialize",
+      "pool_state",
+      "base_mint",
+      "quote_mint",
+      "creator",
+      null,
+      "quote_mint",
+    ),
+  },
+  {
+    programId: LAUNCHLAB_PROGRAM_ID,
+    disc: DISC.ixLaunchlabInitializeV2,
+    layout: layout(
+      "launchlab_initialize",
+      "launchlab",
+      LAUNCHLAB_INIT_ACCOUNTS,
+      "initialize_v2",
+      "pool_state",
+      "base_mint",
+      "quote_mint",
+      "creator",
+      null,
+      "quote_mint",
+    ),
+  },
+  {
+    programId: LAUNCHLAB_PROGRAM_ID,
+    disc: DISC.ixLaunchlabInitializeToken2022,
+    layout: layout(
+      "launchlab_initialize",
+      "launchlab",
+      LAUNCHLAB_INIT_TOKEN2022_ACCOUNTS,
+      "initialize_with_token_2022",
+      "pool_state",
+      "base_mint",
+      "quote_mint",
+      "creator",
+      null,
+      "quote_mint",
+    ),
+  },
+  {
+    programId: LAUNCHLAB_PROGRAM_ID,
+    disc: DISC.ixLaunchlabMigrateCpswap,
+    layout: layout(
+      "launchlab_migrate",
+      "launchlab",
+      LAUNCHLAB_MIGRATE_CPSWAP_ACCOUNTS,
+      "migrate_to_cpswap",
+      "cpswap_pool",
+      "base_mint",
+      "quote_mint",
+      "payer",
+      "pool_state",
+      "quote_mint",
+    ),
+  },
+  {
+    programId: LAUNCHLAB_PROGRAM_ID,
+    disc: DISC.ixLaunchlabMigrateAmm,
+    layout: layout(
+      "launchlab_migrate",
+      "launchlab",
+      LAUNCHLAB_MIGRATE_AMM_ACCOUNTS,
+      "migrate_to_amm",
+      "amm_pool",
+      "base_mint",
+      "quote_mint",
+      "payer",
+      "pool_state",
+      "quote_mint",
+    ),
+  },
 ];
 
 export const SWAP_LAYOUTS: ReadonlyArray<{
@@ -915,6 +1123,53 @@ export const PUMP_TRADE_NAMES = [
 
 export const PUMP_AMM_LIFECYCLE_NAMES = ["create_pool"] as const;
 
+/** Creates and graduations only. Buys and sells stay off the socket. */
+export const LAUNCHLAB_LIFECYCLE_NAMES = [
+  "initialize",
+  "initialize_v2",
+  "initialize_with_token_2022",
+  "migrate_to_cpswap",
+  "migrate_to_amm",
+] as const;
+
+/**
+ * PlatformConfig accounts whose on-chain name was read from mainnet.
+ * StonkFun ids are the live pricing response (standard, reward, community) and
+ * each account's name field is "StonkFun". Bonk ids are PlatformConfig accounts
+ * owned by LaunchLab whose name field is "letsbonk.fun". FfYek5… is the config
+ * Bitquery and the LetsBonk listener document; 82NMHV… is the second account
+ * with the same on-chain name.
+ */
+export const LAUNCHLAB_PLATFORM_LAUNCHPADS: Readonly<Record<string, string>> = {
+  "4E876qZTE9FJMrBzgVtBrSrzz2TLivB5Y5QXPjB4gZL7": "StonkFun",
+  "6BwHHDg3u1854jC8PDLXvR4spTcLNaoBxLJNGC4nTESt": "StonkFun",
+  CUqSiwPs6C4WyntMgaFazLp7wYQfaLp5URbjUP9V7SNi: "StonkFun",
+  FfYek5vEz23cMkWsdJwG2oa6EphsvXSHrGpdALN4g6W1: "Bonk",
+  "82NMHVCKwehXgbXMyzL41mvv3sdkypaMCtTxvJ4CtTzm": "Bonk",
+};
+
+/**
+ * DBC config pubkey to a FOMO launchpad name. Bags, Believe, and Jupiter Studio
+ * do not publish a stable config list, so an unmapped config stays "unknown"
+ * and the config id is stored on the coin.
+ */
+export const METEORA_CONFIG_LAUNCHPADS: Readonly<Record<string, string>> = {};
+
+export const LAUNCHPAD_UNKNOWN = "unknown";
+
+export function launchpadForPlatform(
+  platformConfig: string | null,
+  venue: IngestVenue,
+): { launchpad: string; platformConfig: string | null } {
+  if (venue === "pump") return { launchpad: "Pump", platformConfig };
+  if (platformConfig === null) return { launchpad: LAUNCHPAD_UNKNOWN, platformConfig: null };
+  const table = venue === "launchlab" ? LAUNCHLAB_PLATFORM_LAUNCHPADS : METEORA_CONFIG_LAUNCHPADS;
+  return {
+    launchpad: table[platformConfig] ?? LAUNCHPAD_UNKNOWN,
+    platformConfig,
+  };
+}
+
 export const PUMP_AMM_TRADE_NAMES = [
   "buy",
   "buy_v2",
@@ -928,16 +1183,61 @@ export const PUMP_AMM_TRADE_NAMES = [
 export const PUMP_TRADE_DETAIL_SLOTS = 150;
 
 export function programsForVenue(venue: IngestVenue): readonly string[] {
-  return venue === "pump" ? PUMP_PROGRAMS : WATCHED_PROGRAMS;
+  if (venue === "pump") return PUMP_PROGRAMS;
+  if (venue === "launchlab") return LAUNCHLAB_PROGRAMS;
+  return METEORA_LAUNCH_PROGRAMS;
+}
+
+export function programsForVenues(venues: readonly IngestVenue[]): readonly string[] {
+  const out: string[] = [];
+  for (const venue of venues) {
+    for (const programId of programsForVenue(venue)) {
+      if (!out.includes(programId)) out.push(programId);
+    }
+  }
+  return out;
+}
+
+export function venueForProgram(programId: string): IngestVenue | null {
+  if ((PUMP_PROGRAMS as readonly string[]).includes(programId)) return "pump";
+  if (programId === LAUNCHLAB_PROGRAM_ID) return "launchlab";
+  if ((METEORA_LAUNCH_PROGRAMS as readonly string[]).includes(programId)) return "meteora";
+  if (programId === DLMM_PROGRAM_ID) return "meteora";
+  return null;
+}
+
+const VENUE_NAMES = ["pump", "launchlab", "meteora"] as const;
+
+/** INGEST_VENUES wins. Otherwise the old single INGEST_VENUE is the whole set. */
+export function enabledVenues(env: {
+  INGEST_VENUES?: string;
+  INGEST_VENUE: "pump" | "meteora";
+}): IngestVenue[] {
+  const raw = env.INGEST_VENUES?.trim();
+  if (!raw) return [env.INGEST_VENUE];
+  const out: IngestVenue[] = [];
+  for (const part of raw.split(",")) {
+    const name = part.trim();
+    if (name.length === 0) continue;
+    if (!VENUE_NAMES.includes(name as (typeof VENUE_NAMES)[number])) {
+      throw new ConfigError("INGEST_VENUES: invalid_venue");
+    }
+    const venue = name as IngestVenue;
+    if (!out.includes(venue)) out.push(venue);
+  }
+  if (out.length === 0) throw new ConfigError("INGEST_VENUES: empty");
+  return out;
 }
 
 /** Programs that actually appear on the websocket. Empty name lists are not subscribed. */
 export function subscribedPrograms(input: {
-  venue: IngestVenue;
+  venue?: IngestVenue;
+  venues?: readonly IngestVenue[];
   includeTrades: boolean;
   includeCreatePool: boolean;
 }): readonly string[] {
-  return programsForVenue(input.venue).filter(
+  const venues = input.venues ?? (input.venue ? [input.venue] : []);
+  return programsForVenues(venues).filter(
     (programId) =>
       subscriptionNamesForProgram(programId, input.includeTrades, input.includeCreatePool).length >
       0,
@@ -956,6 +1256,7 @@ export function subscriptionNamesForProgram(
     const lifecycle = includeCreatePool ? PUMP_AMM_LIFECYCLE_NAMES : [];
     return includeTrades ? [...lifecycle, ...PUMP_AMM_TRADE_NAMES] : lifecycle;
   }
+  if (programId === LAUNCHLAB_PROGRAM_ID) return LAUNCHLAB_LIFECYCLE_NAMES;
   return parsedNamesForProgram(programId);
 }
 
@@ -966,13 +1267,19 @@ export function scanNamesForProgram(
   if (programId === DBC_PROGRAM_ID) return DBC_SCAN_INSTRUCTION_NAMES;
   if (programId === PUMP_PROGRAM_ID) return PUMP_LIFECYCLE_NAMES;
   if (programId === PUMP_AMM_PROGRAM_ID) return includeCreatePool ? PUMP_AMM_LIFECYCLE_NAMES : [];
+  if (programId === LAUNCHLAB_PROGRAM_ID) return LAUNCHLAB_LIFECYCLE_NAMES;
   return parsedNamesForProgram(programId);
 }
 
 /** Pump program history is mostly swaps. Five minutes finishes inside the audit page budget. */
 export function auditSpanSlots(programId: string): number {
   const slotsPerSecond = 1000 / 215;
-  const minutes = programId === PUMP_PROGRAM_ID || programId === PUMP_AMM_PROGRAM_ID ? 5 : 15;
+  const minutes =
+    programId === PUMP_PROGRAM_ID ||
+    programId === PUMP_AMM_PROGRAM_ID ||
+    programId === LAUNCHLAB_PROGRAM_ID
+      ? 5
+      : 15;
   return Math.round(minutes * 60 * slotsPerSecond);
 }
 
@@ -990,7 +1297,8 @@ export function isHighVolumeProgram(programId: string): boolean {
   return (
     (HIGH_VOLUME_PROGRAM_IDS as readonly string[]).includes(programId) ||
     programId === PUMP_PROGRAM_ID ||
-    programId === PUMP_AMM_PROGRAM_ID
+    programId === PUMP_AMM_PROGRAM_ID ||
+    programId === LAUNCHLAB_PROGRAM_ID
   );
 }
 

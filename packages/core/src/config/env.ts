@@ -1,6 +1,7 @@
 import { z } from "zod";
 
 import { ConfigError, formatZodIssues } from "./error.js";
+import { enabledVenues } from "../ingest/programs.js";
 
 const simpleName = z.string().regex(/^[a-z][a-z0-9_]{0,62}$/);
 
@@ -32,8 +33,13 @@ export const envSchema = z.object({
   // enhanced is the full-program firehose and is not the default.
   HELIUS_WS_MODE: z.enum(["auto", "standard", "enhanced"]).default("auto"),
   INGEST_MODE: z.enum(["dry-run", "continuous"]).default("dry-run"),
-  /** pump is the live source. meteora keeps the previous DBC/DAMM/DLMM subscription. */
+  /** pump is the live source. meteora keeps the previous DBC/DAMM subscription. */
   INGEST_VENUE: z.enum(["pump", "meteora"]).default("pump"),
+  /**
+   * Comma-separated venues that run together. When set, this replaces INGEST_VENUE.
+   * Example: pump,launchlab,meteora. Absent means the single INGEST_VENUE.
+   */
+  INGEST_VENUES: z.string().max(128).optional(),
   /**
    * Buy and sell subscriptions are a firehose. Off by default so a deploy does not
    * spend the monthly credit allowance on every Pump.fun trade.
@@ -110,6 +116,7 @@ export function loadEnv(source: NodeJS.ProcessEnv = process.env): Env {
     throw new ConfigError("env: TELEGRAM_BOT_TOKEN: invalid_token");
   }
   assertDatabaseUrl(parsed.data);
+  enabledVenues(parsed.data);
   return parsed.data;
 }
 

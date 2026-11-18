@@ -3,7 +3,6 @@ import { Writable } from "node:stream";
 import {
   DBC_PROGRAM_ID,
   DAMM_V2_PROGRAM_ID,
-  DLMM_PROGRAM_ID,
   createLogger,
   sendTelegramMessage,
   type Env,
@@ -94,8 +93,8 @@ describe("recall audit", () => {
         return Promise.resolve({ matches: [], creditsCharged: 11, complete: true });
       },
     });
-    expect(scanned).toEqual([DBC_PROGRAM_ID, DAMM_V2_PROGRAM_ID, DLMM_PROGRAM_ID]);
-    expect(inserted).toHaveBeenCalledTimes(3);
+    expect(scanned).toEqual([DBC_PROGRAM_ID, DAMM_V2_PROGRAM_ID]);
+    expect(inserted).toHaveBeenCalledTimes(2);
     expect(inserted).toHaveBeenNthCalledWith(
       1,
       expect.objectContaining({
@@ -108,10 +107,6 @@ describe("recall audit", () => {
     expect(inserted).toHaveBeenNthCalledWith(
       2,
       expect.objectContaining({ programId: DAMM_V2_PROGRAM_ID, errored: false }),
-    );
-    expect(inserted).toHaveBeenNthCalledWith(
-      3,
-      expect.objectContaining({ programId: DLMM_PROGRAM_ID, errored: false }),
     );
     expect(sendTelegramMessage).toHaveBeenCalledTimes(1);
   });

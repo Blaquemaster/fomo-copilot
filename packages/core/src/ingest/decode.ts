@@ -1,9 +1,10 @@
 import { decodeBase58 } from "./base58.js";
-import { reader, readPubkey, readU16 } from "./borsh.js";
+import { reader, readPubkey, readString, readU8, readU16, readU64 } from "./borsh.js";
 import {
   ANCHOR_EVENT_DISC,
   DAMM_V2_PROGRAM_ID,
   DBC_PROGRAM_ID,
+  LAUNCHLAB_PROGRAM_ID,
   PUMP_AMM_PROGRAM_ID,
   PUMP_PROGRAM_ID,
   DISC,
@@ -12,7 +13,9 @@ import {
   QUOTE_MINTS,
   SWAP_LAYOUTS,
   WATCHED_PROGRAMS,
+  launchpadForPlatform,
   sameDisc,
+  venueForProgram,
   type EventKind,
   type InstructionLayout,
   type PoolType,
@@ -32,6 +35,12 @@ export interface Observation {
   quoteMint: string | null;
   blockTimeMs: number | null;
   instructionName?: string | null;
+  /** FOMO launchpad name, or "unknown" when the config is not in the map. */
+  launchpad?: string | null;
+  /** LaunchLab platform config, or the Meteora DBC config. */
+  platformConfig?: string | null;
+  /** Token-2022 transfer fee in basis points, when the create instruction sets one. */
+  transferFeeBps?: number | null;
 }
 
 export interface DecodeFailure {
@@ -96,6 +105,59 @@ export function parseSlotNotification(message: unknown): number | null {
 export function parseSlotResponse(message: unknown, id: number): number | null {
   if (!isRecord(message) || message["id"] !== id) return null;
   return typeof message["result"] === "number" ? message["result"] : null;
+}
+
+/**
+ * initialize_with_token_2022 ends with an optional TransferFeeExtensionParams.
+ * None is a zero byte. Some is 1, then a u16 basis-point rate and a u64 max fee.
+ * A standard launch omits the extension and this returns null.
+ */
+export function launchlabTransferFeeBps(data: Uint8Array): number | null {
+  if (!sameDisc(data, DISC.ixLaunchlabInitializeToken2022)) return null;
+  const input = reader(data, 8);
+  if (readU8(input) === null || readString(input) === null) return null;
+  if (readString(input) === null || readString(input) === null) return null;
+  const curve = readU8(input);
+  if (curve === null) return null;
+  if (curve === 0) {
+    if (readU64(input) === null || readU64(input) === null || readU64(input) === null) return null;
+    if (readU8(input) === null) return null;
+  } else if (curve === 1 || curve === 2) {
+    if (readU64(input) === null || readU64(input) === null || readU8(input) === null) return null;
+  } else {
+    return null;
+  }
+  if (readU64(input) === null || readU64(input) === null || readU64(input) === null) return null;
+  if (readU8(input) === null) return null;
+  const flag = readU8(input);
+  if (flag === null || flag === 0) return null;
+  if (flag !== 1) return null;
+  return readU16(input);
+}
+
+function withLaunchpad(
+  observation: Observation,
+  platformConfig: string | null,
+  transferFeeBps: number | null,
+): Observation {
+  const venue = venueForProgram(observation.programId);
+  if (venue === null) return observation;
+  if (
+    venue === "pump" &&
+    observation.kind !== "pump_create" &&
+    observation.kind !== "pump_create_v2" &&
+    observation.kind !== "pump_migrate" &&
+    observation.kind !== "pumpswap_create_pool"
+  ) {
+    return observation;
+  }
+  const tagged = launchpadForPlatform(platformConfig, venue);
+  return {
+    ...observation,
+    launchpad: tagged.launchpad,
+    platformConfig: tagged.platformConfig,
+    transferFeeBps,
+  };
 }
 
 export function chooseTokenMint(left: string, right: string): string {
@@ -195,8 +257,10 @@ export function parseParsedNotification(
     const programId = typeof record["programId"] === "string" ? record["programId"] : "";
     const kind = kindFromInstructionName(instructionName, programId);
     if (kind === null) continue;
-    const named = namedAccounts(asRecord(record["decoded"]));
+    const decoded = asRecord(record["decoded"]);
+    const named = namedAccounts(decoded);
     const rawAccounts = accountPubkeys({ accounts: record["rawAccounts"] }, []);
+    const rawData = typeof record["data"] === "string" ? safeBase58(record["data"]) : null;
     const built = observationFromParsedAccounts({
       kind,
       programId,
@@ -206,6 +270,7 @@ export function parseParsedNotification(
       slot,
       blockTimeMs: blockTime,
       eventIndex: found.length,
+      transferFeeBps: rawData ? launchlabTransferFeeBps(rawData) : feeBpsFromDecoded(decoded),
     });
     if (built) {
       built.instructionName = instructionName;
@@ -360,6 +425,18 @@ export function normalizeInstructionName(name: string): string {
 
 function kindFromInstructionName(name: string, programId = ""): EventKind | null {
   const normalized = normalizeInstructionName(name);
+  if (programId === LAUNCHLAB_PROGRAM_ID) {
+    if (
+      normalized === "initialize" ||
+      normalized === "initializev2" ||
+      normalized === "initializewithtoken2022"
+    ) {
+      return "launchlab_initialize";
+    }
+    if (normalized === "migratetocpswap" || normalized === "migratetoamm")
+      return "launchlab_migrate";
+    return null;
+  }
   if (programId === PUMP_PROGRAM_ID) {
     if (normalized === "createv2") return "pump_create_v2";
     if (normalized === "create") return "pump_create";
@@ -434,16 +511,19 @@ function observationFromParsedAccounts(input: {
   slot: number;
   blockTimeMs: number | null;
   eventIndex: number;
+  transferFeeBps?: number | null;
 }): Observation | null {
-  const poolType: PoolType = input.kind.startsWith("pumpswap")
-    ? "pumpswap"
-    : input.kind.startsWith("pump_")
-      ? "pump"
-      : input.kind === "dbc_initialize" || input.kind === "dbc_curve_complete"
-        ? "dbc"
-        : input.kind === "dlmm_initialize"
-          ? "dlmm"
-          : "damm_v2";
+  const poolType: PoolType = input.kind.startsWith("launchlab")
+    ? "launchlab"
+    : input.kind.startsWith("pumpswap")
+      ? "pumpswap"
+      : input.kind.startsWith("pump_")
+        ? "pump"
+        : input.kind === "dbc_initialize" || input.kind === "dbc_curve_complete"
+          ? "dbc"
+          : input.kind === "dlmm_initialize"
+            ? "dlmm"
+            : "damm_v2";
   const pick = (...names: string[]): string | null => {
     for (const name of names) {
       const value = input.named.get(normalizeInstructionName(name));
@@ -453,16 +533,25 @@ function observationFromParsedAccounts(input: {
   };
   let mint = pick("mint", "base_mint");
   const pool =
-    input.kind === "pump_migrate"
-      ? pick("pool", "bonding_curve", "lb_pair")
-      : pick("bonding_curve", "pool", "lb_pair");
+    input.kind === "launchlab_migrate"
+      ? pick("cpswap_pool", "amm_pool", "pool_state")
+      : input.kind === "launchlab_initialize"
+        ? pick("pool_state", "pool")
+        : input.kind === "pump_migrate"
+          ? pick("pool", "bonding_curve", "lb_pair")
+          : pick("bonding_curve", "pool", "lb_pair");
   const mintA = pick("token_a_mint", "token_mint_x", "token_x");
   const mintB = pick("token_b_mint", "token_mint_y", "token_y");
   if (mint === null && mintA !== null) {
     mint = mintB === null ? mintA : chooseTokenMint(mintA, mintB);
   }
   const creator = pick("creator", "user", "funder", "payer");
-  const virtualPool = input.kind === "pump_migrate" ? pick("bonding_curve") : pick("virtual_pool");
+  const virtualPool =
+    input.kind === "launchlab_migrate"
+      ? pick("pool_state")
+      : input.kind === "pump_migrate"
+        ? pick("bonding_curve")
+        : pick("virtual_pool");
   const quoteMint = pick("quote_mint");
   if ((mint === null || pool === null) && input.rawAccounts.length > 0) {
     const layout = INSTRUCTION_LAYOUTS.find(
@@ -478,7 +567,13 @@ function observationFromParsedAccounts(input: {
         },
         layout.layout,
       );
-      if (fromRaw && isPersistable(fromRaw)) return fromRaw;
+      if (fromRaw && isPersistable(fromRaw)) {
+        return withLaunchpad(
+          fromRaw,
+          platformOf(input.kind, input.named),
+          input.transferFeeBps ?? null,
+        );
+      }
     }
   }
   const observation: Observation = {
@@ -489,7 +584,45 @@ function observationFromParsedAccounts(input: {
     virtualPool,
     quoteMint,
   };
-  return isPersistable(observation) ? observation : null;
+  if (!isPersistable(observation)) return null;
+  return withLaunchpad(
+    observation,
+    platformOf(input.kind, input.named),
+    input.transferFeeBps ?? null,
+  );
+}
+
+function platformOf(kind: EventKind, named: Map<string, string>): string | null {
+  if (kind === "launchlab_initialize" || kind === "launchlab_migrate") {
+    return named.get(normalizeInstructionName("platform_config")) ?? null;
+  }
+  if (kind === "dbc_initialize" || kind === "dbc_migration_damm_v2") {
+    return named.get(normalizeInstructionName("config")) ?? null;
+  }
+  return null;
+}
+
+function safeBase58(data: string): Uint8Array | null {
+  try {
+    return decodeBase58(data);
+  } catch {
+    return null;
+  }
+}
+
+function feeBpsFromDecoded(decoded: Record<string, unknown> | null): number | null {
+  return findFeeBps(decoded, 0);
+}
+
+function findFeeBps(value: unknown, depth: number): number | null {
+  if (depth > 4 || value === null || typeof value !== "object") return null;
+  for (const [key, child] of Object.entries(value as Record<string, unknown>)) {
+    const norm = key.toLowerCase().replaceAll("_", "");
+    if (norm === "transferfeebasispoints" && typeof child === "number") return child;
+    const nested = findFeeBps(child, depth + 1);
+    if (nested !== null) return nested;
+  }
+  return null;
 }
 
 function namedAccounts(decoded: Record<string, unknown> | null): Map<string, string> {
@@ -620,7 +753,15 @@ function observationFromInstruction(input: {
     (entry) => entry.programId === programId && sameDisc(input.data, entry.disc),
   );
   if (!match) return null;
-  return observationFromLayout({ ...input, programId }, match.layout);
+  const built = observationFromLayout({ ...input, programId }, match.layout);
+  if (!built) return null;
+  const named = accountsByName(match.layout.accountNames, input.accounts);
+  const platform =
+    named.get("platform_config") ??
+    (built.kind === "dbc_initialize" || built.kind === "dbc_migration_damm_v2"
+      ? (named.get("config") ?? null)
+      : null);
+  return withLaunchpad(built, platform, launchlabTransferFeeBps(input.data));
 }
 
 function observationFromLayout(

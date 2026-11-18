@@ -43,6 +43,12 @@ select
 from ingest_recall_audit
 where ran_at >= now() - interval '7 days';
 
+-- Credits metered per venue. Stream events and that venue's backfill or audit RPC.
+select venue, day, (credit_micros / 1000000.0) as credits, stored_events
+from ingest_venue_daily
+where day >= current_date - 7
+order by day, venue;
+
 -- Pump graduations with no create, at or after this venue's coverage slot.
 select count(*)::int as creation_unseen
 from raw_events later

@@ -254,6 +254,56 @@ describe("mainnet transaction fixtures", () => {
       }),
     ]);
   });
+
+  it("tags a StonkFun Token-2022 create from its platform config and transfer fee", () => {
+    // 4qsaU9gh17RBduq6JijmiUbYvgNGXnXc7tJuY5PJy3Ygs7QcuAoHYLb1VBNcomysgHpkB1uKLbCSWzgvUqkFLLAS slot 470947257
+    const fixture = load("launchlab-create-token2022.json");
+    const found = parseRpcTransaction(fixture.result, fixture.signature);
+    const created = found.filter((row) => row.kind === "launchlab_initialize");
+    expect(created).toEqual([
+      expect.objectContaining({
+        poolType: "launchlab",
+        launchpad: "StonkFun",
+        platformConfig: "6BwHHDg3u1854jC8PDLXvR4spTcLNaoBxLJNGC4nTESt",
+        transferFeeBps: 100,
+      }),
+    ]);
+    expect(created[0]?.quoteMint).toBeTruthy();
+    expect(created[0]?.mint).toBeTruthy();
+    expect(created.every(isPersistable)).toBe(true);
+  });
+
+  it("tags a LetsBonk initialize_v2 and does not invent a transfer fee", () => {
+    // EFFtomNYquorwPfETGJEGKALaGxaefYGG9LLLGUP2J8G1Jqz3rQqyvpJ8pEDq84EjyCtugmB3HNx9khbzkJsLZb slot 470821705
+    const fixture = load("launchlab-initialize-v2-bonk.json");
+    const found = parseRpcTransaction(fixture.result, fixture.signature);
+    expect(found).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          kind: "launchlab_initialize",
+          launchpad: "Bonk",
+          platformConfig: "FfYek5vEz23cMkWsdJwG2oa6EphsvXSHrGpdALN4g6W1",
+          transferFeeBps: null,
+        }),
+      ]),
+    );
+  });
+
+  it("tags a StonkFun graduation to Raydium CPMM", () => {
+    // 9mkFpqMSXomHKLJ7CX5TJUSab5Hef8MSBc2RMVj9Cy2dT6eVKTXaMPZRjf4TadpX7gntiHVPz6b6bTNa4D17v4x slot 470941138
+    const fixture = load("launchlab-migrate-cpswap.json");
+    const found = parseRpcTransaction(fixture.result, fixture.signature);
+    expect(found).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          kind: "launchlab_migrate",
+          launchpad: "StonkFun",
+          platformConfig: "4E876qZTE9FJMrBzgVtBrSrzz2TLivB5Y5QXPjB4gZL7",
+        }),
+      ]),
+    );
+    expect(found.filter((row) => row.kind === "launchlab_migrate").every(isPersistable)).toBe(true);
+  });
 });
 
 function load(name: string): { signature: string; result: unknown } {

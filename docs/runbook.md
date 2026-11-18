@@ -128,11 +128,14 @@ No new GitHub secrets. `HELIUS_API_KEY` is already written into the server `.env
 
 Optional GitHub Actions **variables** (Settings → Secrets and variables → Actions → Variables), not secrets:
 
-| Variable         | Default if unset | Values                                                                                            |
-| ---------------- | ---------------- | ------------------------------------------------------------------------------------------------- |
-| `HELIUS_PLAN`    | `developer`      | `developer` or `free`. Set `free` on 2026-12-07 unless the Developer plan is renewed.             |
-| `HELIUS_WS_MODE` | `auto`           | `auto` and `standard` use the filtered parsed stream. `enhanced` is the full-program firehose.    |
-| `INGEST_MODE`    | `dry-run`        | `dry-run` or `continuous`. Dry-run still stores events. Leave it on dry-run for the 24 hour soak. |
+| Variable         | Default if unset         | Values                                                                                                                                          |
+| ---------------- | ------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------- |
+| `HELIUS_PLAN`    | `developer`              | `developer` or `free`. Set `free` on 2026-12-07 unless the Developer plan is renewed.                                                           |
+| `HELIUS_WS_MODE` | `auto`                   | `auto` and `standard` use the filtered parsed stream. `enhanced` is the full-program firehose.                                                  |
+| `INGEST_MODE`    | `dry-run`                | `dry-run` or `continuous`. Dry-run still stores events. Leave it on dry-run for the 24 hour soak.                                               |
+| `INGEST_VENUES`  | `pump,launchlab,meteora` | Comma-separated `pump`, `launchlab`, and `meteora`. Replaces `INGEST_VENUE` when set. `INGEST_VENUE` still selects one venue if this is absent. |
+
+`INGEST_VENUES=pump,launchlab,meteora` runs all three on one socket. LaunchLab is creates and graduations only (no trades). Meteora is DBC plus DAMM v2, not DLMM. A venue with no coverage row starts at the current slot and does not backfill older checkpoints. Pump keeps the coverage row copied from the old singleton. Recall alerts and `ingest_venue_daily` credits are per venue. Coins land in `ingest_coin` with `launchpad` (`Pump`, `StonkFun`, `Bonk`, or `unknown`) and `platform_config` when the instruction has one.
 
 The next deploy starts the ingestor on the filtered stream. That is safe to leave running. On the server:
 

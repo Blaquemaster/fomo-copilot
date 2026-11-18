@@ -4,6 +4,7 @@ import {
   BACKFILL_MAX_SLOT_SPAN,
   IngestRepository,
   programsForVenue,
+  enabledVenues,
   allowanceCredits,
   budgetLevel,
   createPool,
@@ -70,221 +71,261 @@ export async function runRecallAudit(input: {
   const fetchTransaction =
     input.fetchTransaction ??
     ((signature: string) => getTransaction(input.env.HELIUS_API_KEY, signature));
-  const coverage = await input.repo.ingestCursor();
-  let windowMissed = 0;
-  const scanErrors: Array<{ programId: string; reason: string }> = [];
-  const programs = programsForVenue(input.env.INGEST_VENUE).filter(
-    (programId) => scanNamesForProgram(programId, input.env.PUMP_SUBSCRIBE_CREATE_POOL).length > 0,
-  );
-  for (const programId of programs) {
-    const planned = planAuditWindow({
-      nowMs: now(),
-      tipSlot: tip,
-      programId,
-      spanSlots: auditSpanSlots(programId),
-      coverageSlot: coverage.coverageSlot,
-    });
-    const covered = coverAuditWindow({ window: planned, coverageSlot: coverage.coverageSlot });
-    if (covered.action === "skip") {
-      input.logger.info(
-        { programId, window: planned, coverageSlot: coverage.coverageSlot },
-        "recall window is before stream coverage",
-      );
-      try {
-        await input.repo.insertRecall({
-          ranAt: new Date(now()),
-          programId,
-          windowStartSlot: planned.fromSlot,
-          windowEndSlot: planned.toSlot,
-          expected: 0,
-          matched: 0,
-          missed: 0,
-          recovered: 0,
-          decodeFailed: 0,
-          credits: 0,
-          incomplete: false,
-          errored: false,
-          errorReason: "before_coverage",
-          skipped: true,
-        });
-      } catch (writeError) {
-        input.logger.error(
-          { err: writeError, programId },
-          "failed to record skipped recall window",
-        );
-      }
-      continue;
-    }
-    const window = { fromSlot: covered.fromSlot, toSlot: covered.toSlot };
-    if (window.toSlot - window.fromSlot > BACKFILL_MAX_SLOT_SPAN * 20) {
-      input.logger.warn({ programId, window }, "recall window is unexpectedly wide");
-    }
-    let scanned: Awaited<ReturnType<typeof scan>>;
-    try {
-      scanned = await scan({
-        apiKey: input.env.HELIUS_API_KEY,
+  const cursor = await input.repo.ingestCursor();
+  const stored =
+    typeof input.repo.venueCoverages === "function"
+      ? await input.repo.venueCoverages()
+      : new Map<string, number>();
+  const venueReports: Array<{
+    venue: string;
+    windowMissed: number;
+    scanErrors: Array<{ programId: string; reason: string }>;
+    missed: number;
+    expected: number;
+    unseen: number;
+  }> = [];
+  for (const venue of enabledVenues(input.env)) {
+    const coverageSlot = stored.has(venue)
+      ? (stored.get(venue) ?? null)
+      : cursor.venue === venue
+        ? cursor.coverageSlot
+        : null;
+    let windowMissed = 0;
+    const scanErrors: Array<{ programId: string; reason: string }> = [];
+    const programs = programsForVenue(venue).filter(
+      (programId) =>
+        scanNamesForProgram(programId, input.env.PUMP_SUBSCRIBE_CREATE_POOL).length > 0,
+    );
+    for (const programId of programs) {
+      const planned = planAuditWindow({
+        nowMs: now(),
+        tipSlot: tip,
         programId,
-        instructionNames: scanNamesForProgram(programId, input.env.PUMP_SUBSCRIBE_CREATE_POOL),
-        slotGt: window.fromSlot - 1,
-        slotLte: window.toSlot,
-        maxPages: auditMaxPages(programId),
+        spanSlots: auditSpanSlots(programId),
+        coverageSlot,
       });
-    } catch (error) {
-      const reason = auditScanErrorReason(error);
-      scanErrors.push({ programId, reason });
-      input.logger.error({ err: error, programId, reason }, "recall scan failed");
+      const covered = coverAuditWindow({ window: planned, coverageSlot });
+      if (covered.action === "skip") {
+        input.logger.info(
+          { programId, venue, window: planned, coverageSlot },
+          "recall window is before stream coverage",
+        );
+        try {
+          await input.repo.insertRecall({
+            ranAt: new Date(now()),
+            programId,
+            windowStartSlot: planned.fromSlot,
+            windowEndSlot: planned.toSlot,
+            expected: 0,
+            matched: 0,
+            missed: 0,
+            recovered: 0,
+            decodeFailed: 0,
+            credits: 0,
+            incomplete: false,
+            errored: false,
+            errorReason: "before_coverage",
+            skipped: true,
+          });
+        } catch (writeError) {
+          input.logger.error(
+            { err: writeError, programId },
+            "failed to record skipped recall window",
+          );
+        }
+        continue;
+      }
+      const window = { fromSlot: covered.fromSlot, toSlot: covered.toSlot };
+      if (window.toSlot - window.fromSlot > BACKFILL_MAX_SLOT_SPAN * 20) {
+        input.logger.warn({ programId, window }, "recall window is unexpectedly wide");
+      }
+      let scanned: Awaited<ReturnType<typeof scan>>;
       try {
+        scanned = await scan({
+          apiKey: input.env.HELIUS_API_KEY,
+          programId,
+          instructionNames: scanNamesForProgram(programId, input.env.PUMP_SUBSCRIBE_CREATE_POOL),
+          slotGt: window.fromSlot - 1,
+          slotLte: window.toSlot,
+          maxPages: auditMaxPages(programId),
+        });
+      } catch (error) {
+        const reason = auditScanErrorReason(error);
+        scanErrors.push({ programId, reason });
+        input.logger.error({ err: error, programId, reason }, "recall scan failed");
+        try {
+          await input.repo.insertRecall({
+            ranAt: new Date(now()),
+            programId,
+            windowStartSlot: window.fromSlot,
+            windowEndSlot: window.toSlot,
+            expected: 0,
+            matched: 0,
+            missed: 0,
+            recovered: 0,
+            decodeFailed: 0,
+            credits: 0,
+            incomplete: false,
+            errored: true,
+            errorReason: reason,
+            skipped: false,
+          });
+        } catch (writeError) {
+          input.logger.error({ err: writeError, programId }, "failed to record recall scan error");
+        }
+        continue;
+      }
+      await input.repo.addUsage({
+        now: new Date(),
+        streamedBytes: 0n,
+        messages: 0,
+        storedEvents: 0,
+        creditMicros: BigInt(scanned.creditsCharged) * 1_000_000n,
+        venue,
+      });
+      if (!scanned.complete) {
         await input.repo.insertRecall({
           ranAt: new Date(now()),
           programId,
           windowStartSlot: window.fromSlot,
           windowEndSlot: window.toSlot,
-          expected: 0,
+          expected: scanned.matches.length,
           matched: 0,
           missed: 0,
           recovered: 0,
           decodeFailed: 0,
-          credits: 0,
-          incomplete: false,
-          errored: true,
-          errorReason: reason,
+          credits: scanned.creditsCharged,
+          incomplete: true,
+          errored: false,
+          errorReason: null,
           skipped: false,
         });
-      } catch (writeError) {
-        input.logger.error({ err: writeError, programId }, "failed to record recall scan error");
+        input.logger.warn(
+          { programId, credits: scanned.creditsCharged },
+          "recall scan did not finish the window",
+        );
+        continue;
       }
-      continue;
-    }
-    await input.repo.addUsage({
-      now: new Date(),
-      streamedBytes: 0n,
-      messages: 0,
-      storedEvents: 0,
-      creditMicros: BigInt(scanned.creditsCharged) * 1_000_000n,
-    });
-    if (!scanned.complete) {
+      const known = await input.repo.knownSignatures(
+        scanned.matches.map((match) => match.signature),
+      );
+      const diff = diffSignatures(
+        scanned.matches.map((match) => match.signature),
+        known,
+      );
+      let recovered = 0;
+      let decodeFailed = 0;
+      for (const signature of diff.missed) {
+        try {
+          const result = await fetchTransaction(signature);
+          await input.repo.addUsage({
+            now: new Date(),
+            streamedBytes: 0n,
+            messages: 0,
+            storedEvents: 0,
+            creditMicros: 1_000_000n,
+            venue,
+          });
+          if (result == null) {
+            decodeFailed += 1;
+            continue;
+          }
+          const decoded = decodeRpcTransaction(result, signature);
+          if (decoded.observations.length === 0) {
+            decodeFailed += 1;
+            continue;
+          }
+          for (const observation of decoded.observations) {
+            const receivedAt =
+              observation.blockTimeMs === null
+                ? new Date(now())
+                : new Date(observation.blockTimeMs);
+            const inserted = await input.repo.persistEvent({
+              observation,
+              byteLength: 0,
+              receivedAt,
+              source: "audit",
+            });
+            if (inserted) recovered += 1;
+          }
+        } catch (error) {
+          decodeFailed += 1;
+          input.logger.warn({ err: error, signature }, "recall audit could not store a miss");
+        }
+      }
+      windowMissed += diff.missed.length;
       await input.repo.insertRecall({
         ranAt: new Date(now()),
         programId,
         windowStartSlot: window.fromSlot,
         windowEndSlot: window.toSlot,
-        expected: scanned.matches.length,
-        matched: 0,
-        missed: 0,
-        recovered: 0,
-        decodeFailed: 0,
-        credits: scanned.creditsCharged,
-        incomplete: true,
+        expected: diff.matched.length + diff.missed.length,
+        matched: diff.matched.length,
+        missed: diff.missed.length,
+        recovered,
+        decodeFailed,
+        credits: scanned.creditsCharged + diff.missed.length,
+        incomplete: false,
         errored: false,
         errorReason: null,
         skipped: false,
       });
-      input.logger.warn(
-        { programId, credits: scanned.creditsCharged },
-        "recall scan did not finish the window",
+      input.logger.info(
+        {
+          programId,
+          fromSlot: window.fromSlot,
+          toSlot: window.toSlot,
+          expected: diff.matched.length + diff.missed.length,
+          missed: diff.missed.length,
+          recovered,
+        },
+        "recall audit window",
       );
-      continue;
     }
-    const known = await input.repo.knownSignatures(scanned.matches.map((match) => match.signature));
-    const diff = diffSignatures(
-      scanned.matches.map((match) => match.signature),
-      known,
-    );
-    let recovered = 0;
-    let decodeFailed = 0;
-    for (const signature of diff.missed) {
-      try {
-        const result = await fetchTransaction(signature);
-        await input.repo.addUsage({
-          now: new Date(),
-          streamedBytes: 0n,
-          messages: 0,
-          storedEvents: 0,
-          creditMicros: 1_000_000n,
-        });
-        if (result == null) {
-          decodeFailed += 1;
-          continue;
-        }
-        const decoded = decodeRpcTransaction(result, signature);
-        if (decoded.observations.length === 0) {
-          decodeFailed += 1;
-          continue;
-        }
-        for (const observation of decoded.observations) {
-          const receivedAt =
-            observation.blockTimeMs === null ? new Date(now()) : new Date(observation.blockTimeMs);
-          const inserted = await input.repo.persistEvent({
-            observation,
-            byteLength: 0,
-            receivedAt,
-            source: "audit",
-          });
-          if (inserted) recovered += 1;
-        }
-      } catch (error) {
-        decodeFailed += 1;
-        input.logger.warn({ err: error, signature }, "recall audit could not store a miss");
-      }
-    }
-    windowMissed += diff.missed.length;
-    await input.repo.insertRecall({
-      ranAt: new Date(now()),
-      programId,
-      windowStartSlot: window.fromSlot,
-      windowEndSlot: window.toSlot,
-      expected: diff.matched.length + diff.missed.length,
-      matched: diff.matched.length,
-      missed: diff.missed.length,
-      recovered,
-      decodeFailed,
-      credits: scanned.creditsCharged + diff.missed.length,
-      incomplete: false,
-      errored: false,
-      errorReason: null,
-      skipped: false,
+    const since = new Date(now() - 7 * 24 * 60 * 60 * 1000);
+    const week = await input.repo.recallTotals(since, {
+      programIds: programsForVenue(venue),
+      coverageSlot,
     });
+    const unseen = await input.repo.creationUnseen(venue, coverageSlot);
     input.logger.info(
-      {
-        programId,
-        fromSlot: window.fromSlot,
-        toSlot: window.toSlot,
-        expected: diff.matched.length + diff.missed.length,
-        missed: diff.missed.length,
-        recovered,
-      },
-      "recall audit window",
+      { venue, unseen, windows: week.windows, missed: week.missed, expected: week.expected },
+      "creation unseen",
     );
+    venueReports.push({
+      venue,
+      windowMissed,
+      scanErrors,
+      missed: week.missed,
+      expected: week.expected,
+      unseen,
+    });
   }
-  const since = new Date(now() - 7 * 24 * 60 * 60 * 1000);
-  const week = await input.repo.recallTotals(since, {
-    programIds: programsForVenue(input.env.INGEST_VENUE),
-    coverageSlot: coverage.coverageSlot,
+  const alert = venueReports.some((report) => {
+    const decision = recallShouldAlert({
+      windowMissed: report.windowMissed,
+      sevenDayMissed: report.missed,
+      sevenDayExpected: report.expected,
+    });
+    return report.scanErrors.length > 0 || decision.window || decision.week;
   });
-  const alert = recallShouldAlert({
-    windowMissed,
-    sevenDayMissed: week.missed,
-    sevenDayExpected: week.expected,
-  });
-  const unseen = await input.repo.creationUnseen(input.env.INGEST_VENUE, coverage.coverageSlot);
-  input.logger.info(
-    { unseen, windows: week.windows, missed: week.missed, expected: week.expected },
-    "creation unseen",
-  );
-  if (scanErrors.length > 0 || alert.window || alert.week) {
-    const loss =
-      week.expected === 0 ? "n/a" : `${((week.missed / week.expected) * 100).toFixed(2)}%`;
-    const failed = scanErrors.map((row) => `${row.programId} ${row.reason}`).join(", ");
+  if (alert) {
+    const lines = ["FOMO copilot recall audit"];
+    for (const report of venueReports) {
+      const loss =
+        report.expected === 0 ? "n/a" : `${((report.missed / report.expected) * 100).toFixed(2)}%`;
+      const failed = report.scanErrors.map((row) => `${row.programId} ${row.reason}`).join(", ");
+      lines.push(
+        `${report.venue} scan errors: ${report.scanErrors.length === 0 ? "none" : failed}`,
+        `${report.venue} misses this run: ${report.windowMissed.toString()}`,
+        `${report.venue} 7 day loss: ${loss} (${report.missed.toString()}/${report.expected.toString()})`,
+        `${report.venue} creation unseen: ${report.unseen.toString()}`,
+      );
+    }
     await sendTelegramMessage({
       token: input.env.TELEGRAM_BOT_TOKEN,
       chatId: input.env.TELEGRAM_ADMIN_CHAT_ID,
-      text: [
-        "FOMO copilot recall audit",
-        `scan errors: ${scanErrors.length === 0 ? "none" : failed}`,
-        `misses this run: ${windowMissed.toString()}`,
-        `7 day loss: ${loss} (${week.missed.toString()}/${week.expected.toString()})`,
-        `creation unseen: ${unseen.toString()}`,
-      ].join("\n"),
+      text: lines.join("\n"),
     });
   }
 }

@@ -1,5 +1,11 @@
 # Decision log
 
+## 2026-11-18 — Pump, LaunchLab, and Meteora run together
+
+`INGEST_VENUES` replaces the single-venue switch. When it is unset, `INGEST_VENUE` still selects one venue. Production sets `pump,launchlab,meteora`. Each venue has its own coverage row in `ingest_venue_coverage` and its own recall total. A venue with no coverage row starts at the tip and its old checkpoints are deleted, so Meteora does not walk the gap from the November 17 shutdown. Pump coverage copied from the old singleton is kept.
+
+LaunchLab subscribes to creates and graduations only (`initialize`, `initialize_v2`, `initialize_with_token_2022`, `migrate_to_cpswap`, `migrate_to_amm`). Platform tags come from the platform config account: StonkFun and Bonk ids were checked on-chain (the account name is `StonkFun` or `letsbonk.fun`). Any other config is `unknown` and the config id is stored. The Token-2022 transfer-fee rate is read from the create instruction when it is present. Meteora DBC and DAMM v2 are subscribed again. DLMM is not, because it is not a launch. Bags, Believe, and Jupiter Studio do not publish a stable DBC config list, so those coins stay `unknown` with the config id stored. Stream credits are also written per venue to `ingest_venue_daily`. A public-RPC sample of LaunchLab on 2026-11-18 was about 1.6 transactions per second, and 3 of 39 sampled transactions were a create or a graduation, roughly 400 stream credits an hour. The last measured Meteora window (11.5 minutes, before the shutdown) was 19 DBC creates, 34 DAMM v2 creates, and 38 migrations, about 470 credits an hour with DLMM at zero. Both are samples, not a soak.
+
 ## 2026-11-17 — Backfill only subscribed programs
 
 Startup backfill used every program for the venue, so PumpSwap was scanned even with `PUMP_SUBSCRIBE_CREATE_POOL=false`. That walk burned about 440 credits on a 38-slot gap and left the checkpoint at slot 470531229. Backfill now uses the same filter as the websocket, and a checkpoint for a program that is not subscribed is deleted. A similar 38-slot restart of the Pump program is one scan of about 3,000 transactions, about 13 credits, plus one `getTransaction` per create or migrate in the gap.

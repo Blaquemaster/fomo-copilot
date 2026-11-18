@@ -100,8 +100,10 @@ function repo(overrides: Partial<IngestRepository> = {}): IngestRepository {
     knownSignatures: vi.fn(async () => new Set<string>()),
     lastLiveSlot: vi.fn(async () => null),
     ingestCursor: vi.fn(async () => ({ slot: null, venue: null, coverageSlot: null })),
+    venueCoverages: vi.fn(async () => new Map<string, number>()),
     recordVenueCoverage: vi.fn(async () => undefined),
     clearCheckpoint: vi.fn(async () => undefined),
+    rememberCoin: vi.fn(async () => undefined),
     insertHeapSample: vi.fn(async () => undefined),
     flushAccounting: vi.fn(async () => undefined),
     persistEvent: vi.fn(async () => true),
@@ -556,6 +558,41 @@ describe("ingest loop", () => {
     });
     expect(scanned).not.toContain("pAMMBay6oceH9fJKBRHGP5D4bD4sWpmSwMn52FMfXEA");
     expect(cleared).toContain("pAMMBay6oceH9fJKBRHGP5D4bD4sWpmSwMn52FMfXEA");
+    controller.abort();
+    await done;
+  });
+
+  it("subscribes to Pump, LaunchLab, and Meteora creates together", async () => {
+    const socket = new FakeSocket();
+    const controller = new AbortController();
+    const done = runIngestLoop({
+      env: { ...env, INGEST_VENUES: "pump,launchlab,meteora" },
+      logger: logger(),
+      repo: repo(),
+      signal: controller.signal,
+      deps: {
+        openSocket: () => asSocket(socket),
+        warnMs: 60_000,
+        criticalMs: 120_000,
+        livenessTickMs: 60_000,
+        usageFlushMs: 60_000,
+        confirmTimeoutMs: 60_000,
+        callRpc: () => Promise.resolve(1),
+      },
+    });
+    await vi.waitFor(() => {
+      expect(socket.sent.some((frame) => frame.includes("parsedTransactionSubscribe"))).toBe(true);
+    });
+    const subscribe =
+      socket.sent.find((frame) => frame.includes("parsedTransactionSubscribe")) ?? "";
+    expect(subscribe).toContain("6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P");
+    expect(subscribe).toContain("LanMV9sAd7wArD4vJFi2qDdfnVhFxYSUg6eADduJ3uj");
+    expect(subscribe).toContain("dbcij3LWUppWqq96dh6gJWwBifmcGfLSB5D4DuSMaqN");
+    expect(subscribe).toContain("cpamdpZCGKUy5JxQXB4dcpGPiikHawvSWAd6mEn1sGG");
+    expect(subscribe).toContain("initialize_with_token_2022");
+    expect(subscribe).toContain("migrate_to_cpswap");
+    expect(subscribe).not.toContain("buy_exact_in");
+    expect(subscribe).not.toContain("LBUZKhRxPF3XUpBCjp4YzTKgLccjZhTSDM9YuVaPwxo");
     controller.abort();
     await done;
   });

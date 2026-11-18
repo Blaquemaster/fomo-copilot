@@ -63,7 +63,8 @@ export function planCandidateWrites(input: {
     (input.observation.kind === "dbc_initialize" ||
       input.observation.kind === "pump_create" ||
       input.observation.kind === "pump_create_v2" ||
-      input.observation.kind === "pumpswap_create_pool") &&
+      input.observation.kind === "pumpswap_create_pool" ||
+      input.observation.kind === "launchlab_initialize") &&
     input.observation.mint &&
     input.observation.pool
   ) {
@@ -77,7 +78,9 @@ export function planCandidateWrites(input: {
             ? "pumpswap"
             : input.observation.kind === "dbc_initialize"
               ? "dbc"
-              : "pump",
+              : input.observation.kind === "launchlab_initialize"
+                ? "launchlab"
+                : "pump",
       },
       curve: null,
       graduation: null,
@@ -92,7 +95,8 @@ export function planCandidateWrites(input: {
   }
   if (
     (input.observation.kind === "dbc_migration_damm_v2" ||
-      input.observation.kind === "pump_migrate") &&
+      input.observation.kind === "pump_migrate" ||
+      input.observation.kind === "launchlab_migrate") &&
     input.observation.mint &&
     input.observation.pool
   ) {
@@ -101,7 +105,12 @@ export function planCandidateWrites(input: {
         ...base,
         mint: input.observation.mint,
         pool: input.observation.pool,
-        poolType: input.observation.kind === "pump_migrate" ? "pumpswap" : "damm_v2",
+        poolType:
+          input.observation.kind === "pump_migrate"
+            ? "pumpswap"
+            : input.observation.kind === "launchlab_migrate"
+              ? "launchlab"
+              : "damm_v2",
       },
       curve: null,
       graduation:

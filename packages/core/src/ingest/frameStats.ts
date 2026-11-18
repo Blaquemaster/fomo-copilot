@@ -352,17 +352,22 @@ export class UsageLedger {
   messages = 0;
   storedEvents = 0;
   creditMicros = 0n;
+  venueCredits = new Map<string, bigint>();
 
   add(input: {
     streamedBytes?: bigint;
     messages?: number;
     storedEvents?: number;
     creditMicros?: bigint;
+    venueCredits?: Readonly<Record<string, bigint>>;
   }): void {
     this.streamedBytes += input.streamedBytes ?? 0n;
     this.messages += input.messages ?? 0;
     this.storedEvents += input.storedEvents ?? 0;
     this.creditMicros += input.creditMicros ?? 0n;
+    for (const [venue, micros] of Object.entries(input.venueCredits ?? {})) {
+      this.venueCredits.set(venue, (this.venueCredits.get(venue) ?? 0n) + micros);
+    }
   }
 
   drain(): {
@@ -370,17 +375,22 @@ export class UsageLedger {
     messages: number;
     storedEvents: number;
     creditMicros: bigint;
+    venueCredits: Record<string, bigint>;
   } {
+    const venueCredits: Record<string, bigint> = {};
+    for (const [venue, micros] of this.venueCredits) venueCredits[venue] = micros;
     const snapshot = {
       streamedBytes: this.streamedBytes,
       messages: this.messages,
       storedEvents: this.storedEvents,
       creditMicros: this.creditMicros,
+      venueCredits,
     };
     this.streamedBytes = 0n;
     this.messages = 0;
     this.storedEvents = 0;
     this.creditMicros = 0n;
+    this.venueCredits = new Map();
     return snapshot;
   }
 }
