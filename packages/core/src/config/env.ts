@@ -98,6 +98,8 @@ export const envSchema = z.object({
   WALLET_BACKFILL_FAIL_LIMIT: z.coerce.number().int().min(1).max(100).optional(),
   /** Dollar bankroll. Unset means alerts show the size percent only. */
   BANKROLL: z.coerce.number().positive().max(1_000_000_000).optional(),
+  /** Paper bankroll in USD. Deploy default 1000. */
+  PAPER_BANKROLL_USD: z.coerce.number().positive().max(1_000_000_000).optional(),
   SIZE_TRENCH_PCT: z.coerce.number().min(0).max(100).optional(),
   SIZE_NEAR_GRADUATION_PCT: z.coerce.number().min(0).max(100).optional(),
   SIZE_POST_GRADUATION_PCT: z.coerce.number().min(0).max(100).optional(),

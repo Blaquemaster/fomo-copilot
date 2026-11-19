@@ -38,6 +38,24 @@ export interface PhaseCStore {
     at: Date,
   ): Promise<void>;
   markSellWarned(ids: readonly string[]): Promise<void>;
+  markScaled(ids: readonly string[], at: Date): Promise<void>;
+  saveMintCache(
+    rows: readonly {
+      mint: string;
+      mintAuthorityActive: boolean | null;
+      freezeAuthorityActive: boolean | null;
+      top10Pct: number | null;
+      sniperPct: number | null;
+      curveLiquidityUsd: number | null;
+      exitImpactPct: number | null;
+    }[],
+    at: Date,
+  ): Promise<void>;
+  recentCandidates(days: number): Promise<number>;
+  secondWaveMints(
+    limit: number,
+  ): Promise<Array<{ mint: string; createdAt: Date; graduatedAt: Date }>>;
+  pruneSnapshots(olderThan: Date): Promise<void>;
   saveSnapshots(
     rows: readonly {
       mint: string;
@@ -45,8 +63,19 @@ export interface PhaseCStore {
       priceUsd: number | null;
       liquidityUsd: number | null;
       volume1h: number | null;
+      volume24h?: number | null;
     }[],
   ): Promise<void>;
+  waveHistory(mints: readonly string[]): Promise<
+    Map<
+      string,
+      {
+        volume7dUsd: number | null;
+        rangeHigh: number | null;
+        liquidityGrowthPct: number | null;
+      }
+    >
+  >;
   recordScreenCredits(credits: number, at: Date): Promise<void>;
   closePosition(input: {
     id: string;

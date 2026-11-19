@@ -10,7 +10,7 @@ import {
 import { runPhaseCCycle } from "./cycle.js";
 import { loadMarketQuotes, pollDue, type QuoteUsage } from "./quotes.js";
 
-const PASS_MS = 60_000;
+const PASS_MS = 3 * 60_000;
 
 await startApp({
   app: "screener",
@@ -42,8 +42,17 @@ await startApp({
         try {
           const source = env.SECOND_WAVE_SOURCE ?? "live";
           const pollMinutes = env.MARKET_POLL_MINUTES ?? 10;
-          if (pollDue(lastPollAt, Date.now(), pollMinutes)) {
-            const mints = source === "live" ? await store.graduatedMints(5_000) : [];
+          const refreshMarket = pollDue(lastPollAt, Date.now(), pollMinutes);
+          if (refreshMarket) {
+            const recent = source === "live" ? await store.coins(200) : [];
+            const graduated = source === "live" ? await store.graduatedMints(500) : [];
+            const mints = [
+              ...new Set([
+                ...recent.map((coin) => coin.mint),
+                ...graduated,
+                "So11111111111111111111111111111111111111112",
+              ]),
+            ];
             const loaded = await loadMarketQuotes({ source, mints, dexBucket, geckoBucket });
             quotes = loaded.quotes;
             dexBucket = loaded.dexBucket;
@@ -63,6 +72,7 @@ await startApp({
             thresholds,
             store,
             quotes,
+            refreshMarket,
             send: async (text) => {
               if ("blocked" in destination) return;
               await sendTelegramMessage({

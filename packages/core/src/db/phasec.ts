@@ -48,50 +48,59 @@ export class PhaseCRepository implements PhaseCStore {
       mint_authority_active: boolean | null;
       freeze_authority_active: boolean | null;
       liquidity_usd: number | null;
+      exit_impact_pct: number | null;
+      bonding_curve: string | null;
+      created_slot: string | null;
     }>(
-      `select mint, first_seen_at, graduated_at, curve_completed_at, tracked_buyers,
-              transfer_fee_bps, creator_sells, tracked_sells, sniper_pct, top10_pct,
-              mint_authority_active, freeze_authority_active, liquidity_usd
-       from (
-         select distinct on (c.mint)
-           c.mint, c.first_seen_at, c.graduated_at, c.curve_completed_at,
-           coalesce(w.tracked_buyers, 0) as tracked_buyers,
-           coin.transfer_fee_bps,
-           coalesce(stats.creator_sells, 0) as creator_sells,
-           coalesce(sells.tracked_sells, 0) as tracked_sells,
-           snipers.sniper_pct,
-           cache.top10_pct,
-           cache.mint_authority_active,
-           cache.freeze_authority_active,
-           snap.liquidity_usd
+      `with newest as (
+         select c.mint, c.first_seen_at, c.graduated_at, c.curve_completed_at
          from candidates c
-         left join coin_wallet_signal w on w.mint = c.mint
-         left join ingest_coin coin on coin.mint = c.mint
-         left join pump_coin_stats stats on stats.mint = c.mint
-         left join phasec_mint_cache cache on cache.mint = c.mint
-         left join lateral (
-           select count(*)::int as tracked_sells from wallet_fill f
-           where f.mint = c.mint and f.side = 'sell'
-         ) sells on true
-         left join lateral (
-           select case when count(*) filter (where t.side = 'buy') = 0 then 0
+         where c.source <> 'audit'
+         order by c.first_seen_at desc
+         limit $1
+       )
+       select n.mint, n.first_seen_at, n.graduated_at, n.curve_completed_at,
+              coalesce(w.tracked_buyers, 0) as tracked_buyers,
+              coin.transfer_fee_bps,
+              coalesce(stats.creator_sells, 0) as creator_sells,
+              coalesce(sells.tracked_sells, 0) as tracked_sells,
+              case when coalesce(snipers.buys, 0) = 0 then cache.sniper_pct else snipers.sniper_pct end as sniper_pct,
+              cache.top10_pct,
+              cache.mint_authority_active,
+              cache.freeze_authority_active,
+              coalesce(snap.liquidity_usd, cache.curve_liquidity_usd) as liquidity_usd,
+              case when cache.exit_impact_at > now() - interval '10 minutes'
+                then cache.exit_impact_pct else null end as exit_impact_pct,
+              pc.bonding_curve,
+              pc.created_slot
+       from newest n
+       left join coin_wallet_signal w on w.mint = n.mint
+       left join ingest_coin coin on coin.mint = n.mint
+       left join pump_coin_stats stats on stats.mint = n.mint
+       left join pump_coin pc on pc.mint = n.mint
+       left join phasec_mint_cache cache on cache.mint = n.mint
+       left join lateral (
+         select count(*)::int as tracked_sells from wallet_fill f
+         where f.mint = n.mint and f.side = 'sell'
+       ) sells on true
+       left join lateral (
+         select count(*) filter (where t.side = 'buy') as buys,
+           case when count(*) filter (where t.side = 'buy') = 0 then null
              else count(*) filter (
                where t.side = 'buy' and t.is_creator = false and t.slot = p.created_slot
              )::float / count(*) filter (where t.side = 'buy') * 100
            end as sniper_pct
-           from pump_trade t
-           join pump_coin p on p.mint = t.mint
-           where t.mint = c.mint
-         ) snipers on true
-         left join lateral (
-           select liquidity_usd from phasec_market_snapshot s
-           where s.mint = c.mint order by polled_at desc limit 1
-         ) snap on true
-         where c.source <> 'audit'
-         order by c.mint, c.first_seen_at desc
-       ) coins
-       order by first_seen_at desc
-       limit $1`,
+         from pump_trade t
+         join pump_coin p on p.mint = t.mint
+         where t.mint = n.mint
+       ) snipers on true
+       left join lateral (
+         select liquidity_usd from phasec_market_snapshot s
+         where s.mint = n.mint
+         order by polled_at desc
+         limit 1
+       ) snap on true
+       order by n.first_seen_at desc`,
       [limit],
     );
     return result.rows.map((row) => ({
@@ -105,7 +114,7 @@ export class PhaseCRepository implements PhaseCStore {
       transferFeeBps: row.transfer_fee_bps === null ? null : Number(row.transfer_fee_bps),
       mintAuthorityActive: row.mint_authority_active,
       freezeAuthorityActive: row.freeze_authority_active,
-      exitQuoteImpactPct: null,
+      exitQuoteImpactPct: row.exit_impact_pct === null ? null : Number(row.exit_impact_pct),
       top10HoldersPct: row.top10_pct === null ? null : Number(row.top10_pct),
       sniperBundlePct: row.sniper_pct === null ? null : Number(row.sniper_pct),
       trackedSells: Number(row.tracked_sells),
@@ -113,6 +122,8 @@ export class PhaseCRepository implements PhaseCStore {
       creatorSells: Number(row.creator_sells),
       quoteError: false,
       secondWave: null,
+      bondingCurve: row.bonding_curve,
+      createdSlot: row.created_slot === null ? null : Number(row.created_slot),
     }));
   }
 
@@ -144,13 +155,14 @@ export class PhaseCRepository implements PhaseCStore {
       entry_fee_usd: number | null;
       entry_out_amount: string | null;
       sell_warned: boolean;
+      scaled_at: Date | null;
       size_pct: number;
       exit_plan: string;
       screen_failed: boolean;
     }>(
       `select id, mint, stage, arm, status, alert_at, entry_after, opened_at, entry_quote,
               entry_size_usd, entry_fee_usd, entry_out_amount, size_pct, exit_plan,
-              screen_failed, sell_warned
+              screen_failed, sell_warned, scaled_at
        from phasec_position
        where status in ('pending', 'open')
        order by alert_at`,
@@ -169,6 +181,7 @@ export class PhaseCRepository implements PhaseCStore {
       entryFeeUsd: row.entry_fee_usd === null ? null : Number(row.entry_fee_usd),
       entryOutAmount: row.entry_out_amount,
       sellWarned: row.sell_warned,
+      scaledAt: row.scaled_at ? date(row.scaled_at) : null,
       sizePct: Number(row.size_pct),
       exitPlan: row.exit_plan,
       screenFailed: row.screen_failed,
@@ -314,6 +327,96 @@ export class PhaseCRepository implements PhaseCStore {
     );
   }
 
+  async markScaled(ids: readonly string[], at: Date): Promise<void> {
+    if (ids.length === 0) return;
+    await this.pool.query(
+      "update phasec_position set scaled_at = $2 where id = any($1::bigint[]) and scaled_at is null",
+      [ids, at.toISOString()],
+    );
+  }
+
+  async saveMintCache(
+    rows: readonly {
+      mint: string;
+      mintAuthorityActive: boolean | null;
+      freezeAuthorityActive: boolean | null;
+      top10Pct: number | null;
+      sniperPct: number | null;
+      curveLiquidityUsd: number | null;
+      exitImpactPct: number | null;
+    }[],
+    at: Date,
+  ): Promise<void> {
+    for (const row of rows) {
+      await this.pool.query(
+        `insert into phasec_mint_cache
+          (mint, mint_authority_active, freeze_authority_active, top10_pct, sniper_pct, curve_liquidity_usd,
+           exit_impact_pct, exit_impact_at, fetched_at)
+         values ($1,$2,$3,$4,$5,$6,$7, case when $7 is null then null else $8 end, $8)
+         on conflict (mint) do update set
+           mint_authority_active = coalesce(excluded.mint_authority_active, phasec_mint_cache.mint_authority_active),
+           freeze_authority_active = coalesce(excluded.freeze_authority_active, phasec_mint_cache.freeze_authority_active),
+           top10_pct = coalesce(excluded.top10_pct, phasec_mint_cache.top10_pct),
+           sniper_pct = coalesce(excluded.sniper_pct, phasec_mint_cache.sniper_pct),
+           curve_liquidity_usd = coalesce(excluded.curve_liquidity_usd, phasec_mint_cache.curve_liquidity_usd),
+           exit_impact_pct = coalesce(excluded.exit_impact_pct, phasec_mint_cache.exit_impact_pct),
+           exit_impact_at = case when excluded.exit_impact_pct is not null then excluded.fetched_at
+             else phasec_mint_cache.exit_impact_at end,
+           fetched_at = excluded.fetched_at`,
+        [
+          row.mint,
+          row.mintAuthorityActive,
+          row.freezeAuthorityActive,
+          row.top10Pct,
+          row.sniperPct,
+          row.curveLiquidityUsd,
+          row.exitImpactPct,
+          at.toISOString(),
+        ],
+      );
+    }
+  }
+
+  async recentCandidates(days: number): Promise<number> {
+    const result = await this.pool.query<{ count: string }>(
+      `select count(*)::text as count from candidates
+       where source <> 'audit' and first_seen_at > now() - make_interval(days => $1)`,
+      [days],
+    );
+    return Number(result.rows[0]?.count ?? 0);
+  }
+
+  async secondWaveMints(
+    limit: number,
+  ): Promise<Array<{ mint: string; createdAt: Date; graduatedAt: Date }>> {
+    const result = await this.pool.query<{
+      mint: string;
+      first_seen_at: Date;
+      graduated_at: Date;
+    }>(
+      `select mint, first_seen_at, graduated_at
+       from candidates
+       where source <> 'audit'
+         and graduated_at is not null
+         and graduated_at <= now() - interval '24 hours'
+         and graduated_at >= now() - interval '30 days'
+       order by graduated_at desc
+       limit $1`,
+      [limit],
+    );
+    return result.rows.map((row) => ({
+      mint: row.mint,
+      createdAt: date(row.first_seen_at),
+      graduatedAt: date(row.graduated_at),
+    }));
+  }
+
+  async pruneSnapshots(olderThan: Date): Promise<void> {
+    await this.pool.query("delete from phasec_market_snapshot where polled_at < $1", [
+      olderThan.toISOString(),
+    ]);
+  }
+
   async saveSnapshots(
     rows: readonly {
       mint: string;
@@ -321,17 +424,92 @@ export class PhaseCRepository implements PhaseCStore {
       priceUsd: number | null;
       liquidityUsd: number | null;
       volume1h: number | null;
+      volume24h?: number | null;
     }[],
   ): Promise<void> {
     for (const row of rows) {
       await this.pool.query(
         `insert into phasec_market_snapshot
-          (mint, polled_at, price_usd, liquidity_usd, volume_1h)
-         values ($1, $2, $3, $4, $5)
+          (mint, polled_at, price_usd, liquidity_usd, volume_1h, volume_24h)
+         values ($1, $2, $3, $4, $5, $6)
          on conflict (mint, polled_at) do nothing`,
-        [row.mint, row.at.toISOString(), row.priceUsd, row.liquidityUsd, row.volume1h],
+        [
+          row.mint,
+          row.at.toISOString(),
+          row.priceUsd,
+          row.liquidityUsd,
+          row.volume1h,
+          row.volume24h ?? null,
+        ],
       );
     }
+  }
+
+  async waveHistory(mints: readonly string[]): Promise<
+    Map<
+      string,
+      {
+        volume7dUsd: number | null;
+        rangeHigh: number | null;
+        liquidityGrowthPct: number | null;
+      }
+    >
+  > {
+    const history = new Map<
+      string,
+      {
+        volume7dUsd: number | null;
+        rangeHigh: number | null;
+        liquidityGrowthPct: number | null;
+      }
+    >();
+    if (mints.length === 0) return history;
+    const result = await this.pool.query<{
+      mint: string;
+      range_high: number | null;
+      first_liq: number | null;
+      last_liq: number | null;
+      volume_7d: number | null;
+    }>(
+      `with bounds as (
+         select s.mint,
+           max(s.price_usd) as range_high,
+           (array_agg(s.liquidity_usd order by s.polled_at) filter (where s.liquidity_usd is not null))[1] as first_liq,
+           (array_agg(s.liquidity_usd order by s.polled_at desc) filter (where s.liquidity_usd is not null))[1] as last_liq
+         from phasec_market_snapshot s
+         where s.mint = any($1::text[])
+         group by s.mint
+       ),
+       daily as (
+         select distinct on (mint, (polled_at at time zone 'utc')::date)
+           mint, volume_24h
+         from phasec_market_snapshot
+         where mint = any($1::text[])
+           and volume_24h is not null
+           and polled_at >= now() - interval '8 days'
+         order by mint, (polled_at at time zone 'utc')::date, polled_at desc
+       ),
+       vol as (
+         select mint, case when count(*) >= 7 then sum(volume_24h) else null end as volume_7d
+         from daily
+         group by mint
+       )
+       select b.mint, b.range_high, b.first_liq, b.last_liq, v.volume_7d
+       from bounds b
+       left join vol v on v.mint = b.mint`,
+      [mints],
+    );
+    for (const row of result.rows) {
+      const first = row.first_liq === null ? null : Number(row.first_liq);
+      const last = row.last_liq === null ? null : Number(row.last_liq);
+      history.set(row.mint, {
+        volume7dUsd: row.volume_7d === null ? null : Number(row.volume_7d),
+        rangeHigh: row.range_high === null ? null : Number(row.range_high),
+        liquidityGrowthPct:
+          first !== null && first > 0 && last !== null ? ((last - first) / first) * 100 : null,
+      });
+    }
+    return history;
   }
 
   async recordScreenCredits(credits: number, at: Date): Promise<void> {

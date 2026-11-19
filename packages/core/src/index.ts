@@ -240,10 +240,14 @@ export {
 } from "./phasec/market.js";
 export {
   SOL_MINT,
+  USDC_MINT,
   jupiterQuoteUrl,
   jupiterRatePerMin,
   lamportsForUsd,
+  liquidityFromSellImpact,
   parseJupiterQuote,
+  quoteKey,
+  type QuotePurpose,
   quotedRoundTrip,
   stageSizeUsd,
   type SizeBid,
@@ -256,6 +260,7 @@ export {
   type SecondWaveObservation,
 } from "./phasec/secondWave.js";
 export { runPhaseCPass, type PassCoin, type PassPosition } from "./phasec/pass.js";
+export { stageForCoin } from "./phasec/score.js";
 export type { ScreenRules } from "./phasec/screen.js";
 export {
   assignExitTreatment,

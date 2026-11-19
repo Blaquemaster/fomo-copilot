@@ -23,8 +23,17 @@ export const FULL_LOSS = -1;
 export const SOL_MINT = "So11111111111111111111111111111111111111112";
 export const JUPITER_QUOTE_URL = "https://api.jup.ag/swap/v1/quote";
 
+export const USDC_MINT = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v";
+
+/** Stay under 80% of the keyless 30/min limit, or 80% of 60 with a key. */
 export function jupiterRatePerMin(hasApiKey: boolean): number {
-  return hasApiKey ? 60 : 30;
+  return hasApiKey ? 48 : 24;
+}
+
+export type QuotePurpose = "screen" | "entry" | "exit" | "scale" | "probe";
+
+export function quoteKey(mint: string, purpose: QuotePurpose, size: "1x" | "2x"): string {
+  return `${mint}|${purpose}|${size}`;
 }
 
 export function lamportsForUsd(sizeUsd: number, solPriceUsd: number): string | null {
@@ -99,10 +108,19 @@ export function parseJupiterQuote(
     impactPct,
     feeUsd,
     sizeUsd,
-    liquidityUsd: null,
+    liquidityUsd: side === "sell" ? liquidityFromSellImpact(sizeUsd, impactPct) : null,
     inAmount: String(record["inAmount"]),
     outAmount: String(record["outAmount"]),
   };
+}
+
+/**
+ * Quote-side depth implied by a sell. A constant-product impact of `q / R`
+ * puts the reserve near `size / impact`. Zero impact does not imply infinite depth.
+ */
+export function liquidityFromSellImpact(sizeUsd: number, impactPct: number): number | null {
+  if (!(sizeUsd > 0) || !(impactPct > 0) || impactPct >= 100) return null;
+  return sizeUsd / (impactPct / 100);
 }
 
 export function stageSizeUsd(bankroll: number | null, sizePct: number): number | null {

@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import { formatWeeklyReview, quietHold, resolveAlertChat } from "./deliver.js";
 import { planExit } from "./exit.js";
 import {
+  GECKO_REQUESTS_PER_MIN,
   dexScreenerTokenUrl,
   geckoTerminalTokenUrl,
   mihaoFixtureQuote,
@@ -16,13 +17,21 @@ import { runPhaseCPass, type PassCoin, type PassInput } from "./pass.js";
 import {
   defaultSizePct,
   mintBucket,
+  parseLockedConfig,
   protocolBody,
   protocolFingerprint,
   type PhaseCConfig,
 } from "./protocol.js";
 import { entryDecision, planTierPromotions } from "./risk.js";
 import { assignArm, scoreStrength } from "./score.js";
-import { jupiterQuoteUrl, parseJupiterQuote, quotedRoundTrip } from "./quote.js";
+import {
+  jupiterQuoteUrl,
+  jupiterRatePerMin,
+  liquidityFromSellImpact,
+  parseJupiterQuote,
+  quoteKey,
+  quotedRoundTrip,
+} from "./quote.js";
 import { screenCoin, type ScreenRules } from "./screen.js";
 import {
   deadCoinObservation,
@@ -170,6 +179,7 @@ describe("phase C", () => {
     expect(screenCoin({ ...plain, quoteError: true }, rules).verdict).toBe("watch");
     expect(screenCoin({ ...plain, mintAuthorityActive: null }, rules).verdict).toBe("watch");
     expect(screenCoin({ ...plain, liquidityUsd: null }, rules).verdict).toBe("watch");
+    expect(screenCoin({ ...plain, sniperBundlePct: null }, rules).verdict).toBe("watch");
     expect(
       entryDecision({
         openCount: 0,
@@ -219,6 +229,8 @@ describe("phase C", () => {
             priceUsd: 1,
             liquidityUsd: 20_000,
             volumeUsd1h: 1,
+            volumeUsd6h: null,
+            volumeUsd24h: null,
             priceChange1hPct: 1,
             source: "fixture",
           },
@@ -237,6 +249,8 @@ describe("phase C", () => {
             priceUsd: 0.7,
             liquidityUsd: 20_000,
             volumeUsd1h: 1,
+            volumeUsd6h: null,
+            volumeUsd24h: null,
             priceChange1hPct: -30,
             source: "fixture",
           },
@@ -259,29 +273,27 @@ describe("phase C", () => {
         ],
         alerted: [{ mint, stage: "trench" }],
         bids: {
-          [mint]: {
-            one: {
-              ok: true,
-              execPriceUsd: 0.7,
-              midPriceUsd: 0.72,
-              impactPct: 2.8,
-              feeUsd: 0.05,
-              sizeUsd: 50,
-              liquidityUsd: 20_000,
-              inAmount: "1000000000",
-              outAmount: "90000000",
-            },
-            two: {
-              ok: true,
-              execPriceUsd: 0.65,
-              midPriceUsd: 0.72,
-              impactPct: 4,
-              feeUsd: 0.1,
-              sizeUsd: 100,
-              liquidityUsd: 20_000,
-              inAmount: "2000000000",
-              outAmount: "170000000",
-            },
+          [quoteKey(mint, "exit", "1x")]: {
+            ok: true,
+            execPriceUsd: 0.7,
+            midPriceUsd: 0.72,
+            impactPct: 2.8,
+            feeUsd: 0.05,
+            sizeUsd: 50,
+            liquidityUsd: 20_000,
+            inAmount: "1000000000",
+            outAmount: "90000000",
+          },
+          [quoteKey(mint, "exit", "2x")]: {
+            ok: true,
+            execPriceUsd: 0.65,
+            midPriceUsd: 0.72,
+            impactPct: 4,
+            feeUsd: 0.1,
+            sizeUsd: 100,
+            liquidityUsd: 20_000,
+            inAmount: "2000000000",
+            outAmount: "170000000",
           },
         },
       }),
@@ -511,7 +523,36 @@ describe("phase C", () => {
       expect(bid.outAmount).toBe("1000000");
       expect(bid.impactPct).toBeCloseTo(2);
       expect(bid.feeUsd).toBeGreaterThan(0);
+      expect(bid.liquidityUsd).toBeNull();
     }
+    const sell = parseJupiterQuote(
+      {
+        inAmount: "1000000",
+        outAmount: "200000000",
+        priceImpactPct: "0.1115",
+        routePlan: [{ swapInfo: { feeAmount: "1" } }],
+      },
+      { sizeUsd: 5, side: "sell", solPriceUsd: 150 },
+    );
+    expect(sell.ok && sell.impactPct).toBeCloseTo(11.15);
+    expect(sell.ok && sell.liquidityUsd).toBeCloseTo(liquidityFromSellImpact(5, 11.15) ?? 0);
+    const wrapped = JSON.stringify({ config: config(), rules, entriesStartAt: null });
+    expect(parseLockedConfig(wrapped).paperMinAlerts).toBe(config().paperMinAlerts);
+    expect(jupiterRatePerMin(false)).toBe(24);
+    expect(jupiterRatePerMin(true)).toBe(48);
+    expect(GECKO_REQUESTS_PER_MIN).toBe(6);
+    const dex = parseDexScreener({
+      pairs: [
+        {
+          baseToken: { address: mint },
+          priceUsd: "1",
+          liquidity: { usd: 9000 },
+          volume: { h1: 10, h6: 40, h24: 100 },
+        },
+      ],
+    });
+    expect(dex[0]?.volumeUsd24h).toBe(100);
+    expect(dex[0]?.liquidityUsd).toBe(9000);
     const dead = quotedRoundTrip(bid, { ok: false, reason: "no_liquidity" });
     expect(dead).toBe(-1);
     const curve = bankrollCurve([

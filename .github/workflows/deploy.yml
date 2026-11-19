@@ -99,6 +99,7 @@ jobs:
           WALLET_BOT_MAX_ENTRIES: ${{ vars.WALLET_BOT_MAX_ENTRIES }}
           WALLET_BACKFILL_FAIL_LIMIT: ${{ vars.WALLET_BACKFILL_FAIL_LIMIT }}
           BANKROLL: ${{ vars.BANKROLL }}
+          PAPER_BANKROLL_USD: ${{ vars.PAPER_BANKROLL_USD }}
           SIZE_TRENCH_PCT: ${{ vars.SIZE_TRENCH_PCT }}
           SIZE_NEAR_GRADUATION_PCT: ${{ vars.SIZE_NEAR_GRADUATION_PCT }}
           SIZE_POST_GRADUATION_PCT: ${{ vars.SIZE_POST_GRADUATION_PCT }}
@@ -234,6 +235,16 @@ jobs:
                   raise SystemExit("QUIET_HOURS must be HH:MM-HH:MM")
               return raw
 
+          def paper_bankroll():
+              raw = os.environ.get("PAPER_BANKROLL_USD", "").strip() or "1000"
+              try:
+                  value = float(raw)
+              except ValueError:
+                  raise SystemExit("PAPER_BANKROLL_USD must be a positive number")
+              if value != value or value <= 0:
+                  raise SystemExit("PAPER_BANKROLL_USD must be a positive number")
+              return raw
+
           def optional_bankroll():
               raw = os.environ.get("BANKROLL", "").strip()
               if not raw:
@@ -335,6 +346,7 @@ jobs:
               line("SECOND_WAVE_MIN_CHANGE_PCT", percent("SECOND_WAVE_MIN_CHANGE_PCT", "20")),
               line("MARKET_POLL_MINUTES", market_poll()),
               line("THRESHOLDS_PATH", "/app/config/thresholds.yaml"),
+              line("PAPER_BANKROLL_USD", paper_bankroll()),
           ] + ([line("BANKROLL", bankroll)] if (bankroll := optional_bankroll()) else [])
             + ([line("TELEGRAM_TEST_CHAT_ID", test_chat)] if (test_chat := optional_chat("TELEGRAM_TEST_CHAT_ID")) else [])
           ) + "\n"
@@ -361,6 +373,12 @@ jobs:
           test -f .env.incoming
           if [ -f .env ] && ! grep -q '^TELEGRAM_TEST_CHAT_ID=' .env.incoming; then
             existing="$(grep '^TELEGRAM_TEST_CHAT_ID=' .env || true)"
+            if [ -n "$existing" ]; then
+              printf '%s\n' "$existing" >> .env.incoming
+            fi
+          fi
+          if [ -f .env ] && ! grep -q '^PAPER_BANKROLL_USD=' .env.incoming; then
+            existing="$(grep '^PAPER_BANKROLL_USD=' .env || true)"
             if [ -n "$existing" ]; then
               printf '%s\n' "$existing" >> .env.incoming
             fi

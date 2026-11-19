@@ -13,6 +13,7 @@ import {
 } from "./protocol.js";
 import {
   FULL_LOSS,
+  quoteKey,
   quotedRoundTrip,
   scaleOutRoundTrip,
   stageSizeUsd,
@@ -42,6 +43,8 @@ export interface PassCoin extends ScoreCoin {
   creatorSells: number;
   trackedSells?: number;
   quoteError: boolean;
+  bondingCurve?: string | null;
+  createdSlot?: number | null;
 }
 
 export interface PassPosition {
@@ -72,8 +75,8 @@ export interface PassInput {
   locked: { fingerprint: string; config: PhaseCConfig } | null;
   coins: PassCoin[];
   quotes: MarketQuote[];
-  /** Explicit size bids. A market quote is used only when a bid was not supplied. */
-  bids?: Readonly<Record<string, { one: SizeBid; two: SizeBid }>>;
+  /** Jupiter bids keyed by quoteKey(mint, purpose, size). Purposes do not share a slot. */
+  bids?: Readonly<Record<string, SizeBid>>;
   positions: PassPosition[];
   closedToday: readonly { sizePct: number; netReturn: number }[];
   paused: boolean;
@@ -138,6 +141,7 @@ export interface PassResult {
   tierRequests: Array<{ wallet: string; from: "base"; to: "high"; text: string; held: boolean }>;
   paper: PaperEvaluation;
   sellWarnings: string[];
+  scaled: string[];
 }
 
 function sizeFor(config: PhaseCConfig, sizePct: number): number {
@@ -148,8 +152,13 @@ function isDead(bid: SizeBid): boolean {
   return !bid.ok && (bid.reason === "no_liquidity" || bid.reason === "no_route");
 }
 
-function bidFor(mint: string, bids: PassInput["bids"], which: "one" | "two"): SizeBid {
-  return bids?.[mint]?.[which] ?? { ok: false, reason: "no_quote" };
+function bidFor(
+  mint: string,
+  bids: PassInput["bids"],
+  purpose: "entry" | "exit",
+  size: "1x" | "2x",
+): SizeBid {
+  return bids?.[quoteKey(mint, purpose, size)] ?? { ok: false, reason: "no_quote" };
 }
 
 function entryBid(position: PassPosition, fallbackSize: number): SizeBid {
@@ -220,6 +229,7 @@ export function runPhaseCPass(input: PassInput): PassResult {
   }
 
   const sellWarnings: string[] = [];
+  const scaled: string[] = [];
   const opens: PlannedOpen[] = [];
   const openIds = new Set<string>();
   const closes: PlannedClose[] = [];
@@ -231,7 +241,7 @@ export function runPhaseCPass(input: PassInput): PassResult {
     const due = input.now.getTime() >= position.entryAfter.getTime();
     const expired = input.now.getTime() >= position.entryAfter.getTime() + config.horizonMs;
     if (!due) continue;
-    const one = bidFor(position.mint, input.bids, "one");
+    const one = bidFor(position.mint, input.bids, "entry", "1x");
     if (one.ok && one.liquidityUsd !== 0) {
       opens.push({
         id: position.id,
@@ -282,8 +292,8 @@ export function runPhaseCPass(input: PassInput): PassResult {
     if (position.status === "pending" && !openIds.has(position.id)) continue;
     if (!openedAt) continue;
     const entry = entryBid(position, sizeFor(config, position.sizePct));
-    const exitOne = bidFor(position.mint, input.bids, "one");
-    const exitTwo = bidFor(position.mint, input.bids, "two");
+    const exitOne = bidFor(position.mint, input.bids, "exit", "1x");
+    const exitTwo = bidFor(position.mint, input.bids, "exit", "2x");
     const latest = exitOne.ok ? exitOne.execPriceUsd : null;
     const horizonReached = input.now.getTime() >= openedAt.getTime() + config.horizonMs;
     const treatment = assignExitTreatment(position.mint);
@@ -298,6 +308,7 @@ export function runPhaseCPass(input: PassInput): PassResult {
         `scale-out ${position.mint} half at ${exitOne.execPriceUsd.toString()} impact ${exitOne.impactPct.toFixed(2)}%`,
       );
       position.scaledAt = input.now;
+      scaled.push(position.id);
     }
     if (isDead(exitOne)) {
       closes.push({
@@ -519,5 +530,6 @@ export function runPhaseCPass(input: PassInput): PassResult {
     tierRequests,
     paper,
     sellWarnings,
+    scaled,
   };
 }

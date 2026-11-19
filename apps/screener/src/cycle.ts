@@ -7,13 +7,17 @@ import {
   formatWeeklyReview,
   inQuietHours,
   lamportsForUsd,
+  jupiterRatePerMin,
+  liquidityFromSellImpact,
   nextEtMidnight,
+  quoteKey,
   parseLockedConfig,
   phaseCConfigFromEnv,
   resolveAlertChat,
   runPhaseCPass,
   screenRulesFromThresholds,
   secondWaveSignal,
+  stageForCoin,
   stageSizeUsd,
   type Env,
   type MarketQuote,
@@ -22,8 +26,14 @@ import {
   type Thresholds,
 } from "@fomo/core";
 
-import { loadMintAuthorities, loadTopHolders, screenCreditProjection } from "./accounts.js";
-import { collectJupiterBids, type JupiterRequest } from "./jupiter.js";
+import {
+  loadCreateSlotSnipers,
+  loadCurveLiquidity,
+  loadMintAuthorities,
+  loadTopHolders,
+  screenCreditProjection,
+} from "./accounts.js";
+import { collectJupiterBids, fetchSolPriceUsd, type JupiterRequest } from "./jupiter.js";
 
 function readEntriesStart(body: string): Date | null {
   try {
@@ -53,63 +63,77 @@ export async function runPhaseCCycle(input: {
   send: (text: string) => Promise<void>;
   warn: (message: string) => void;
   fetchImpl?: typeof fetch;
+  refreshMarket?: boolean;
 }): Promise<void> {
   const config = phaseCConfigFromEnv(input.env, input.thresholds);
   const stored = await input.store.protocol();
   const day = etDayRange(input.now);
+  const rules = screenRulesFromThresholds(input.thresholds);
   const coins = await input.store.coins(200);
-  const missingAuthority = coins
-    .filter((coin) => coin.mintAuthorityActive === null)
-    .map((coin) => coin.mint);
-  if (missingAuthority.length > 0) {
-    const projection = screenCreditProjection(missingAuthority.length);
-    input.warn(
-      `screen credit projection ${projection.perDay.toString()}/day ${projection.perMonth.toString()}/month`,
-    );
-    const loaded = await loadMintAuthorities({
-      apiKey: input.env.HELIUS_API_KEY,
-      mints: missingAuthority.slice(0, 20),
-      fetchImpl: input.fetchImpl,
-    });
-    const holders = await loadTopHolders({
-      apiKey: input.env.HELIUS_API_KEY,
-      mints: missingAuthority.slice(0, 20),
-      supplies: new Map(loaded.map((row) => [row.mint, row.supply])),
-      nowMs: input.now.getTime(),
-      fetchImpl: input.fetchImpl,
-    });
-    await input.store.recordScreenCredits(loaded.length + holders.credits, input.now);
-    for (const row of holders.rows) {
-      const coin = coins.find((item) => item.mint === row.mint);
-      if (coin) coin.top10HoldersPct = row.top10Pct;
-    }
-    for (const row of loaded) {
-      const coin = coins.find((item) => item.mint === row.mint);
-      if (!coin) continue;
-      coin.mintAuthorityActive = row.mintAuthorityActive;
-      coin.freezeAuthorityActive = row.freezeAuthorityActive;
-    }
-  }
   if (config.xEnabled) {
     const counts = await input.store.mentionCounts(coins.map((coin) => coin.mint));
     for (const coin of coins) coin.xMentions = counts.get(coin.mint) ?? 0;
   }
-  const solPrice = input.quotes.find((quote) => quote.mint === SOL_MINT)?.priceUsd ?? null;
+  const solPrice =
+    (await fetchSolPriceUsd({
+      fetchImpl: input.fetchImpl,
+      apiKey: input.env.JUPITER_API_KEY ?? null,
+      nowMs: input.now.getTime(),
+    })) ??
+    input.quotes.find((quote) => quote.mint === SOL_MINT)?.priceUsd ??
+    null;
+  if (config.bankroll === null || solPrice === null) {
+    const reason =
+      config.bankroll === null ? "PAPER_BANKROLL_USD is not set" : "SOL/USD price is unavailable";
+    input.warn(reason);
+    await input.send(reason);
+  }
+  const wave = await input.store.secondWaveMints(300);
+  const seen = new Set(coins.map((coin) => coin.mint));
+  for (const row of wave) {
+    if (seen.has(row.mint)) continue;
+    coins.push({
+      mint: row.mint,
+      createdAt: row.createdAt,
+      graduatedAt: row.graduatedAt,
+      curveCompletedAt: row.graduatedAt,
+      trackedBuyers: 0,
+      xMentions: null,
+      liquidityUsd: null,
+      transferFeeBps: null,
+      mintAuthorityActive: null,
+      freezeAuthorityActive: null,
+      exitQuoteImpactPct: null,
+      top10HoldersPct: null,
+      sniperBundlePct: null,
+      uniqueMakers1h: null,
+      creatorSells: 0,
+      trackedSells: 0,
+      quoteError: false,
+      secondWave: null,
+    });
+  }
+  const recent = await input.store.recentCandidates(7);
+  const expectedAlerts = Math.round((recent / 7) * config.paperWindowDays);
+  const history = await input.store.waveHistory(
+    coins.filter((coin) => coin.graduatedAt).map((coin) => coin.mint),
+  );
   for (const coin of coins) {
     const market = input.quotes.find((quote) => quote.mint === coin.mint);
     if (market?.liquidityUsd != null) coin.liquidityUsd = market.liquidityUsd;
-    if (coin.graduatedAt && market) {
+    if (coin.graduatedAt) {
+      const past = history.get(coin.mint);
       const observation: SecondWaveObservation = {
         mint: coin.mint,
         graduatedAt: coin.graduatedAt,
-        volume1hUsd: market.volumeUsd1h,
+        volume1hUsd: market?.volumeUsd1h ?? null,
         volume4hUsd: null,
-        volume7dUsd: null,
-        priceUsd: market.priceUsd,
-        postGradRangeHigh: null,
+        volume7dUsd: past?.volume7dUsd ?? null,
+        priceUsd: market?.priceUsd ?? null,
+        postGradRangeHigh: past?.rangeHigh ?? null,
         holderGrowthPct: null,
-        liquidityUsd: market.liquidityUsd,
-        liquidityGrowthPct: null,
+        liquidityUsd: coin.liquidityUsd,
+        liquidityGrowthPct: past?.liquidityGrowthPct ?? null,
         trackedBuys: coin.trackedBuyers,
       };
       coin.secondWave = secondWaveSignal(observation, input.now);
@@ -140,15 +164,41 @@ export async function runPhaseCCycle(input: {
       });
     }
   }
-  await input.store.saveSnapshots(
-    input.quotes.map((quote) => ({
-      mint: quote.mint,
-      at: input.now,
-      priceUsd: quote.priceUsd,
-      liquidityUsd: quote.liquidityUsd,
-      volume1h: quote.volumeUsd1h,
-    })),
-  );
+  if (input.refreshMarket) {
+    await input.store.saveSnapshots(
+      input.quotes.map((quote) => ({
+        mint: quote.mint,
+        at: input.now,
+        priceUsd: quote.priceUsd,
+        liquidityUsd: quote.liquidityUsd,
+        volume1h: quote.volumeUsd1h,
+        volume24h: quote.volumeUsd24h,
+      })),
+    );
+    await input.store.pruneSnapshots(new Date(input.now.getTime() - 8 * 24 * 60 * 60 * 1000));
+  }
+  if (solPrice !== null) {
+    const curves = await loadCurveLiquidity({
+      apiKey: input.env.HELIUS_API_KEY,
+      solPriceUsd: solPrice,
+      coins: coins
+        .filter(
+          (coin) =>
+            coin.liquidityUsd === null &&
+            coin.graduatedAt === null &&
+            coin.bondingCurve &&
+            stageForCoin(coin, input.now) !== null,
+        )
+        .slice(0, 8)
+        .map((coin) => ({ mint: coin.mint, bondingCurve: coin.bondingCurve ?? "" })),
+      fetchImpl: input.fetchImpl,
+    });
+    await input.store.recordScreenCredits(curves.credits, input.now);
+    for (const row of curves.rows) {
+      const coin = coins.find((item) => item.mint === row.mint);
+      if (coin && coin.liquidityUsd === null) coin.liquidityUsd = row.liquidityUsd;
+    }
+  }
   const positions = await input.store.positions();
   const requests: JupiterRequest[] = [];
   for (const position of positions) {
@@ -161,54 +211,85 @@ export async function runPhaseCCycle(input: {
         requests.push({
           mint: position.mint,
           side: "buy",
+          purpose: "entry",
           amount,
-          which: "one",
+          which: "1x",
           sizeUsd: size,
           solPriceUsd: solPrice,
+          priority: 1,
         });
       }
       if (amount2) {
         requests.push({
           mint: position.mint,
           side: "buy",
+          purpose: "entry",
           amount: amount2,
-          which: "two",
+          which: "2x",
           sizeUsd: size * 2,
           solPriceUsd: solPrice,
+          priority: 1,
         });
       }
     }
     if (position.status === "open" && position.entryOutAmount) {
+      const half = position.scaledAt ? null : position.entryOutAmount;
       requests.push({
         mint: position.mint,
         side: "sell",
+        purpose: "exit",
         amount: position.entryOutAmount,
-        which: "one",
+        which: "1x",
         sizeUsd: size,
         solPriceUsd: solPrice,
+        priority: 0,
       });
       requests.push({
         mint: position.mint,
         side: "sell",
+        purpose: "exit",
         amount: String(Number(position.entryOutAmount) * 2),
-        which: "two",
+        which: "2x",
         sizeUsd: size * 2,
         solPriceUsd: solPrice,
+        priority: 0,
       });
+      if (half) {
+        requests.push({
+          mint: position.mint,
+          side: "sell",
+          purpose: "scale",
+          amount: String(Math.round(Number(position.entryOutAmount) / 2)),
+          which: "1x",
+          sizeUsd: size / 2,
+          solPriceUsd: solPrice,
+          priority: 0,
+        });
+      }
     }
   }
+  const quoteRate = Math.max(1, jupiterRatePerMin(Boolean(input.env.JUPITER_API_KEY)) - 1);
+  const probeRoom = Math.floor(Math.max(0, quoteRate - requests.length) / 2);
+  let probes = 0;
   for (const coin of coins) {
+    if (probes >= probeRoom) break;
     if (coin.exitQuoteImpactPct !== null || solPrice === null) continue;
-    const size = stageSizeUsd(config.bankroll, config.sizePct.trench);
+    const size = stageSizeUsd(
+      config.bankroll,
+      config.sizePct[coin.graduatedAt ? "post_graduation" : "trench"],
+    );
     const amount = size === null ? null : lamportsForUsd(size, solPrice);
     if (!amount || !size) continue;
+    probes += 1;
     requests.push({
       mint: coin.mint,
       side: "buy",
+      purpose: "probe",
       amount,
-      which: "one",
+      which: "1x",
       sizeUsd: size,
       solPriceUsd: solPrice,
+      priority: 2,
     });
   }
   const quoted = await collectJupiterBids({
@@ -217,15 +298,118 @@ export async function runPhaseCCycle(input: {
     apiKey: input.env.JUPITER_API_KEY ?? null,
     nowMs: input.now.getTime(),
   });
+  const screenSells: JupiterRequest[] = [];
   for (const coin of coins) {
-    const bid = quoted.bids[coin.mint]?.one;
-    if (bid?.ok) coin.exitQuoteImpactPct = bid.impactPct;
+    const probe = quoted.bids[quoteKey(coin.mint, "probe", "1x")];
+    if (!probe?.ok || solPrice === null) continue;
+    screenSells.push({
+      mint: coin.mint,
+      side: "sell",
+      purpose: "screen",
+      amount: probe.outAmount,
+      which: "1x",
+      sizeUsd: probe.sizeUsd,
+      solPriceUsd: solPrice,
+      priority: 2,
+    });
   }
+  const sold = await collectJupiterBids({
+    requests: screenSells,
+    fetchImpl: input.fetchImpl,
+    apiKey: input.env.JUPITER_API_KEY ?? null,
+    nowMs: input.now.getTime(),
+    bucket: quoted.bucket,
+  });
+  const freshExit = new Map<string, number>();
+  for (const coin of coins) {
+    const bid = sold.bids[quoteKey(coin.mint, "screen", "1x")];
+    if (bid?.ok) {
+      coin.exitQuoteImpactPct = bid.impactPct;
+      freshExit.set(coin.mint, bid.impactPct);
+      if (coin.liquidityUsd === null) {
+        const derived = liquidityFromSellImpact(bid.sizeUsd, bid.impactPct);
+        if (derived !== null) coin.liquidityUsd = derived;
+      }
+    }
+  }
+  const enrich = coins
+    .filter((coin) => {
+      if (coin.exitQuoteImpactPct !== null && coin.exitQuoteImpactPct > rules.exitImpactPctAbove) {
+        return false;
+      }
+      if (coin.mintAuthorityActive === true && rules.failMintAuthority) return false;
+      return (
+        coin.mintAuthorityActive === null ||
+        coin.top10HoldersPct === null ||
+        coin.sniperBundlePct === null
+      );
+    })
+    .slice(0, 8);
+  let spent = 0;
+  if (enrich.length > 0) {
+    const loaded = await loadMintAuthorities({
+      apiKey: input.env.HELIUS_API_KEY,
+      mints: enrich
+        .filter((coin) => coin.mintAuthorityActive === null || coin.top10HoldersPct === null)
+        .map((coin) => coin.mint),
+      fetchImpl: input.fetchImpl,
+    });
+    spent += loaded.credits;
+    for (const row of loaded.rows) {
+      const coin = coins.find((item) => item.mint === row.mint);
+      if (!coin) continue;
+      coin.mintAuthorityActive = row.mintAuthorityActive;
+      coin.freezeAuthorityActive = row.freezeAuthorityActive;
+    }
+    const holders = await loadTopHolders({
+      apiKey: input.env.HELIUS_API_KEY,
+      mints: enrich.filter((coin) => coin.top10HoldersPct === null).map((coin) => coin.mint),
+      supplies: new Map(loaded.rows.map((row) => [row.mint, row.supply])),
+      nowMs: input.now.getTime(),
+      fetchImpl: input.fetchImpl,
+    });
+    spent += holders.credits;
+    for (const row of holders.rows) {
+      const coin = coins.find((item) => item.mint === row.mint);
+      if (coin) coin.top10HoldersPct = row.top10Pct;
+    }
+    const snipers = await loadCreateSlotSnipers({
+      apiKey: input.env.HELIUS_API_KEY,
+      coins: enrich
+        .filter(
+          (coin) =>
+            coin.sniperBundlePct === null &&
+            coin.bondingCurve &&
+            coin.createdSlot !== null &&
+            coin.createdSlot !== undefined,
+        )
+        .map((coin) => ({
+          mint: coin.mint,
+          bondingCurve: coin.bondingCurve ?? "",
+          createdSlot: coin.createdSlot ?? 0,
+        })),
+      fetchImpl: input.fetchImpl,
+    });
+    spent += snipers.credits;
+    for (const row of snipers.rows) {
+      const coin = coins.find((item) => item.mint === row.mint);
+      if (coin) coin.sniperBundlePct = row.sniperPct;
+    }
+  }
+  if (spent > 0) {
+    const newMints = await input.store.recentCandidates(1);
+    const projection = screenCreditProjection(newMints);
+    input.warn(
+      `screen credits this pass ${spent.toString()}; projection ${projection.perDay.toString()}/day ${projection.perMonth.toString()}/month from ${newMints.toString()} new mints`,
+    );
+    await input.store.recordScreenCredits(spent, input.now);
+  }
+  Object.assign(quoted.bids, sold.bids);
   const entriesStart = stored ? readEntriesStart(stored.body) : nextEtMidnight(input.now);
   const result = runPhaseCPass({
     now: input.now,
     config,
-    rules: screenRulesFromThresholds(input.thresholds),
+    rules,
     locked: stored
       ? { fingerprint: stored.fingerprint, config: parseLockedConfig(stored.body) }
       : null,
@@ -245,7 +429,7 @@ export async function runPhaseCCycle(input: {
     pendingTiers: await input.store.pendingTiers(),
     registeredAt: stored?.registeredAt ?? null,
     entriesStartAt: entriesStart,
-    expectedAlerts: null,
+    expectedAlerts,
   });
   if (result.protocolViolation) input.warn(`protocol violation: ${result.protocolViolation}`);
   if (result.lock) {
@@ -289,13 +473,35 @@ export async function runPhaseCCycle(input: {
     testChatId: input.env.TELEGRAM_TEST_CHAT_ID ?? null,
     adminChatId: input.env.TELEGRAM_ADMIN_CHAT_ID,
   });
+  await input.store.markSellWarned(result.sellWarnings);
+  await input.store.markScaled(result.scaled, input.now);
+  await input.store.saveMintCache(
+    coins
+      .filter(
+        (coin) =>
+          coin.mintAuthorityActive !== null ||
+          coin.top10HoldersPct !== null ||
+          coin.sniperBundlePct !== null ||
+          (coin.graduatedAt === null && coin.liquidityUsd !== null) ||
+          freshExit.has(coin.mint),
+      )
+      .map((coin) => ({
+        mint: coin.mint,
+        mintAuthorityActive: coin.mintAuthorityActive,
+        freezeAuthorityActive: coin.freezeAuthorityActive,
+        top10Pct: coin.top10HoldersPct,
+        sniperPct: coin.sniperBundlePct,
+        curveLiquidityUsd: coin.graduatedAt ? null : coin.liquidityUsd,
+        exitImpactPct: freshExit.get(coin.mint) ?? null,
+      })),
+    input.now,
+  );
   if ("blocked" in destination) {
     input.warn(destination.reason);
     return;
   }
   if (result.protocolViolation) await input.send(`protocol violation: ${result.protocolViolation}`);
   for (const text of result.immediate) await input.send(text);
-  await input.store.markSellWarned(result.sellWarnings);
   if (result.digest) await input.send(result.digest);
   await input.store.markDelivered([...sentIds, ...result.digestIds], input.now);
 

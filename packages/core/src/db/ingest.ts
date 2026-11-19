@@ -404,6 +404,9 @@ create table if not exists pump_trade (
 );
 
 create index if not exists pump_trade_mint_slot_idx on pump_trade (mint, slot);
+create index if not exists wallet_fill_mint_idx on wallet_fill (mint);
+create index if not exists candidates_recent_idx on candidates (first_seen_at desc);
+create index if not exists candidates_graduated_idx on candidates (graduated_at desc) where graduated_at is not null;
 
 create table if not exists pump_coin_stats (
   mint text primary key,
@@ -517,8 +520,14 @@ create table if not exists phasec_mint_cache (
   mint_authority_active boolean,
   freeze_authority_active boolean,
   top10_pct double precision,
+  sniper_pct double precision,
+  curve_liquidity_usd double precision,
+  exit_impact_pct double precision,
+  exit_impact_at timestamptz,
   fetched_at timestamptz not null
 );
+alter table phasec_mint_cache add column if not exists sniper_pct double precision;
+alter table phasec_mint_cache add column if not exists curve_liquidity_usd double precision;
 
 create table if not exists phasec_market_snapshot (
   mint text not null,
@@ -526,8 +535,12 @@ create table if not exists phasec_market_snapshot (
   price_usd double precision,
   liquidity_usd double precision,
   volume_1h double precision,
+  volume_24h double precision,
   primary key (mint, polled_at)
 );
+alter table phasec_market_snapshot add column if not exists volume_24h double precision;
+alter table phasec_mint_cache add column if not exists exit_impact_pct double precision;
+alter table phasec_mint_cache add column if not exists exit_impact_at timestamptz;
 `;
 
 export function createPool(

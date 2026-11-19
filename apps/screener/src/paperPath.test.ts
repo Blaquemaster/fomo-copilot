@@ -8,6 +8,7 @@ import {
   parseJupiterQuote,
   protocolBody,
   protocolFingerprint,
+  quoteKey,
   quoteUrlAllowed,
   runPhaseCPass,
   secondWaveSignal,
@@ -18,7 +19,13 @@ import {
   type ScreenRules,
 } from "@fomo/core";
 
-import { parseMintAccount, screenCreditProjection, topHolderPct } from "./accounts.js";
+import {
+  curveLiquidityUsd,
+  parseMintAccount,
+  parsePumpCurve,
+  screenCreditProjection,
+  topHolderPct,
+} from "./accounts.js";
 import { collectJupiterBids } from "./jupiter.js";
 
 const rules: ScreenRules = {
@@ -120,7 +127,9 @@ describe("quoted paper path", () => {
           mint,
           side: "buy",
           amount: "333333333",
-          which: "one",
+          purpose: "entry",
+          which: "1x",
+          priority: 1,
           sizeUsd: 50,
           solPriceUsd: 150,
         },
@@ -128,7 +137,9 @@ describe("quoted paper path", () => {
           mint,
           side: "buy",
           amount: "666666666",
-          which: "two",
+          purpose: "entry",
+          which: "2x",
+          priority: 1,
           sizeUsd: 100,
           solPriceUsd: 150,
         },
@@ -152,7 +163,7 @@ describe("quoted paper path", () => {
         };
       }) as unknown as typeof fetch,
     });
-    expect(buy.bids[mint]?.one.ok).toBe(true);
+    expect(buy.bids[quoteKey(mint, "entry", "1x")]?.ok).toBe(true);
     const opened = runPhaseCPass({
       now: new Date("2026-11-19T16:31:30.000Z"),
       config: cfg,
@@ -160,7 +171,16 @@ describe("quoted paper path", () => {
       locked,
       coins: [],
       quotes: [],
-      bids: buy.bids,
+      bids: {
+        [quoteKey(mint, "entry", "1x")]: buy.bids[quoteKey(mint, "entry", "1x")] ?? {
+          ok: false,
+          reason: "no_quote",
+        },
+        [quoteKey(mint, "entry", "2x")]: buy.bids[quoteKey(mint, "entry", "2x")] ?? {
+          ok: false,
+          reason: "no_quote",
+        },
+      },
       positions: [
         {
           id: "pos-1",
@@ -223,7 +243,10 @@ describe("quoted paper path", () => {
       locked,
       coins: [],
       quotes: [],
-      bids: { [mint]: { one: sellBody, two: sellBody } },
+      bids: {
+        [quoteKey(mint, "exit", "1x")]: sellBody,
+        [quoteKey(mint, "exit", "2x")]: sellBody,
+      },
       positions: [position],
       closedToday: [],
       paused: false,
@@ -242,7 +265,19 @@ describe("quoted paper path", () => {
     expect(parseMintAccount(mintBytes)?.freezeAuthorityActive).toBe(true);
     expect(parseMintAccount(mintBytes)?.mintAuthorityActive).toBe(false);
     expect(topHolderPct([10, 5], 100)).toBe(15);
-    expect(screenCreditProjection(10).perMonth).toBe(10 * 5 * 30);
+    expect(screenCreditProjection(10).perMonth).toBe(10 * 4 * 30);
+    const curve = new Uint8Array(49);
+    const virtual = 30_000_000_000n;
+    const real = 5_000_000_000n;
+    for (let index = 0; index < 8; index += 1) {
+      curve[16 + index] = Number((virtual >> BigInt(8 * index)) & 0xffn);
+      curve[32 + index] = Number((real >> BigInt(8 * index)) & 0xffn);
+    }
+    const reserves = parsePumpCurve(curve);
+    expect(reserves?.virtualSolLamports).toBe(virtual);
+    expect(
+      curveLiquidityUsd(reserves ?? { virtualSolLamports: 0n, realSolLamports: 0n }, 100),
+    ).toBe(3000);
     const nowWave = new Date("2026-11-19T16:30:00.000Z");
     expect(secondWaveSignal(mihaoObservation(nowWave), nowWave)).toBe("breakout");
     expect(quoteUrlAllowed("https://api.jup.ag/swap")).toBe(false);

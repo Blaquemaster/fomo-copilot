@@ -1,23 +1,55 @@
 import {
   SOL_MINT,
+  USDC_MINT,
   classifyJupiterHttp,
   jupiterQuoteUrl,
   jupiterRatePerMin,
   parseJupiterQuote,
   quoteBackoffMs,
+  quoteKey,
   quoteUrlAllowed,
   takeTokens,
+  type QuotePurpose,
   type SizeBid,
   type TokenBucket,
 } from "@fomo/core";
 
+let solPriceCache: { price: number; at: number } | null = null;
+
+/** One SOL quoted into USDC. Cached for about a minute. */
+export async function fetchSolPriceUsd(input: {
+  fetchImpl?: typeof fetch;
+  apiKey?: string | null;
+  nowMs?: number;
+}): Promise<number | null> {
+  const nowMs = input.nowMs ?? Date.now();
+  if (solPriceCache && nowMs - solPriceCache.at < 60_000) return solPriceCache.price;
+  const url = jupiterQuoteUrl(SOL_MINT, USDC_MINT, "1000000000");
+  if (!quoteUrlAllowed(url)) return null;
+  try {
+    const response = await (input.fetchImpl ?? fetch)(url, {
+      headers: input.apiKey ? { "x-api-key": input.apiKey } : {},
+    });
+    if (!response.ok) return null;
+    const body = (await response.json()) as { outAmount?: string };
+    const usd = Number(body.outAmount) / 1_000_000;
+    if (!(usd > 0)) return null;
+    solPriceCache = { price: usd, at: nowMs };
+    return usd;
+  } catch {
+    return solPriceCache?.price ?? null;
+  }
+}
+
 export interface JupiterRequest {
   mint: string;
   side: "buy" | "sell";
+  purpose: QuotePurpose;
   amount: string;
-  which: "one" | "two";
+  which: "1x" | "2x";
   sizeUsd: number;
   solPriceUsd: number;
+  priority: number;
 }
 
 export async function collectJupiterBids(input: {
@@ -28,7 +60,7 @@ export async function collectJupiterBids(input: {
   apiKey?: string | null;
   sleep?: (ms: number) => Promise<void>;
 }): Promise<{
-  bids: Record<string, { one: SizeBid; two: SizeBid }>;
+  bids: Record<string, SizeBid>;
   bucket: TokenBucket;
   requests: number;
   throttled: number;
@@ -38,29 +70,23 @@ export async function collectJupiterBids(input: {
   let bucket = input.bucket ?? { tokens: rate, refilledAt: nowMs };
   const fetchImpl = input.fetchImpl ?? fetch;
   const sleep = input.sleep ?? ((ms: number) => new Promise((resolve) => setTimeout(resolve, ms)));
-  const bids: Record<string, { one: SizeBid; two: SizeBid }> = {};
+  const bids: Record<string, SizeBid> = {};
   let requests = 0;
   let throttled = 0;
-  for (const request of input.requests) {
+  const ordered = [...input.requests].sort((left, right) => left.priority - right.priority);
+  for (const request of ordered) {
+    const key = quoteKey(request.mint, request.purpose, request.which);
     const taken = takeTokens(bucket, nowMs, rate, 1);
     bucket = taken.bucket;
     if (taken.granted < 1) {
-      bids[request.mint] = bids[request.mint] ?? {
-        one: { ok: false, reason: "rate_limited" },
-        two: { ok: false, reason: "rate_limited" },
-      };
-      bids[request.mint]![request.which] = { ok: false, reason: "rate_limited" };
+      bids[key] = { ok: false, reason: "rate_limited" };
       continue;
     }
     const inputMint = request.side === "buy" ? SOL_MINT : request.mint;
     const outputMint = request.side === "buy" ? request.mint : SOL_MINT;
     const url = jupiterQuoteUrl(inputMint, outputMint, request.amount);
     if (!quoteUrlAllowed(url)) {
-      bids[request.mint] = bids[request.mint] ?? {
-        one: { ok: false, reason: "transient" },
-        two: { ok: false, reason: "transient" },
-      };
-      bids[request.mint]![request.which] = { ok: false, reason: "transient" };
+      bids[key] = { ok: false, reason: "transient" };
       continue;
     }
     let outcome: SizeBid = { ok: false, reason: "transient" };
@@ -96,12 +122,7 @@ export async function collectJupiterBids(input: {
         await sleep(quoteBackoffMs(attempt));
       }
     }
-    const slot = bids[request.mint] ?? {
-      one: { ok: false, reason: "no_quote" } as SizeBid,
-      two: { ok: false, reason: "no_quote" } as SizeBid,
-    };
-    slot[request.which] = outcome;
-    bids[request.mint] = slot;
+    bids[key] = outcome;
   }
   return { bids, bucket, requests, throttled };
 }

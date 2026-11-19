@@ -7,6 +7,8 @@ export interface MarketQuote {
   priceUsd: number;
   liquidityUsd: number | null;
   volumeUsd1h: number | null;
+  volumeUsd6h: number | null;
+  volumeUsd24h: number | null;
   priceChange1hPct: number | null;
   source: "dexscreener" | "geckoterminal" | "fixture";
 }
@@ -36,7 +38,7 @@ export function quoteUrlAllowed(url: string): boolean {
 }
 
 export const DEX_REQUESTS_PER_MIN = 60;
-export const GECKO_REQUESTS_PER_MIN = 10;
+export const GECKO_REQUESTS_PER_MIN = 6;
 export const JUPITER_REQUESTS_PER_MIN = 30;
 export const DEX_BATCH = 30;
 
@@ -110,6 +112,10 @@ export function parseDexScreener(body: unknown): MarketQuote[] {
           : null,
       volumeUsd1h:
         volume && typeof volume === "object" ? num((volume as { h1?: unknown }).h1) : null,
+      volumeUsd6h:
+        volume && typeof volume === "object" ? num((volume as { h6?: unknown }).h6) : null,
+      volumeUsd24h:
+        volume && typeof volume === "object" ? num((volume as { h24?: unknown }).h24) : null,
       priceChange1hPct:
         change && typeof change === "object" ? num((change as { h1?: unknown }).h1) : null,
       source: "dexscreener",
@@ -137,6 +143,9 @@ export function parseGeckoTerminal(body: unknown): MarketQuote | null {
     priceUsd: price,
     liquidityUsd: num(record["reserve_in_usd"]),
     volumeUsd1h: volume && typeof volume === "object" ? num((volume as { h1?: unknown }).h1) : null,
+    volumeUsd6h: volume && typeof volume === "object" ? num((volume as { h6?: unknown }).h6) : null,
+    volumeUsd24h:
+      volume && typeof volume === "object" ? num((volume as { h24?: unknown }).h24) : null,
     priceChange1hPct: null,
     source: "geckoterminal",
   };

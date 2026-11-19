@@ -19,7 +19,7 @@ export function screenRulesFromThresholds(thresholds: Thresholds): ScreenRules {
 export function phaseCConfigFromEnv(env: Env, thresholds: Thresholds): PhaseCConfig {
   const size = defaultSizePct();
   return {
-    bankroll: env.BANKROLL ?? null,
+    bankroll: env.PAPER_BANKROLL_USD ?? env.BANKROLL ?? null,
     sizePct: {
       trench: env.SIZE_TRENCH_PCT ?? size.trench,
       near_graduation: env.SIZE_NEAR_GRADUATION_PCT ?? size.near_graduation,

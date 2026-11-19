@@ -100,7 +100,8 @@ export function protocolBody(config: PhaseCConfig, rules?: unknown): string {
 }
 
 export function parseLockedConfig(body: string): PhaseCConfig {
-  return JSON.parse(body) as PhaseCConfig;
+  const parsed = JSON.parse(body) as PhaseCConfig & { config?: PhaseCConfig };
+  return parsed.config ?? parsed;
 }
 
 export function protocolFingerprint(body: string): string {
