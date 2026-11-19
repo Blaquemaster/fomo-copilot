@@ -56,6 +56,10 @@ export interface PassPosition {
   entryQuote: number | null;
   entrySizeUsd?: number | null;
   entryFeeUsd?: number | null;
+  entryInAmount?: string | null;
+  entryOutAmount?: string | null;
+  scaledAt?: Date | null;
+  sellWarned?: boolean;
   sizePct: number;
   exitPlan: string;
   screenFailed: boolean;
@@ -80,6 +84,7 @@ export interface PassInput {
   wallets: readonly TierWallet[];
   pendingTiers: readonly string[];
   registeredAt: Date | null;
+  entriesStartAt?: Date | null;
   expectedAlerts?: number | null;
 }
 
@@ -103,11 +108,12 @@ export interface PlannedOpen {
   impactPct: number;
   feeUsd: number;
   sizeUsd: number;
+  outAmount: string;
 }
 
 export interface PlannedClose {
   id: string;
-  reason: "invalidation" | "stop" | "horizon" | "dead";
+  reason: "invalidation" | "stop" | "horizon" | "dead" | "unpriced";
   quote: number;
   net: number;
   net2x: number;
@@ -131,34 +137,19 @@ export interface PassResult {
   digestIds: string[];
   tierRequests: Array<{ wallet: string; from: "base"; to: "high"; text: string; held: boolean }>;
   paper: PaperEvaluation;
+  sellWarnings: string[];
 }
 
 function sizeFor(config: PhaseCConfig, sizePct: number): number {
   return stageSizeUsd(config.bankroll, sizePct) ?? sizePct;
 }
 
-function bidFor(
-  mint: string,
-  sizeUsd: number,
-  quotes: ReadonlyMap<string, MarketQuote>,
-  bids: PassInput["bids"],
-  which: "one" | "two",
-): SizeBid {
-  const explicit = bids?.[mint]?.[which];
-  if (explicit) return explicit;
-  const quote = quotes.get(mint);
-  if (!quote) return { ok: false, reason: "no_quote" };
-  if (quote.liquidityUsd === 0) return { ok: false, reason: "no_liquidity" };
-  if (!(quote.priceUsd > 0) || !(sizeUsd > 0)) return { ok: false, reason: "no_quote" };
-  return {
-    ok: true,
-    execPriceUsd: quote.priceUsd,
-    midPriceUsd: quote.priceUsd,
-    impactPct: 0,
-    feeUsd: 0,
-    sizeUsd,
-    liquidityUsd: quote.liquidityUsd,
-  };
+function isDead(bid: SizeBid): boolean {
+  return !bid.ok && (bid.reason === "no_liquidity" || bid.reason === "no_route");
+}
+
+function bidFor(mint: string, bids: PassInput["bids"], which: "one" | "two"): SizeBid {
+  return bids?.[mint]?.[which] ?? { ok: false, reason: "no_quote" };
 }
 
 function entryBid(position: PassPosition, fallbackSize: number): SizeBid {
@@ -173,6 +164,8 @@ function entryBid(position: PassPosition, fallbackSize: number): SizeBid {
     feeUsd: position.entryFeeUsd ?? 0,
     sizeUsd: position.entrySizeUsd ?? fallbackSize,
     liquidityUsd: 1,
+    inAmount: position.entryInAmount ?? "0",
+    outAmount: position.entryOutAmount ?? "0",
   };
 }
 
@@ -193,7 +186,7 @@ function screenOf(coin: PassCoin, liquidity: number | null, rules: ScreenRules) 
 }
 
 export function runPhaseCPass(input: PassInput): PassResult {
-  const currentBody = protocolBody(input.config);
+  const currentBody = protocolBody(input.config, input.rules);
   const currentFingerprint = protocolFingerprint(currentBody);
   const registering = input.locked === null;
   const protocolViolation =
@@ -202,9 +195,21 @@ export function runPhaseCPass(input: PassInput): PassResult {
       : null;
   const config = input.locked?.config ?? input.config;
   const lock = registering
-    ? { fingerprint: currentFingerprint, body: JSON.stringify(input.config) }
+    ? {
+        fingerprint: currentFingerprint,
+        body: JSON.stringify({
+          config: input.config,
+          rules: input.rules,
+          entriesStartAt: input.entriesStartAt?.toISOString() ?? null,
+          expectedAlerts: input.expectedAlerts ?? null,
+        }),
+      }
     : null;
-  const allowEntries = !registering && protocolViolation === null;
+  const started =
+    input.entriesStartAt === null ||
+    input.entriesStartAt === undefined ||
+    input.now.getTime() >= input.entriesStartAt.getTime();
+  const allowEntries = !registering && protocolViolation === null && started;
   const quotes = new Map(input.quotes.map((quote) => [quote.mint, quote]));
   const coins = input.coins;
 
@@ -214,6 +219,7 @@ export function runPhaseCPass(input: PassInput): PassResult {
     if (screen.verdict === "fail") failedMints.add(coin.mint);
   }
 
+  const sellWarnings: string[] = [];
   const opens: PlannedOpen[] = [];
   const openIds = new Set<string>();
   const closes: PlannedClose[] = [];
@@ -225,7 +231,7 @@ export function runPhaseCPass(input: PassInput): PassResult {
     const due = input.now.getTime() >= position.entryAfter.getTime();
     const expired = input.now.getTime() >= position.entryAfter.getTime() + config.horizonMs;
     if (!due) continue;
-    const one = bidFor(position.mint, sizeFor(config, position.sizePct), quotes, input.bids, "one");
+    const one = bidFor(position.mint, input.bids, "one");
     if (one.ok && one.liquidityUsd !== 0) {
       opens.push({
         id: position.id,
@@ -233,13 +239,12 @@ export function runPhaseCPass(input: PassInput): PassResult {
         impactPct: one.impactPct,
         feeUsd: one.feeUsd,
         sizeUsd: one.sizeUsd,
+        outAmount: one.outAmount,
       });
       openIds.add(position.id);
       continue;
     }
-    const failed = !one.ok && one.reason === "no_liquidity";
-    if (failed || expired) {
-      const reason = one.ok ? "no_liquidity" : one.reason;
+    if (isDead(one)) {
       closes.push({
         id: position.id,
         reason: "dead",
@@ -248,11 +253,26 @@ export function runPhaseCPass(input: PassInput): PassResult {
         net2x: FULL_LOSS,
         impactPct: null,
         feeUsd: null,
-        failure: reason,
+        failure: one.ok ? "no_liquidity" : one.reason,
         text: `exit dead ${position.mint} net ${FULL_LOSS.toFixed(4)} 1x and 2x`,
       });
       closedIds.add(position.id);
       immediate.push(`exit dead ${position.mint} full loss`);
+      continue;
+    }
+    if (expired) {
+      closes.push({
+        id: position.id,
+        reason: "unpriced",
+        quote: 0,
+        net: 0,
+        net2x: 0,
+        impactPct: null,
+        feeUsd: null,
+        failure: one.ok ? "no_liquidity" : one.reason,
+        text: `unpriced ${position.mint} excluded`,
+      });
+      closedIds.add(position.id);
     }
   }
 
@@ -262,24 +282,24 @@ export function runPhaseCPass(input: PassInput): PassResult {
     if (position.status === "pending" && !openIds.has(position.id)) continue;
     if (!openedAt) continue;
     const entry = entryBid(position, sizeFor(config, position.sizePct));
-    const exitOne = bidFor(
-      position.mint,
-      entry.ok ? entry.sizeUsd : sizeFor(config, position.sizePct),
-      quotes,
-      input.bids,
-      "one",
-    );
-    const exitTwo = bidFor(
-      position.mint,
-      (entry.ok ? entry.sizeUsd : sizeFor(config, position.sizePct)) * 2,
-      quotes,
-      input.bids,
-      "two",
-    );
+    const exitOne = bidFor(position.mint, input.bids, "one");
+    const exitTwo = bidFor(position.mint, input.bids, "two");
     const latest = exitOne.ok ? exitOne.execPriceUsd : null;
-    const deadQuote = !exitOne.ok || exitOne.liquidityUsd === 0;
     const horizonReached = input.now.getTime() >= openedAt.getTime() + config.horizonMs;
-    if (deadQuote && horizonReached) {
+    const treatment = assignExitTreatment(position.mint);
+    if (
+      treatment === "scale_out" &&
+      !position.scaledAt &&
+      exitOne.ok &&
+      entry.ok &&
+      exitOne.execPriceUsd >= entry.execPriceUsd * 1.5
+    ) {
+      immediate.push(
+        `scale-out ${position.mint} half at ${exitOne.execPriceUsd.toString()} impact ${exitOne.impactPct.toFixed(2)}%`,
+      );
+      position.scaledAt = input.now;
+    }
+    if (isDead(exitOne)) {
       closes.push({
         id: position.id,
         reason: "dead",
@@ -295,6 +315,21 @@ export function runPhaseCPass(input: PassInput): PassResult {
       immediate.push(`exit dead ${position.mint} full loss`);
       continue;
     }
+    if (!exitOne.ok && horizonReached) {
+      closes.push({
+        id: position.id,
+        reason: "unpriced",
+        quote: 0,
+        net: 0,
+        net2x: 0,
+        impactPct: null,
+        feeUsd: null,
+        failure: exitOne.reason,
+        text: `unpriced ${position.mint} excluded`,
+      });
+      closedIds.add(position.id);
+      continue;
+    }
     const decision = planExit({
       openedAt,
       now: input.now,
@@ -305,7 +340,6 @@ export function runPhaseCPass(input: PassInput): PassResult {
       screenFailed: position.screenFailed || failedMints.has(position.mint),
     });
     if (!decision.exit || latest === null) continue;
-    const treatment = assignExitTreatment(position.mint);
     const net =
       treatment === "scale_out"
         ? scaleOutRoundTrip(entry, exitOne)
@@ -333,8 +367,10 @@ export function runPhaseCPass(input: PassInput): PassResult {
   for (const position of input.positions) {
     if (position.status !== "open" || closedIds.has(position.id)) continue;
     const coin = coins.find((item) => item.mint === position.mint);
-    if (coin && (coin.creatorSells > 0 || (coin.trackedSells ?? 0) > 0)) {
+    if (!position.sellWarned && coin && (coin.creatorSells > 0 || (coin.trackedSells ?? 0) > 0)) {
       immediate.push(`exit warning ${position.mint} tracked wallet or creator sold`);
+      sellWarnings.push(position.id);
+      position.sellWarned = true;
     }
   }
 
@@ -453,14 +489,17 @@ export function runPhaseCPass(input: PassInput): PassResult {
     expectedAlerts: input.expectedAlerts ?? null,
     returns: [
       ...input.resolved,
-      ...closes.map((row) => {
+      ...closes.flatMap((row) => {
+        if (row.reason === "unpriced") return [];
         const position = input.positions.find((item) => item.id === row.id);
-        return {
-          at: input.now,
-          arm: position?.arm ?? "screen_only",
-          net: row.net,
-          sizePct: position?.sizePct ?? 0,
-        };
+        return [
+          {
+            at: input.now,
+            arm: position?.arm ?? "screen_only",
+            net: row.net,
+            sizePct: position?.sizePct ?? 0,
+          },
+        ];
       }),
     ],
   });
@@ -479,5 +518,6 @@ export function runPhaseCPass(input: PassInput): PassResult {
     digestIds: digest === null ? [] : input.held.map((row) => row.id),
     tierRequests,
     paper,
+    sellWarnings,
   };
 }

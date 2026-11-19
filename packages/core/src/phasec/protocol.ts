@@ -71,8 +71,9 @@ export function defaultSizePct(): Record<Stage, number> {
   };
 }
 
-export function protocolBody(config: PhaseCConfig): string {
+export function protocolBody(config: PhaseCConfig, rules?: unknown): string {
   return JSON.stringify({
+    screen: rules ?? null,
     version: 1,
     arms: PAPER_ARMS,
     sizePct: config.sizePct,

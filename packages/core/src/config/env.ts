@@ -121,6 +121,8 @@ export const envSchema = z.object({
   /** Minutes between DexScreener and GeckoTerminal polls. Default 10, allowed 5 to 15. */
   MARKET_POLL_MINUTES: z.coerce.number().int().min(5).max(15).optional(),
   SECOND_WAVE_SOURCE: z.enum(["live", "fixture"]).optional(),
+  /** Optional. Raises the Jupiter quote budget from 30 to 60 requests a minute. */
+  JUPITER_API_KEY: z.string().min(8).max(256).optional(),
   WALLET_TIER_PROMOTE_RATE: z.coerce.number().min(0).max(1).optional(),
   EXIT_STOP_PCT: z.coerce.number().min(0).max(100).optional(),
   PAPER_MIN_ALERTS: z.coerce.number().int().min(1).max(1_000_000).optional(),
@@ -196,6 +198,7 @@ export function loadEnv(source: NodeJS.ProcessEnv = process.env): Env {
 /** Values that must never appear in logs or crash alerts. Longest first. */
 export function secretValuesFromEnv(env: Env): string[] {
   const values = [env.TELEGRAM_BOT_TOKEN, env.HELIUS_API_KEY, env.POSTGRES_PASSWORD];
+  if (env.JUPITER_API_KEY) values.push(env.JUPITER_API_KEY);
   if (env.BSC_WSS_URL && !env.BSC_WSS_URL.includes("bsc-rpc.publicnode.com")) {
     values.push(env.BSC_WSS_URL);
   }

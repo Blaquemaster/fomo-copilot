@@ -8,51 +8,28 @@ export interface SizeBidOk {
   feeUsd: number;
   sizeUsd: number;
   liquidityUsd: number | null;
+  inAmount: string;
+  outAmount: string;
 }
 
 export interface SizeBidFail {
   ok: false;
-  reason: "no_liquidity" | "no_quote" | "quote_failed";
+  reason: "no_liquidity" | "no_route" | "no_quote" | "rate_limited" | "transient";
 }
 
 export type SizeBid = SizeBidOk | SizeBidFail;
 
 export const FULL_LOSS = -1;
+export const SOL_MINT = "So11111111111111111111111111111111111111112";
+export const JUPITER_QUOTE_URL = "https://api.jup.ag/swap/v1/quote";
 
-export interface CurveReserves {
-  virtualSol: number;
-  virtualTokens: number;
-  solPriceUsd: number;
-  /** Fee taken from the chain state. Null means the state did not report one. */
-  feeBps: number | null;
+export function jupiterRatePerMin(hasApiKey: boolean): number {
+  return hasApiKey ? 60 : 30;
 }
 
-/** Constant-product bid against reserves we already have. A zero reserve is no liquidity. */
-export function curveBid(reserves: CurveReserves, sizeUsd: number): SizeBid {
-  if (!(sizeUsd > 0) || !(reserves.solPriceUsd > 0)) {
-    return { ok: false, reason: "no_quote" };
-  }
-  if (!(reserves.virtualSol > 0) || !(reserves.virtualTokens > 0)) {
-    return { ok: false, reason: "no_liquidity" };
-  }
-  const feeBps = reserves.feeBps ?? 0;
-  const feeUsd = (sizeUsd * feeBps) / 10_000;
-  const solIn = (sizeUsd - feeUsd) / reserves.solPriceUsd;
-  if (!(solIn > 0)) return { ok: false, reason: "no_liquidity" };
-  const k = reserves.virtualSol * reserves.virtualTokens;
-  const tokensOut = reserves.virtualTokens - k / (reserves.virtualSol + solIn);
-  if (!(tokensOut > 0)) return { ok: false, reason: "no_liquidity" };
-  const execPriceUsd = sizeUsd / tokensOut;
-  const midPriceUsd = (reserves.virtualSol / reserves.virtualTokens) * reserves.solPriceUsd;
-  return {
-    ok: true,
-    execPriceUsd,
-    midPriceUsd,
-    impactPct: midPriceUsd > 0 ? (execPriceUsd / midPriceUsd - 1) * 100 : 0,
-    feeUsd,
-    sizeUsd,
-    liquidityUsd: reserves.virtualSol * reserves.solPriceUsd,
-  };
+export function lamportsForUsd(sizeUsd: number, solPriceUsd: number): string | null {
+  if (!(sizeUsd > 0) || !(solPriceUsd > 0)) return null;
+  return Math.round((sizeUsd / solPriceUsd) * 1_000_000_000).toString();
 }
 
 export function jupiterQuoteUrl(inputMint: string, outputMint: string, amount: string): string {
@@ -62,31 +39,58 @@ export function jupiterQuoteUrl(inputMint: string, outputMint: string, amount: s
     amount,
     swapMode: "ExactIn",
   });
-  return `https://quote-api.jup.ag/v6/quote?${params.toString()}`;
+  return `${JUPITER_QUOTE_URL}?${params.toString()}`;
 }
 
-/** Jupiter /v6/quote body. The path is quote-only; a swap route is not requested. */
-export function parseJupiterQuote(body: unknown, sizeUsd: number): SizeBid {
-  if (!body || typeof body !== "object") return { ok: false, reason: "quote_failed" };
+export function impactPercent(raw: number): number {
+  if (!Number.isFinite(raw)) return 0;
+  const abs = Math.abs(raw);
+  return abs <= 1 ? abs * 100 : abs;
+}
+
+export function classifyJupiterHttp(status: number): SizeBidFail["reason"] | "ok" {
+  if (status === 429) return "rate_limited";
+  if (status >= 500) return "transient";
+  if (status === 400 || status === 404) return "no_route";
+  if (status >= 200 && status < 300) return "ok";
+  return "transient";
+}
+
+/** Jupiter /swap/v1/quote body. The request is quote-only. */
+export function parseJupiterQuote(
+  body: unknown,
+  input: number | { sizeUsd: number; side?: "buy" | "sell"; solPriceUsd?: number },
+): SizeBid {
+  const sizeUsd = typeof input === "number" ? input : input.sizeUsd;
+  const side = typeof input === "number" ? "buy" : (input.side ?? "buy");
+  const solPriceUsd = typeof input === "number" ? 0 : (input.solPriceUsd ?? 0);
+  if (!body || typeof body !== "object") return { ok: false, reason: "transient" };
   const record = body as Record<string, unknown>;
   const inAmount = Number(record["inAmount"]);
   const outAmount = Number(record["outAmount"]);
   if (!(inAmount > 0) || !(outAmount > 0) || !(sizeUsd > 0)) {
     return { ok: false, reason: "no_quote" };
   }
-  const impactRaw = Number(record["priceImpactPct"]);
-  const impactPct = Number.isFinite(impactRaw) ? Math.abs(impactRaw) * 100 : 0;
-  let feeUsd = 0;
   const routes = record["routePlan"];
+  if (Array.isArray(routes) && routes.length === 0) return { ok: false, reason: "no_route" };
+  const errorText = typeof record["error"] === "string" ? record["error"].toLowerCase() : "";
+  if (errorText.includes("liquidity")) return { ok: false, reason: "no_liquidity" };
+  if (errorText.includes("route")) return { ok: false, reason: "no_route" };
+  const impactPct = impactPercent(Number(record["priceImpactPct"]));
+  let feeRaw = 0;
   if (Array.isArray(routes)) {
     for (const route of routes) {
       if (!route || typeof route !== "object") continue;
       const info = (route as { swapInfo?: { feeAmount?: unknown } }).swapInfo;
       const fee = Number(info?.feeAmount);
-      if (Number.isFinite(fee) && fee > 0) feeUsd += (fee / inAmount) * sizeUsd;
+      if (Number.isFinite(fee) && fee > 0) feeRaw += fee;
     }
   }
-  const execPriceUsd = sizeUsd / outAmount;
+  const feeUsd = (feeRaw / inAmount) * sizeUsd;
+  const execPriceUsd =
+    side === "sell" && solPriceUsd > 0
+      ? ((outAmount / 1_000_000_000) * solPriceUsd) / inAmount
+      : sizeUsd / outAmount;
   const midPriceUsd = impactPct > 0 ? execPriceUsd / (1 + impactPct / 100) : execPriceUsd;
   return {
     ok: true,
@@ -96,6 +100,8 @@ export function parseJupiterQuote(body: unknown, sizeUsd: number): SizeBid {
     feeUsd,
     sizeUsd,
     liquidityUsd: null,
+    inAmount: String(record["inAmount"]),
+    outAmount: String(record["outAmount"]),
   };
 }
 

@@ -239,10 +239,13 @@ export {
   type TokenBucket,
 } from "./phasec/market.js";
 export {
-  curveBid,
+  SOL_MINT,
   jupiterQuoteUrl,
+  jupiterRatePerMin,
+  lamportsForUsd,
   parseJupiterQuote,
   quotedRoundTrip,
+  stageSizeUsd,
   type SizeBid,
 } from "./phasec/quote.js";
 export {
@@ -250,8 +253,18 @@ export {
   mihaoObservation,
   secondWaveSignal,
   tooYoungObservation,
+  type SecondWaveObservation,
 } from "./phasec/secondWave.js";
-export { runPhaseCPass, type PassCoin } from "./phasec/pass.js";
-export { parseLockedConfig, type PhaseCConfig } from "./phasec/protocol.js";
+export { runPhaseCPass, type PassCoin, type PassPosition } from "./phasec/pass.js";
+export type { ScreenRules } from "./phasec/screen.js";
+export {
+  assignExitTreatment,
+  defaultSizePct,
+  parseLockedConfig,
+  protocolBody,
+  protocolFingerprint,
+  type PhaseCConfig,
+} from "./phasec/protocol.js";
+export { classifyJupiterHttp } from "./phasec/quote.js";
 export type { PhaseCStore } from "./phasec/store.js";
-export { etDay, etDayRange, etWeekStart, inQuietHours } from "./phasec/time.js";
+export { etDay, etDayRange, etWeekStart, inQuietHours, nextEtMidnight } from "./phasec/time.js";

@@ -1,0 +1,252 @@
+import { describe, expect, it, vi } from "vitest";
+
+import {
+  assignExitTreatment,
+  defaultSizePct,
+  jupiterQuoteUrl,
+  mihaoObservation,
+  parseJupiterQuote,
+  protocolBody,
+  protocolFingerprint,
+  quoteUrlAllowed,
+  runPhaseCPass,
+  secondWaveSignal,
+  SOL_MINT,
+  type PassCoin,
+  type PassPosition,
+  type PhaseCConfig,
+  type ScreenRules,
+} from "@fomo/core";
+
+import { parseMintAccount, screenCreditProjection, topHolderPct } from "./accounts.js";
+import { collectJupiterBids } from "./jupiter.js";
+
+const rules: ScreenRules = {
+  failMintAuthority: true,
+  failFreezeAuthority: true,
+  transferFeeBpsAbove: 300,
+  exitImpactPctAbove: 5,
+  top10Warn: 35,
+  sniperWarn: 30,
+  minLiquidityUsd: 15_000,
+  minMakers1h: 50,
+};
+
+function config(): PhaseCConfig {
+  return {
+    bankroll: 10_000,
+    sizePct: defaultSizePct(),
+    dailyLossCutoffPct: 3,
+    maxConcurrent: 5,
+    quietHours: "23:00-07:00",
+    quietPostGradMinStrength: 0.7,
+    quietPostGradMinSizePct: 2,
+    exitStopPct: 25,
+    entryDelaySec: 90,
+    horizonMs: 60 * 60 * 1000,
+    paperWindowDays: 7,
+    paperMinAlerts: 100,
+    paperMaxDrawdownPct: 15,
+    maxPerHour: 6,
+    promoteRate: 0.75,
+    secondWaveMinChangePct: 20,
+    marketPollMinutes: 10,
+    xEnabled: false,
+    destination: "test",
+  };
+}
+
+function readyCoin(mint: string): PassCoin {
+  return {
+    mint,
+    createdAt: new Date("2026-11-19T12:00:00.000Z"),
+    graduatedAt: null,
+    curveCompletedAt: null,
+    trackedBuyers: 0,
+    xMentions: null,
+    liquidityUsd: 20_000,
+    transferFeeBps: 0,
+    mintAuthorityActive: false,
+    freezeAuthorityActive: false,
+    exitQuoteImpactPct: 1,
+    top10HoldersPct: 10,
+    sniperBundlePct: 4,
+    uniqueMakers1h: 80,
+    creatorSells: 0,
+    trackedSells: 0,
+    quoteError: false,
+    secondWave: null,
+  };
+}
+
+describe("quoted paper path", () => {
+  it("takes a coin from alert through a Jupiter entry, a scale-out, and a quoted exit", async () => {
+    let mint = "Paper111111111111111111111111111111111111";
+    for (let index = 0; index < 50; index += 1) {
+      const candidate = `Paper${index.toString()}11111111111111111111111111111111`;
+      if (assignExitTreatment(candidate) === "scale_out") {
+        mint = candidate;
+        break;
+      }
+    }
+    const cfg = config();
+    const now = new Date("2026-11-19T16:30:00.000Z");
+    const locked = { fingerprint: protocolFingerprint(protocolBody(cfg, rules)), config: cfg };
+    const alerted = runPhaseCPass({
+      now,
+      config: cfg,
+      rules,
+      locked,
+      coins: [readyCoin(mint)],
+      quotes: [],
+      positions: [],
+      closedToday: [],
+      paused: false,
+      resolved: [],
+      alerted: [],
+      held: [],
+      recentEntryCount: 0,
+      wallets: [],
+      pendingTiers: [],
+      registeredAt: now,
+      entriesStartAt: now,
+    });
+    expect(alerted.entries).toHaveLength(1);
+    expect(alerted.entries[0]?.text).toContain("screen: pass");
+    expect(alerted.entries[0]?.text).toContain("scale out half");
+    const buy = await collectJupiterBids({
+      requests: [
+        {
+          mint,
+          side: "buy",
+          amount: "333333333",
+          which: "one",
+          sizeUsd: 50,
+          solPriceUsd: 150,
+        },
+        {
+          mint,
+          side: "buy",
+          amount: "666666666",
+          which: "two",
+          sizeUsd: 100,
+          solPriceUsd: 150,
+        },
+      ],
+      nowMs: now.getTime(),
+      sleep: async () => undefined,
+      fetchImpl: vi.fn(async (url: string) => {
+        expect(quoteUrlAllowed(url)).toBe(true);
+        expect(url.startsWith(jupiterQuoteUrl(SOL_MINT, mint, "333333333").slice(0, 40))).toBe(
+          true,
+        );
+        const amount = new URL(url).searchParams.get("amount");
+        return {
+          status: 200,
+          json: async () => ({
+            inAmount: amount,
+            outAmount: amount === "666666666" ? "1800000" : "1000000",
+            priceImpactPct: "0.01",
+            routePlan: [{ swapInfo: { feeAmount: "1000" } }],
+          }),
+        };
+      }) as unknown as typeof fetch,
+    });
+    expect(buy.bids[mint]?.one.ok).toBe(true);
+    const opened = runPhaseCPass({
+      now: new Date("2026-11-19T16:31:30.000Z"),
+      config: cfg,
+      rules,
+      locked,
+      coins: [],
+      quotes: [],
+      bids: buy.bids,
+      positions: [
+        {
+          id: "pos-1",
+          mint,
+          stage: "trench",
+          arm: alerted.entries[0]?.arm ?? "screen_only",
+          status: "pending",
+          alertAt: now,
+          entryAfter: new Date("2026-11-19T16:31:30.000Z"),
+          openedAt: null,
+          entryQuote: null,
+          sizePct: 0.5,
+          exitPlan: alerted.entries[0]?.exitPlan ?? "",
+          screenFailed: false,
+        },
+      ],
+      closedToday: [],
+      paused: false,
+      resolved: [],
+      alerted: [{ mint, stage: "trench" }],
+      held: [],
+      recentEntryCount: 1,
+      wallets: [],
+      pendingTiers: [],
+      registeredAt: now,
+      entriesStartAt: now,
+    });
+    expect(opened.opens[0]?.outAmount).toBe("1000000");
+    expect(opened.opens[0]?.impactPct).toBeCloseTo(1);
+    const position: PassPosition = {
+      id: "pos-1",
+      mint,
+      stage: "trench",
+      arm: "screen_only",
+      status: "open",
+      alertAt: now,
+      entryAfter: new Date("2026-11-19T16:31:30.000Z"),
+      openedAt: new Date("2026-11-19T16:31:30.000Z"),
+      entryQuote: opened.opens[0]?.quote ?? 0,
+      entryOutAmount: opened.opens[0]?.outAmount,
+      entrySizeUsd: 50,
+      entryFeeUsd: opened.opens[0]?.feeUsd,
+      sizePct: 0.5,
+      exitPlan: "scale out",
+      screenFailed: false,
+    };
+    const sellBody = parseJupiterQuote(
+      {
+        inAmount: "500000",
+        outAmount: "260000000",
+        priceImpactPct: "0.02",
+        routePlan: [{ swapInfo: { feeAmount: "500" } }],
+      },
+      { sizeUsd: 25, side: "sell", solPriceUsd: 150 },
+    );
+    const scaled = runPhaseCPass({
+      now: new Date("2026-11-19T16:40:00.000Z"),
+      config: cfg,
+      rules,
+      locked,
+      coins: [],
+      quotes: [],
+      bids: { [mint]: { one: sellBody, two: sellBody } },
+      positions: [position],
+      closedToday: [],
+      paused: false,
+      resolved: [],
+      alerted: [{ mint, stage: "trench" }],
+      held: [],
+      recentEntryCount: 1,
+      wallets: [],
+      pendingTiers: [],
+      registeredAt: now,
+      entriesStartAt: now,
+    });
+    expect(scaled.immediate.some((line) => line.startsWith("scale-out"))).toBe(true);
+    const mintBytes = new Uint8Array(82);
+    mintBytes[46] = 1;
+    expect(parseMintAccount(mintBytes)?.freezeAuthorityActive).toBe(true);
+    expect(parseMintAccount(mintBytes)?.mintAuthorityActive).toBe(false);
+    expect(topHolderPct([10, 5], 100)).toBe(15);
+    expect(screenCreditProjection(10).perMonth).toBe(10 * 5 * 30);
+    const nowWave = new Date("2026-11-19T16:30:00.000Z");
+    expect(secondWaveSignal(mihaoObservation(nowWave), nowWave)).toBe("breakout");
+    expect(quoteUrlAllowed("https://api.jup.ag/swap")).toBe(false);
+    expect(quoteUrlAllowed("https://api.jup.ag/swap/v1/swap-instructions")).toBe(false);
+    expect(quoteUrlAllowed("https://api.jup.ag/execute")).toBe(false);
+  });
+});

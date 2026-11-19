@@ -42,18 +42,51 @@ export class PhaseCRepository implements PhaseCStore {
       tracked_buyers: number;
       transfer_fee_bps: number | null;
       creator_sells: number;
+      tracked_sells: number;
+      sniper_pct: number | null;
+      top10_pct: number | null;
+      mint_authority_active: boolean | null;
+      freeze_authority_active: boolean | null;
+      liquidity_usd: number | null;
     }>(
-      `select mint, first_seen_at, graduated_at, curve_completed_at, tracked_buyers, transfer_fee_bps, creator_sells
+      `select mint, first_seen_at, graduated_at, curve_completed_at, tracked_buyers,
+              transfer_fee_bps, creator_sells, tracked_sells, sniper_pct, top10_pct,
+              mint_authority_active, freeze_authority_active, liquidity_usd
        from (
          select distinct on (c.mint)
            c.mint, c.first_seen_at, c.graduated_at, c.curve_completed_at,
            coalesce(w.tracked_buyers, 0) as tracked_buyers,
            coin.transfer_fee_bps,
-           coalesce(stats.creator_sells, 0) as creator_sells
+           coalesce(stats.creator_sells, 0) as creator_sells,
+           coalesce(sells.tracked_sells, 0) as tracked_sells,
+           snipers.sniper_pct,
+           cache.top10_pct,
+           cache.mint_authority_active,
+           cache.freeze_authority_active,
+           snap.liquidity_usd
          from candidates c
          left join coin_wallet_signal w on w.mint = c.mint
          left join ingest_coin coin on coin.mint = c.mint
          left join pump_coin_stats stats on stats.mint = c.mint
+         left join phasec_mint_cache cache on cache.mint = c.mint
+         left join lateral (
+           select count(*)::int as tracked_sells from wallet_fill f
+           where f.mint = c.mint and f.side = 'sell'
+         ) sells on true
+         left join lateral (
+           select case when count(*) filter (where t.side = 'buy') = 0 then 0
+             else count(*) filter (
+               where t.side = 'buy' and t.is_creator = false and t.slot = p.created_slot
+             )::float / count(*) filter (where t.side = 'buy') * 100
+           end as sniper_pct
+           from pump_trade t
+           join pump_coin p on p.mint = t.mint
+           where t.mint = c.mint
+         ) snipers on true
+         left join lateral (
+           select liquidity_usd from phasec_market_snapshot s
+           where s.mint = c.mint order by polled_at desc limit 1
+         ) snap on true
          where c.source <> 'audit'
          order by c.mint, c.first_seen_at desc
        ) coins
@@ -68,13 +101,14 @@ export class PhaseCRepository implements PhaseCStore {
       curveCompletedAt: row.curve_completed_at ? date(row.curve_completed_at) : null,
       trackedBuyers: Number(row.tracked_buyers),
       xMentions: null,
-      liquidityUsd: null,
+      liquidityUsd: row.liquidity_usd === null ? null : Number(row.liquidity_usd),
       transferFeeBps: row.transfer_fee_bps === null ? null : Number(row.transfer_fee_bps),
-      mintAuthorityActive: null,
-      freezeAuthorityActive: null,
+      mintAuthorityActive: row.mint_authority_active,
+      freezeAuthorityActive: row.freeze_authority_active,
       exitQuoteImpactPct: null,
-      top10HoldersPct: null,
-      sniperBundlePct: null,
+      top10HoldersPct: row.top10_pct === null ? null : Number(row.top10_pct),
+      sniperBundlePct: row.sniper_pct === null ? null : Number(row.sniper_pct),
+      trackedSells: Number(row.tracked_sells),
       uniqueMakers1h: null,
       creatorSells: Number(row.creator_sells),
       quoteError: false,
@@ -108,12 +142,15 @@ export class PhaseCRepository implements PhaseCStore {
       entry_quote: number | null;
       entry_size_usd: number | null;
       entry_fee_usd: number | null;
+      entry_out_amount: string | null;
+      sell_warned: boolean;
       size_pct: number;
       exit_plan: string;
       screen_failed: boolean;
     }>(
       `select id, mint, stage, arm, status, alert_at, entry_after, opened_at, entry_quote,
-              entry_size_usd, entry_fee_usd, size_pct, exit_plan, screen_failed
+              entry_size_usd, entry_fee_usd, entry_out_amount, size_pct, exit_plan,
+              screen_failed, sell_warned
        from phasec_position
        where status in ('pending', 'open')
        order by alert_at`,
@@ -130,6 +167,8 @@ export class PhaseCRepository implements PhaseCStore {
       entryQuote: row.entry_quote === null ? null : Number(row.entry_quote),
       entrySizeUsd: row.entry_size_usd === null ? null : Number(row.entry_size_usd),
       entryFeeUsd: row.entry_fee_usd === null ? null : Number(row.entry_fee_usd),
+      entryOutAmount: row.entry_out_amount,
+      sellWarned: row.sell_warned,
       sizePct: Number(row.size_pct),
       exitPlan: row.exit_plan,
       screenFailed: row.screen_failed,
@@ -255,14 +294,55 @@ export class PhaseCRepository implements PhaseCStore {
     impactPct: number,
     feeUsd: number,
     sizeUsd: number,
+    outAmount: string,
     at: Date,
   ): Promise<void> {
     await this.pool.query(
       `update phasec_position
-       set status = 'open', opened_at = $6, entry_quote = $2, entry_impact_pct = $3,
-           entry_fee_usd = $4, entry_size_usd = $5
+       set status = 'open', opened_at = $7, entry_quote = $2, entry_impact_pct = $3,
+           entry_fee_usd = $4, entry_size_usd = $5, entry_out_amount = $6
        where id = $1 and status = 'pending'`,
-      [id, quote, impactPct, feeUsd, sizeUsd, at.toISOString()],
+      [id, quote, impactPct, feeUsd, sizeUsd, outAmount, at.toISOString()],
+    );
+  }
+
+  async markSellWarned(ids: readonly string[]): Promise<void> {
+    if (ids.length === 0) return;
+    await this.pool.query(
+      "update phasec_position set sell_warned = true where id = any($1::bigint[])",
+      [ids],
+    );
+  }
+
+  async saveSnapshots(
+    rows: readonly {
+      mint: string;
+      at: Date;
+      priceUsd: number | null;
+      liquidityUsd: number | null;
+      volume1h: number | null;
+    }[],
+  ): Promise<void> {
+    for (const row of rows) {
+      await this.pool.query(
+        `insert into phasec_market_snapshot
+          (mint, polled_at, price_usd, liquidity_usd, volume_1h)
+         values ($1, $2, $3, $4, $5)
+         on conflict (mint, polled_at) do nothing`,
+        [row.mint, row.at.toISOString(), row.priceUsd, row.liquidityUsd, row.volume1h],
+      );
+    }
+  }
+
+  async recordScreenCredits(credits: number, at: Date): Promise<void> {
+    if (credits <= 0) return;
+    await this.pool.query(
+      `insert into ingest_feature_daily (feature, day, credit_micros, stored_events)
+       values ('phasec_screen', $1::date, $2, $3)
+       on conflict (feature, day) do update set
+         credit_micros = ingest_feature_daily.credit_micros + excluded.credit_micros,
+         stored_events = ingest_feature_daily.stored_events + excluded.stored_events`,
+      [at.toISOString(), credits * 1_000_000, credits],
     );
   }
 
@@ -279,7 +359,10 @@ export class PhaseCRepository implements PhaseCStore {
   }): Promise<void> {
     await this.pool.query(
       `update phasec_position
-       set status = 'closed', exit_quote = $2, net_return = $3, net_return_2x = $4,
+       set status = case when $5 = 'unpriced' then 'unpriced' else 'closed' end,
+           exit_quote = $2,
+           net_return = case when $5 = 'unpriced' then null else $3 end,
+           net_return_2x = case when $5 = 'unpriced' then null else $4 end,
            exit_reason = $5, exit_impact_pct = $6, exit_fee_usd = $7, quote_failure = $8, closed_at = $9
        where id = $1 and status in ('open', 'pending')`,
       [

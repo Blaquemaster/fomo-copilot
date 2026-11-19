@@ -1,6 +1,6 @@
 /** Free quote hosts only. A /swap or /execute path, or Helius, is refused. */
 
-const ALLOWED_HOSTS = new Set(["api.dexscreener.com", "api.geckoterminal.com", "quote-api.jup.ag"]);
+const ALLOWED_HOSTS = new Set(["api.dexscreener.com", "api.geckoterminal.com", "api.jup.ag"]);
 
 export interface MarketQuote {
   mint: string;
@@ -18,18 +18,26 @@ export function quoteUrlAllowed(url: string): boolean {
   } catch {
     return false;
   }
-  const path = parsed.pathname.toLowerCase();
-  if (path.includes("/swap") || path.includes("/execute") || path.includes("/order")) return false;
+  const path = parsed.pathname;
+  const lower = path.toLowerCase();
   if (parsed.hostname.includes("helius")) return false;
+  if (
+    lower.includes("/execute") ||
+    lower.includes("/order") ||
+    lower.includes("swap-instructions")
+  ) {
+    return false;
+  }
+  if (parsed.hostname === "api.jup.ag") return path === "/swap/v1/quote";
+  if (lower === "/swap" || lower.endsWith("/swap")) return false;
   if (!ALLOWED_HOSTS.has(parsed.hostname)) return false;
-  if (parsed.hostname === "quote-api.jup.ag") return path === "/v6/quote";
-  if (parsed.hostname === "api.dexscreener.com") return path.startsWith("/latest/dex/tokens/");
-  return path.startsWith("/api/v2/networks/solana/tokens/");
+  if (parsed.hostname === "api.dexscreener.com") return lower.startsWith("/latest/dex/tokens/");
+  return lower.startsWith("/api/v2/networks/solana/tokens/");
 }
 
 export const DEX_REQUESTS_PER_MIN = 60;
 export const GECKO_REQUESTS_PER_MIN = 10;
-export const JUPITER_REQUESTS_PER_MIN = 60;
+export const JUPITER_REQUESTS_PER_MIN = 30;
 export const DEX_BATCH = 30;
 
 export interface TokenBucket {

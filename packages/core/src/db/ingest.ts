@@ -507,6 +507,27 @@ create table if not exists phasec_weekly (
 create table if not exists phasec_wallet_snapshot (
   address text primary key
 );
+
+alter table phasec_position add column if not exists entry_out_amount text;
+alter table phasec_position add column if not exists sell_warned boolean not null default false;
+alter table phasec_position add column if not exists scaled_at timestamptz;
+
+create table if not exists phasec_mint_cache (
+  mint text primary key,
+  mint_authority_active boolean,
+  freeze_authority_active boolean,
+  top10_pct double precision,
+  fetched_at timestamptz not null
+);
+
+create table if not exists phasec_market_snapshot (
+  mint text not null,
+  polled_at timestamptz not null,
+  price_usd double precision,
+  liquidity_usd double precision,
+  volume_1h double precision,
+  primary key (mint, polled_at)
+);
 `;
 
 export function createPool(

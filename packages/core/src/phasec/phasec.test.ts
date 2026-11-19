@@ -22,7 +22,7 @@ import {
 } from "./protocol.js";
 import { entryDecision, planTierPromotions } from "./risk.js";
 import { assignArm, scoreStrength } from "./score.js";
-import { curveBid, jupiterQuoteUrl, quotedRoundTrip } from "./quote.js";
+import { jupiterQuoteUrl, parseJupiterQuote, quotedRoundTrip } from "./quote.js";
 import { screenCoin, type ScreenRules } from "./screen.js";
 import {
   deadCoinObservation,
@@ -111,7 +111,7 @@ function pass(overrides: Partial<PassInput> = {}): PassInput {
     rules,
     locked:
       overrides.locked === undefined
-        ? { fingerprint: protocolFingerprint(protocolBody(cfg)), config: cfg }
+        ? { fingerprint: protocolFingerprint(protocolBody(cfg, rules)), config: cfg }
         : overrides.locked,
     coins: [],
     quotes: [],
@@ -258,6 +258,32 @@ describe("phase C", () => {
           },
         ],
         alerted: [{ mint, stage: "trench" }],
+        bids: {
+          [mint]: {
+            one: {
+              ok: true,
+              execPriceUsd: 0.7,
+              midPriceUsd: 0.72,
+              impactPct: 2.8,
+              feeUsd: 0.05,
+              sizeUsd: 50,
+              liquidityUsd: 20_000,
+              inAmount: "1000000000",
+              outAmount: "90000000",
+            },
+            two: {
+              ok: true,
+              execPriceUsd: 0.65,
+              midPriceUsd: 0.72,
+              impactPct: 4,
+              feeUsd: 0.1,
+              sizeUsd: 100,
+              liquidityUsd: 20_000,
+              inAmount: "2000000000",
+              outAmount: "170000000",
+            },
+          },
+        },
       }),
     );
     expect(later.closes[0]?.reason).toBe("stop");
@@ -362,13 +388,13 @@ describe("phase C", () => {
     expect(lost.status).toBe("no_go");
     const first = config();
     const changed = config({ paperMinAlerts: 50 });
-    expect(protocolFingerprint(protocolBody(first))).not.toBe(
-      protocolFingerprint(protocolBody(changed)),
+    expect(protocolFingerprint(protocolBody(first, rules))).not.toBe(
+      protocolFingerprint(protocolBody(changed, rules)),
     );
     const locked = runPhaseCPass(
       pass({
         config: changed,
-        locked: { fingerprint: protocolFingerprint(protocolBody(first)), config: first },
+        locked: { fingerprint: protocolFingerprint(protocolBody(first, rules)), config: first },
       }),
     );
     expect(locked.retuneBlocked).toBe(true);
@@ -471,12 +497,21 @@ describe("phase C", () => {
     const unregistered = runPhaseCPass(pass({ locked: null, coins: [coin(mint)] }));
     expect(unregistered.entries).toEqual([]);
     expect(unregistered.lock).not.toBeNull();
-    const bid = curveBid(
-      { virtualSol: 30, virtualTokens: 1_000_000_000, solPriceUsd: 150, feeBps: null },
+    const bid = parseJupiterQuote(
+      {
+        inAmount: "333333333",
+        outAmount: "1000000",
+        priceImpactPct: "0.02",
+        routePlan: [{ swapInfo: { feeAmount: "1000" } }],
+      },
       50,
     );
     expect(bid.ok).toBe(true);
-    if (bid.ok) expect(bid.impactPct).toBeGreaterThan(0);
+    if (bid.ok) {
+      expect(bid.outAmount).toBe("1000000");
+      expect(bid.impactPct).toBeCloseTo(2);
+      expect(bid.feeUsd).toBeGreaterThan(0);
+    }
     const dead = quotedRoundTrip(bid, { ok: false, reason: "no_liquidity" });
     expect(dead).toBe(-1);
     const curve = bankrollCurve([

@@ -34,8 +34,20 @@ export interface PhaseCStore {
     impactPct: number,
     feeUsd: number,
     sizeUsd: number,
+    outAmount: string,
     at: Date,
   ): Promise<void>;
+  markSellWarned(ids: readonly string[]): Promise<void>;
+  saveSnapshots(
+    rows: readonly {
+      mint: string;
+      at: Date;
+      priceUsd: number | null;
+      liquidityUsd: number | null;
+      volume1h: number | null;
+    }[],
+  ): Promise<void>;
+  recordScreenCredits(credits: number, at: Date): Promise<void>;
   closePosition(input: {
     id: string;
     quote: number;

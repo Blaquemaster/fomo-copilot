@@ -52,6 +52,10 @@ export function etDay(now: Date): string {
   return `${parts.year.toString()}-${month}-${day}`;
 }
 
+export function nextEtMidnight(now: Date): Date {
+  return etDayRange(now).end;
+}
+
 export function etDayRange(now: Date): { day: string; start: Date; end: Date } {
   const parts = zonedParts(now);
   const startGuess = new Date(Date.UTC(parts.year, parts.month - 1, parts.day, 12));
