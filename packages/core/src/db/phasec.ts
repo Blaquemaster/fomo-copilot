@@ -1,0 +1,368 @@
+import pg from "pg";
+
+import type { PassCoin, PassPosition } from "../phasec/pass.js";
+import type { ResolvedReturn } from "../phasec/paper.js";
+import type { PaperArm, Stage } from "../phasec/protocol.js";
+import type { PhaseCStore } from "../phasec/store.js";
+import type { TierWallet } from "../phasec/risk.js";
+
+function date(value: Date | string): Date {
+  return value instanceof Date ? value : new Date(value);
+}
+
+export class PhaseCRepository implements PhaseCStore {
+  constructor(private readonly pool: pg.Pool) {}
+
+  async protocol(): Promise<{ fingerprint: string; body: string; registeredAt: Date } | null> {
+    const result = await this.pool.query<{
+      fingerprint: string;
+      body: string;
+      registered_at: Date;
+    }>("select fingerprint, body, registered_at from phasec_protocol where id = 1");
+    const row = result.rows[0];
+    if (!row) return null;
+    return { fingerprint: row.fingerprint, body: row.body, registeredAt: date(row.registered_at) };
+  }
+
+  async saveProtocol(fingerprint: string, body: string, at: Date): Promise<void> {
+    await this.pool.query(
+      `insert into phasec_protocol (id, fingerprint, body, registered_at)
+       values (1, $1, $2, $3)
+       on conflict (id) do nothing`,
+      [fingerprint, body, at.toISOString()],
+    );
+  }
+
+  async coins(limit: number): Promise<PassCoin[]> {
+    const result = await this.pool.query<{
+      mint: string;
+      first_seen_at: Date;
+      graduated_at: Date | null;
+      curve_completed_at: Date | null;
+      tracked_buyers: number;
+      transfer_fee_bps: number | null;
+      creator_sells: number;
+    }>(
+      `select mint, first_seen_at, graduated_at, curve_completed_at, tracked_buyers, transfer_fee_bps, creator_sells
+       from (
+         select distinct on (c.mint)
+           c.mint, c.first_seen_at, c.graduated_at, c.curve_completed_at,
+           coalesce(w.tracked_buyers, 0) as tracked_buyers,
+           coin.transfer_fee_bps,
+           coalesce(stats.creator_sells, 0) as creator_sells
+         from candidates c
+         left join coin_wallet_signal w on w.mint = c.mint
+         left join ingest_coin coin on coin.mint = c.mint
+         left join pump_coin_stats stats on stats.mint = c.mint
+         where c.source <> 'audit'
+         order by c.mint, c.first_seen_at desc
+       ) coins
+       order by first_seen_at desc
+       limit $1`,
+      [limit],
+    );
+    return result.rows.map((row) => ({
+      mint: row.mint,
+      createdAt: date(row.first_seen_at),
+      graduatedAt: row.graduated_at ? date(row.graduated_at) : null,
+      curveCompletedAt: row.curve_completed_at ? date(row.curve_completed_at) : null,
+      trackedBuyers: Number(row.tracked_buyers),
+      xMentions: null,
+      liquidityUsd: null,
+      transferFeeBps: row.transfer_fee_bps === null ? null : Number(row.transfer_fee_bps),
+      mintAuthorityActive: null,
+      freezeAuthorityActive: null,
+      exitQuoteImpactPct: null,
+      top10HoldersPct: null,
+      sniperBundlePct: null,
+      uniqueMakers1h: null,
+      creatorSells: Number(row.creator_sells),
+      quoteError: false,
+    }));
+  }
+
+  async mentionCounts(mints: readonly string[]): Promise<Map<string, number>> {
+    const counts = new Map<string, number>();
+    if (mints.length === 0) return counts;
+    const result = await this.pool.query<{ mint: string; mentions: number }>(
+      "select mint, count(*)::int as mentions from coin_x_mention where mint = any($1::text[]) group by mint",
+      [mints],
+    );
+    for (const row of result.rows) {
+      if (row.mint) counts.set(row.mint, Number(row.mentions));
+    }
+    return counts;
+  }
+
+  async positions(): Promise<PassPosition[]> {
+    const result = await this.pool.query<{
+      id: string;
+      mint: string;
+      stage: Stage;
+      arm: PaperArm;
+      status: "pending" | "open";
+      alert_at: Date;
+      entry_after: Date;
+      opened_at: Date | null;
+      entry_quote: number | null;
+      size_pct: number;
+      exit_plan: string;
+      screen_failed: boolean;
+    }>(
+      `select id, mint, stage, arm, status, alert_at, entry_after, opened_at, entry_quote, size_pct, exit_plan, screen_failed
+       from phasec_position
+       where status in ('pending', 'open')
+       order by alert_at`,
+    );
+    return result.rows.map((row) => ({
+      id: String(row.id),
+      mint: row.mint,
+      stage: row.stage,
+      arm: row.arm,
+      status: row.status,
+      alertAt: date(row.alert_at),
+      entryAfter: date(row.entry_after),
+      openedAt: row.opened_at ? date(row.opened_at) : null,
+      entryQuote: row.entry_quote === null ? null : Number(row.entry_quote),
+      sizePct: Number(row.size_pct),
+      exitPlan: row.exit_plan,
+      screenFailed: row.screen_failed,
+    }));
+  }
+
+  async closedBetween(
+    start: Date,
+    end: Date,
+  ): Promise<Array<{ sizePct: number; netReturn: number }>> {
+    const result = await this.pool.query<{ size_pct: number; net_return: number }>(
+      `select size_pct, net_return from phasec_position
+       where status = 'closed' and closed_at >= $1 and closed_at < $2 and net_return is not null`,
+      [start.toISOString(), end.toISOString()],
+    );
+    return result.rows.map((row) => ({
+      sizePct: Number(row.size_pct),
+      netReturn: Number(row.net_return),
+    }));
+  }
+
+  async isPaused(day: string): Promise<boolean> {
+    const result = await this.pool.query("select 1 from phasec_pause where day = $1", [day]);
+    return result.rowCount !== null && result.rowCount > 0;
+  }
+
+  async pause(day: string, reason: string, at: Date): Promise<void> {
+    await this.pool.query(
+      `insert into phasec_pause (day, reason, paused_at) values ($1, $2, $3)
+       on conflict (day) do nothing`,
+      [day, reason, at.toISOString()],
+    );
+  }
+
+  async alerted(): Promise<Array<{ mint: string; stage: Stage }>> {
+    const result = await this.pool.query<{ mint: string; stage: Stage }>(
+      "select mint, stage from phasec_alert where kind = 'entry'",
+    );
+    return result.rows;
+  }
+
+  async recentEntryCount(since: Date): Promise<number> {
+    const result = await this.pool.query<{ count: string }>(
+      "select count(*)::text as count from phasec_alert where kind = 'entry' and created_at >= $1",
+      [since.toISOString()],
+    );
+    return Number(result.rows[0]?.count ?? 0);
+  }
+
+  async held(): Promise<Array<{ id: string; text: string }>> {
+    const result = await this.pool.query<{ id: string; body: string }>(
+      "select id, body from phasec_alert where delivered_at is null and held_reason = 'quiet' order by created_at",
+    );
+    return result.rows.map((row) => ({ id: String(row.id), text: row.body }));
+  }
+
+  async insertEntry(input: {
+    mint: string;
+    stage: Stage;
+    arm: string;
+    sizePct: number;
+    strength: number;
+    exitPlan: string;
+    text: string;
+    held: boolean;
+    alertAt: Date;
+    entryAfter: Date;
+  }): Promise<string> {
+    const client = await this.pool.connect();
+    try {
+      await client.query("begin");
+      const inserted = await client.query<{ id: string }>(
+        `insert into phasec_alert
+          (mint, stage, arm, kind, created_at, delivered_at, held_reason, size_pct, strength, body)
+         values ($1, $2, $3, 'entry', $4, null, $5, $6, $7, $8)
+         returning id`,
+        [
+          input.mint,
+          input.stage,
+          input.arm,
+          input.alertAt.toISOString(),
+          input.held ? "quiet" : null,
+          input.sizePct,
+          input.strength,
+          input.text,
+        ],
+      );
+      await client.query(
+        `insert into phasec_position
+          (mint, stage, arm, status, alert_at, entry_after, size_pct, exit_plan, screen_failed)
+         values ($1, $2, $3, 'pending', $4, $5, $6, $7, false)`,
+        [
+          input.mint,
+          input.stage,
+          input.arm,
+          input.alertAt.toISOString(),
+          input.entryAfter.toISOString(),
+          input.sizePct,
+          input.exitPlan,
+        ],
+      );
+      await client.query("commit");
+      return String(inserted.rows[0]?.id ?? "");
+    } catch (error) {
+      await client.query("rollback");
+      throw error;
+    } finally {
+      client.release();
+    }
+  }
+
+  async markDelivered(ids: readonly string[], at: Date): Promise<void> {
+    if (ids.length === 0) return;
+    await this.pool.query(
+      "update phasec_alert set delivered_at = $2 where id = any($1::bigint[]) and delivered_at is null",
+      [ids, at.toISOString()],
+    );
+  }
+
+  async openPosition(id: string, quote: number, at: Date): Promise<void> {
+    await this.pool.query(
+      `update phasec_position
+       set status = 'open', opened_at = $2, entry_quote = $3
+       where id = $1 and status = 'pending'`,
+      [id, at.toISOString(), quote],
+    );
+  }
+
+  async closePosition(
+    id: string,
+    quote: number,
+    net: number,
+    reason: string,
+    at: Date,
+  ): Promise<void> {
+    await this.pool.query(
+      `update phasec_position
+       set status = 'closed', exit_quote = $2, net_return = $3, exit_reason = $4, closed_at = $5
+       where id = $1 and status = 'open'`,
+      [id, quote, net, reason, at.toISOString()],
+    );
+  }
+
+  async wallets(): Promise<TierWallet[]> {
+    const result = await this.pool.query<{ address: string; hit_rate: number; size_tier: string }>(
+      "select address, hit_rate, size_tier from tracked_wallet where active = true",
+    );
+    return result.rows.map((row) => ({
+      address: row.address,
+      hitRate: Number(row.hit_rate),
+      tier: row.size_tier === "high" ? "high" : "base",
+    }));
+  }
+
+  async pendingTiers(): Promise<string[]> {
+    const result = await this.pool.query<{ wallet: string }>(
+      "select wallet from phasec_tier_request where status = 'pending'",
+    );
+    return result.rows.map((row) => row.wallet);
+  }
+
+  async insertTier(wallet: string, at: Date): Promise<void> {
+    await this.pool.query(
+      `insert into phasec_tier_request (wallet, from_tier, to_tier, status, requested_at)
+       select $1, 'base', 'high', 'pending', $2
+       where not exists (
+         select 1 from phasec_tier_request where wallet = $1 and status = 'pending'
+       )`,
+      [wallet, at.toISOString()],
+    );
+  }
+
+  async activeAddresses(): Promise<string[]> {
+    const result = await this.pool.query<{ address: string }>(
+      "select address from tracked_wallet where active = true order by address",
+    );
+    return result.rows.map((row) => row.address);
+  }
+
+  async snapshot(): Promise<string[]> {
+    const result = await this.pool.query<{ address: string }>(
+      "select address from phasec_wallet_snapshot order by address",
+    );
+    return result.rows.map((row) => row.address);
+  }
+
+  async replaceSnapshot(addresses: readonly string[]): Promise<void> {
+    const client = await this.pool.connect();
+    try {
+      await client.query("begin");
+      await client.query("delete from phasec_wallet_snapshot");
+      for (const address of addresses) {
+        await client.query("insert into phasec_wallet_snapshot (address) values ($1)", [address]);
+      }
+      await client.query("commit");
+    } catch (error) {
+      await client.query("rollback");
+      throw error;
+    } finally {
+      client.release();
+    }
+  }
+
+  async weeklyExists(week: string): Promise<boolean> {
+    const result = await this.pool.query("select 1 from phasec_weekly where week_start = $1", [
+      week,
+    ]);
+    return result.rowCount !== null && result.rowCount > 0;
+  }
+
+  async saveWeekly(week: string, body: string, at: Date): Promise<void> {
+    await this.pool.query(
+      `insert into phasec_weekly (week_start, body, created_at) values ($1, $2, $3)
+       on conflict (week_start) do nothing`,
+      [week, body, at.toISOString()],
+    );
+  }
+
+  async resolvedReturns(): Promise<ResolvedReturn[]> {
+    const result = await this.pool.query<{ closed_at: Date; arm: PaperArm; net_return: number }>(
+      `select closed_at, arm, net_return from phasec_position
+       where status = 'closed' and net_return is not null and closed_at is not null
+       order by closed_at`,
+    );
+    return result.rows.map((row) => ({
+      at: date(row.closed_at),
+      arm: row.arm,
+      net: Number(row.net_return),
+    }));
+  }
+
+  async graduatedMints(limit: number): Promise<string[]> {
+    const result = await this.pool.query<{ mint: string }>(
+      `select mint from candidates
+       where graduated_at is not null and graduated_at < now() - interval '30 minutes'
+       order by graduated_at desc
+       limit $1`,
+      [limit],
+    );
+    return result.rows.map((row) => row.mint);
+  }
+}

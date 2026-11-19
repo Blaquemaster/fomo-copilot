@@ -98,6 +98,26 @@ jobs:
           WALLET_MIN_SHRUNK_RATE: ${{ vars.WALLET_MIN_SHRUNK_RATE }}
           WALLET_BOT_MAX_ENTRIES: ${{ vars.WALLET_BOT_MAX_ENTRIES }}
           WALLET_BACKFILL_FAIL_LIMIT: ${{ vars.WALLET_BACKFILL_FAIL_LIMIT }}
+          BANKROLL: ${{ vars.BANKROLL }}
+          SIZE_TRENCH_PCT: ${{ vars.SIZE_TRENCH_PCT }}
+          SIZE_NEAR_GRADUATION_PCT: ${{ vars.SIZE_NEAR_GRADUATION_PCT }}
+          SIZE_POST_GRADUATION_PCT: ${{ vars.SIZE_POST_GRADUATION_PCT }}
+          SIZE_SECOND_WAVE_PCT: ${{ vars.SIZE_SECOND_WAVE_PCT }}
+          DAILY_LOSS_CUTOFF_PCT: ${{ vars.DAILY_LOSS_CUTOFF_PCT }}
+          MAX_CONCURRENT_POSITIONS: ${{ vars.MAX_CONCURRENT_POSITIONS }}
+          QUIET_HOURS: ${{ vars.QUIET_HOURS }}
+          QUIET_POST_GRAD_MIN_STRENGTH: ${{ vars.QUIET_POST_GRAD_MIN_STRENGTH }}
+          QUIET_POST_GRAD_MIN_SIZE_PCT: ${{ vars.QUIET_POST_GRAD_MIN_SIZE_PCT }}
+          ALERT_DESTINATION: ${{ vars.ALERT_DESTINATION }}
+          TELEGRAM_TEST_CHAT_ID: ${{ vars.TELEGRAM_TEST_CHAT_ID }}
+          SECOND_WAVE_SOURCE: ${{ vars.SECOND_WAVE_SOURCE }}
+          WALLET_TIER_PROMOTE_RATE: ${{ vars.WALLET_TIER_PROMOTE_RATE }}
+          EXIT_STOP_PCT: ${{ vars.EXIT_STOP_PCT }}
+          PAPER_MIN_ALERTS: ${{ vars.PAPER_MIN_ALERTS }}
+          PAPER_MAX_DRAWDOWN_PCT: ${{ vars.PAPER_MAX_DRAWDOWN_PCT }}
+          PAPER_WINDOW_DAYS: ${{ vars.PAPER_WINDOW_DAYS }}
+          PAPER_ENTRY_DELAY_SEC: ${{ vars.PAPER_ENTRY_DELAY_SEC }}
+          SECOND_WAVE_MIN_CHANGE_PCT: ${{ vars.SECOND_WAVE_MIN_CHANGE_PCT }}
         run: |
           set -euo pipefail
           umask 077
@@ -188,6 +208,52 @@ jobs:
                   raise SystemExit(f"{name} must be an integer from 1 to {upper}")
               return raw
 
+          def unit_interval(name, default):
+              raw = os.environ.get(name, "").strip() or default
+              try:
+                  value = float(raw)
+              except ValueError:
+                  raise SystemExit(f"{name} must be a number from 0 to 1")
+              if value != value or not 0 <= value <= 1:
+                  raise SystemExit(f"{name} must be a number from 0 to 1")
+              return raw
+
+          def percent(name, default):
+              raw = os.environ.get(name, "").strip() or default
+              try:
+                  value = float(raw)
+              except ValueError:
+                  raise SystemExit(f"{name} must be a number from 0 to 100")
+              if value != value or not 0 <= value <= 100:
+                  raise SystemExit(f"{name} must be a number from 0 to 100")
+              return raw
+
+          def quiet_hours():
+              raw = os.environ.get("QUIET_HOURS", "").strip() or "23:00-07:00"
+              if len(raw) != 11 or raw[5] != "-" or raw[2] != ":" or raw[8] != ":":
+                  raise SystemExit("QUIET_HOURS must be HH:MM-HH:MM")
+              return raw
+
+          def optional_bankroll():
+              raw = os.environ.get("BANKROLL", "").strip()
+              if not raw:
+                  return None
+              try:
+                  value = float(raw)
+              except ValueError:
+                  raise SystemExit("BANKROLL must be a positive number")
+              if value != value or value <= 0:
+                  raise SystemExit("BANKROLL must be a positive number")
+              return raw
+
+          def optional_chat(name):
+              raw = os.environ.get(name, "").strip()
+              if not raw:
+                  return None
+              if not raw.isdigit() or int(raw) <= 0:
+                  raise SystemExit(f"{name} must be a positive integer")
+              return raw
+
           def slot_margin():
               raw = os.environ.get("BACKFILL_SLOT_MARGIN", "").strip() or "16"
               if not raw.isdigit() or int(raw) > 10000:
@@ -242,8 +308,28 @@ jobs:
               line("PUMP_SUBSCRIBE_TRADES", pick("PUMP_SUBSCRIBE_TRADES", "false", {"true", "false"})),
               line("PUMP_SUBSCRIBE_CREATE_POOL", pick("PUMP_SUBSCRIBE_CREATE_POOL", "false", {"true", "false"})),
               line("BACKFILL_SLOT_MARGIN", slot_margin()),
+              line("SIZE_TRENCH_PCT", percent("SIZE_TRENCH_PCT", "0.5")),
+              line("SIZE_NEAR_GRADUATION_PCT", percent("SIZE_NEAR_GRADUATION_PCT", "1")),
+              line("SIZE_POST_GRADUATION_PCT", percent("SIZE_POST_GRADUATION_PCT", "2")),
+              line("SIZE_SECOND_WAVE_PCT", percent("SIZE_SECOND_WAVE_PCT", "1")),
+              line("DAILY_LOSS_CUTOFF_PCT", percent("DAILY_LOSS_CUTOFF_PCT", "3")),
+              line("MAX_CONCURRENT_POSITIONS", bounded("MAX_CONCURRENT_POSITIONS", "5", 100)),
+              line("QUIET_HOURS", quiet_hours()),
+              line("QUIET_POST_GRAD_MIN_STRENGTH", unit_interval("QUIET_POST_GRAD_MIN_STRENGTH", "0.7")),
+              line("QUIET_POST_GRAD_MIN_SIZE_PCT", percent("QUIET_POST_GRAD_MIN_SIZE_PCT", "2")),
+              line("ALERT_DESTINATION", pick("ALERT_DESTINATION", "test", {"test", "admin"})),
+              line("SECOND_WAVE_SOURCE", pick("SECOND_WAVE_SOURCE", "live", {"live", "fixture"})),
+              line("WALLET_TIER_PROMOTE_RATE", unit_interval("WALLET_TIER_PROMOTE_RATE", "0.75")),
+              line("EXIT_STOP_PCT", percent("EXIT_STOP_PCT", "25")),
+              line("PAPER_MIN_ALERTS", bounded("PAPER_MIN_ALERTS", "100", 1000000)),
+              line("PAPER_MAX_DRAWDOWN_PCT", percent("PAPER_MAX_DRAWDOWN_PCT", "15")),
+              line("PAPER_WINDOW_DAYS", bounded("PAPER_WINDOW_DAYS", "7", 365)),
+              line("PAPER_ENTRY_DELAY_SEC", bounded("PAPER_ENTRY_DELAY_SEC", "90", 86400)),
+              line("SECOND_WAVE_MIN_CHANGE_PCT", percent("SECOND_WAVE_MIN_CHANGE_PCT", "20")),
               line("THRESHOLDS_PATH", "/app/config/thresholds.yaml"),
-          ]) + "\n"
+          ] + ([line("BANKROLL", bankroll)] if (bankroll := optional_bankroll()) else [])
+            + ([line("TELEGRAM_TEST_CHAT_ID", test_chat)] if (test_chat := optional_chat("TELEGRAM_TEST_CHAT_ID")) else [])
+          ) + "\n"
           destination.write_text(text, encoding="utf-8")
           PY
           ssh_base=(

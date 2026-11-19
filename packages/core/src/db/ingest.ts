@@ -415,6 +415,81 @@ create table if not exists pump_coin_stats (
 );
 
 create index if not exists ingest_recall_audit_ran_idx on ingest_recall_audit (ran_at desc);
+
+alter table tracked_wallet add column if not exists size_tier text not null default 'base';
+
+create table if not exists phasec_protocol (
+  id integer primary key,
+  fingerprint text not null,
+  body text not null,
+  registered_at timestamptz not null,
+  constraint phasec_protocol_singleton check (id = 1)
+);
+
+create table if not exists phasec_alert (
+  id bigserial primary key,
+  mint text not null,
+  stage text not null,
+  arm text not null,
+  kind text not null,
+  created_at timestamptz not null,
+  delivered_at timestamptz,
+  held_reason text,
+  size_pct double precision,
+  strength double precision,
+  body text not null
+);
+
+create index if not exists phasec_alert_created_idx on phasec_alert (created_at desc);
+
+create table if not exists phasec_position (
+  id bigserial primary key,
+  mint text not null,
+  stage text not null,
+  arm text not null,
+  status text not null,
+  alert_at timestamptz not null,
+  entry_after timestamptz not null,
+  opened_at timestamptz,
+  entry_quote double precision,
+  exit_quote double precision,
+  closed_at timestamptz,
+  exit_reason text,
+  net_return double precision,
+  size_pct double precision not null,
+  exit_plan text not null,
+  screen_failed boolean not null default false
+);
+
+create index if not exists phasec_position_status_idx on phasec_position (status);
+
+create table if not exists phasec_pause (
+  day date primary key,
+  reason text not null,
+  paused_at timestamptz not null
+);
+
+create table if not exists phasec_tier_request (
+  id bigserial primary key,
+  wallet text not null,
+  from_tier text not null,
+  to_tier text not null,
+  status text not null,
+  requested_at timestamptz not null
+);
+
+create unique index if not exists phasec_tier_pending_idx
+  on phasec_tier_request (wallet) where status = 'pending';
+
+create table if not exists phasec_weekly (
+  week_start date primary key,
+  body text not null,
+  created_at timestamptz not null
+);
+
+create table if not exists phasec_wallet_snapshot (
+  address text primary key
+);
 `;
 
 export function createPool(
@@ -559,6 +634,10 @@ export async function migrate(pool: pg.Pool): Promise<void> {
     await client.query(
       "insert into schema_migrations (id) values ($1) on conflict (id) do nothing",
       ["020_scoring_version"],
+    );
+    await client.query(
+      "insert into schema_migrations (id) values ($1) on conflict (id) do nothing",
+      ["021_phase_c"],
     );
     await client.query(
       `update ingest_recall_audit a

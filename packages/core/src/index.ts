@@ -219,3 +219,20 @@ export {
 } from "./ingest/frameStats.js";
 export { formatIngestStatus, formatSpotCheck } from "./ingest/statusText.js";
 export { IngestRepository, createPool, migrate } from "./db/ingest.js";
+export { PhaseCRepository } from "./db/phasec.js";
+export { phaseCConfigFromEnv, screenRulesFromThresholds } from "./phasec/config.js";
+export { formatWeeklyReview, resolveAlertChat } from "./phasec/deliver.js";
+export {
+  dexScreenerTokenUrl,
+  geckoTerminalTokenUrl,
+  MIHAO_MINT,
+  mihaoFixtureQuote,
+  parseDexScreener,
+  parseGeckoTerminal,
+  quoteUrlAllowed,
+  type MarketQuote,
+} from "./phasec/market.js";
+export { runPhaseCPass, type PassCoin } from "./phasec/pass.js";
+export { parseLockedConfig, type PhaseCConfig } from "./phasec/protocol.js";
+export type { PhaseCStore } from "./phasec/store.js";
+export { etDay, etDayRange, etWeekStart, inQuietHours } from "./phasec/time.js";

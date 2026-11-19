@@ -96,6 +96,9 @@ describe("repository guards", () => {
     expect(sql).toContain("018_wallet_backfill");
     expect(sql).toContain("019_wallet_balance");
     expect(sql).toContain("020_scoring_version");
+    expect(sql).toContain("021_phase_c");
+    expect(sql).toContain("create table if not exists phasec_protocol");
+    expect(sql).toContain("size_tier");
     expect(sql).toContain("scoring_version");
     expect(sql).toContain("add column if not exists failures integer");
     expect(sql).toContain("add column if not exists last_error text");
@@ -122,6 +125,11 @@ describe("repository guards", () => {
     expect(workflow).toContain("vars.WALLET_MIN_ENTRIES");
     expect(workflow).toContain("shrunk_rate()");
     expect(workflow).toContain('or "0.6"');
+    expect(workflow).toContain('pick("ALERT_DESTINATION", "test"');
+    expect(workflow).toContain('percent("SIZE_TRENCH_PCT", "0.5")');
+    expect(workflow).toContain('percent("DAILY_LOSS_CUTOFF_PCT", "3")');
+    expect(workflow).toContain('bounded("MAX_CONCURRENT_POSITIONS", "5"');
+    expect(workflow).toContain('pick("SECOND_WAVE_SOURCE", "live"');
     const bsc = readFileSync(path.join(root, "apps/ingestor/src/bsc.ts"), "utf8");
     expect(bsc).not.toContain("gopluslabs");
     expect(bsc).not.toContain("honeypot.is");

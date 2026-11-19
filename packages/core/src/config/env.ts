@@ -96,6 +96,36 @@ export const envSchema = z.object({
   WALLET_BOT_MAX_ENTRIES: z.coerce.number().int().min(1).max(100_000).optional(),
   /** Consecutive history failures before a mint is skipped. Default 5. */
   WALLET_BACKFILL_FAIL_LIMIT: z.coerce.number().int().min(1).max(100).optional(),
+  /** Dollar bankroll. Unset means alerts show the size percent only. */
+  BANKROLL: z.coerce.number().positive().max(1_000_000_000).optional(),
+  SIZE_TRENCH_PCT: z.coerce.number().min(0).max(100).optional(),
+  SIZE_NEAR_GRADUATION_PCT: z.coerce.number().min(0).max(100).optional(),
+  SIZE_POST_GRADUATION_PCT: z.coerce.number().min(0).max(100).optional(),
+  SIZE_SECOND_WAVE_PCT: z.coerce.number().min(0).max(100).optional(),
+  /** Paper loss, as a percent of bankroll, that pauses alerts until the next ET day. Default 3. */
+  DAILY_LOSS_CUTOFF_PCT: z.coerce.number().min(0).max(100).optional(),
+  MAX_CONCURRENT_POSITIONS: z.coerce.number().int().min(1).max(100).optional(),
+  QUIET_HOURS: z
+    .string()
+    .regex(/^([01]\d|2[0-3]):[0-5]\d-([01]\d|2[0-3]):[0-5]\d$/)
+    .optional(),
+  QUIET_POST_GRAD_MIN_STRENGTH: z.coerce.number().min(0).max(1).optional(),
+  QUIET_POST_GRAD_MIN_SIZE_PCT: z.coerce.number().min(0).max(100).optional(),
+  /** test until go-live. admin is the switch that may use the admin chat. */
+  ALERT_DESTINATION: z.enum(["test", "admin"]).optional(),
+  TELEGRAM_TEST_CHAT_ID: z
+    .string()
+    .trim()
+    .regex(/^[1-9]\d*$/)
+    .optional(),
+  SECOND_WAVE_SOURCE: z.enum(["live", "fixture"]).optional(),
+  WALLET_TIER_PROMOTE_RATE: z.coerce.number().min(0).max(1).optional(),
+  EXIT_STOP_PCT: z.coerce.number().min(0).max(100).optional(),
+  PAPER_MIN_ALERTS: z.coerce.number().int().min(1).max(1_000_000).optional(),
+  PAPER_MAX_DRAWDOWN_PCT: z.coerce.number().min(0).max(100).optional(),
+  PAPER_WINDOW_DAYS: z.coerce.number().int().min(1).max(365).optional(),
+  PAPER_ENTRY_DELAY_SEC: z.coerce.number().int().min(0).max(86_400).optional(),
+  SECOND_WAVE_MIN_CHANGE_PCT: z.coerce.number().min(0).max(10_000).optional(),
 });
 
 export type Env = z.infer<typeof envSchema>;
