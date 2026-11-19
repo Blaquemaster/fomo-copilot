@@ -28,8 +28,25 @@ export interface PhaseCStore {
     entryAfter: Date;
   }): Promise<string>;
   markDelivered(ids: readonly string[], at: Date): Promise<void>;
-  openPosition(id: string, quote: number, at: Date): Promise<void>;
-  closePosition(id: string, quote: number, net: number, reason: string, at: Date): Promise<void>;
+  openPosition(
+    id: string,
+    quote: number,
+    impactPct: number,
+    feeUsd: number,
+    sizeUsd: number,
+    at: Date,
+  ): Promise<void>;
+  closePosition(input: {
+    id: string;
+    quote: number;
+    net: number;
+    net2x: number;
+    reason: string;
+    impactPct: number | null;
+    feeUsd: number | null;
+    failure: string | null;
+    at: Date;
+  }): Promise<void>;
   wallets(): Promise<TierWallet[]>;
   pendingTiers(): Promise<string[]>;
   insertTier(wallet: string, at: Date): Promise<void>;

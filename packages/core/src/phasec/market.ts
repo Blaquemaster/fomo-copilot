@@ -1,9 +1,6 @@
-/** Free quote hosts only. Swap, execute, order, and Helius URLs are refused. */
+/** Free quote hosts only. A /swap or /execute path, or Helius, is refused. */
 
-const ALLOWED = [
-  /^https:\/\/api\.dexscreener\.com\/latest\/dex\/tokens\/[1-9A-HJ-NP-Za-km-z,]+$/,
-  /^https:\/\/api\.geckoterminal\.com\/api\/v2\/networks\/solana\/tokens\/[1-9A-HJ-NP-Za-km-z]+$/,
-];
+const ALLOWED_HOSTS = new Set(["api.dexscreener.com", "api.geckoterminal.com", "quote-api.jup.ag"]);
 
 export interface MarketQuote {
   mint: string;
@@ -15,8 +12,50 @@ export interface MarketQuote {
 }
 
 export function quoteUrlAllowed(url: string): boolean {
-  if (/swap|execute|order|helius/i.test(url)) return false;
-  return ALLOWED.some((pattern) => pattern.test(url));
+  let parsed: URL;
+  try {
+    parsed = new URL(url);
+  } catch {
+    return false;
+  }
+  const path = parsed.pathname.toLowerCase();
+  if (path.includes("/swap") || path.includes("/execute") || path.includes("/order")) return false;
+  if (parsed.hostname.includes("helius")) return false;
+  if (!ALLOWED_HOSTS.has(parsed.hostname)) return false;
+  if (parsed.hostname === "quote-api.jup.ag") return path === "/v6/quote";
+  if (parsed.hostname === "api.dexscreener.com") return path.startsWith("/latest/dex/tokens/");
+  return path.startsWith("/api/v2/networks/solana/tokens/");
+}
+
+export const DEX_REQUESTS_PER_MIN = 60;
+export const GECKO_REQUESTS_PER_MIN = 10;
+export const JUPITER_REQUESTS_PER_MIN = 60;
+export const DEX_BATCH = 30;
+
+export interface TokenBucket {
+  tokens: number;
+  refilledAt: number;
+}
+
+export function takeTokens(
+  bucket: TokenBucket,
+  nowMs: number,
+  perMinute: number,
+  count: number,
+): { bucket: TokenBucket; granted: number } {
+  const elapsed = Math.max(0, nowMs - bucket.refilledAt);
+  const refilled = Math.min(perMinute, bucket.tokens + (elapsed / 60_000) * perMinute);
+  const granted = Math.min(count, Math.floor(refilled));
+  return {
+    bucket: { tokens: refilled - granted, refilledAt: nowMs },
+    granted,
+  };
+}
+
+/** 1s, 2s, 4s, then 8s. Used when a public quote host returns 429. */
+export function quoteBackoffMs(attempt: number): number {
+  const step = Math.max(1, Math.min(4, attempt));
+  return 1_000 * 2 ** (step - 1);
 }
 
 export function dexScreenerTokenUrl(mints: readonly string[]): string {

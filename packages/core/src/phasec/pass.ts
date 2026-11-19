@@ -1,13 +1,9 @@
 import { formatDigest, formatEntry, quietHold } from "./deliver.js";
 import { planExit } from "./exit.js";
 import type { MarketQuote } from "./market.js";
+import { evaluatePaper, type PaperEvaluation, type ResolvedReturn } from "./paper.js";
 import {
-  quotedNetReturn,
-  evaluatePaper,
-  type PaperEvaluation,
-  type ResolvedReturn,
-} from "./paper.js";
-import {
+  assignExitTreatment,
   protocolBody,
   protocolFingerprint,
   EXIT_PLAN,
@@ -15,6 +11,13 @@ import {
   type PhaseCConfig,
   type Stage,
 } from "./protocol.js";
+import {
+  FULL_LOSS,
+  quotedRoundTrip,
+  scaleOutRoundTrip,
+  stageSizeUsd,
+  type SizeBid,
+} from "./quote.js";
 import {
   bankrollLossPct,
   entryDecision,
@@ -37,6 +40,7 @@ export interface PassCoin extends ScoreCoin {
   sniperBundlePct: number | null;
   uniqueMakers1h: number | null;
   creatorSells: number;
+  trackedSells?: number;
   quoteError: boolean;
 }
 
@@ -50,6 +54,8 @@ export interface PassPosition {
   entryAfter: Date;
   openedAt: Date | null;
   entryQuote: number | null;
+  entrySizeUsd?: number | null;
+  entryFeeUsd?: number | null;
   sizePct: number;
   exitPlan: string;
   screenFailed: boolean;
@@ -62,6 +68,8 @@ export interface PassInput {
   locked: { fingerprint: string; config: PhaseCConfig } | null;
   coins: PassCoin[];
   quotes: MarketQuote[];
+  /** Explicit size bids. A market quote is used only when a bid was not supplied. */
+  bids?: Readonly<Record<string, { one: SizeBid; two: SizeBid }>>;
   positions: PassPosition[];
   closedToday: readonly { sizePct: number; netReturn: number }[];
   paused: boolean;
@@ -72,6 +80,7 @@ export interface PassInput {
   wallets: readonly TierWallet[];
   pendingTiers: readonly string[];
   registeredAt: Date | null;
+  expectedAlerts?: number | null;
 }
 
 export interface PlannedEntry {
@@ -82,26 +91,40 @@ export interface PlannedEntry {
   amount: number | null;
   strength: number;
   exitPlan: string;
+  treatment: string;
   text: string;
   held: boolean;
   entryAfter: Date;
 }
 
+export interface PlannedOpen {
+  id: string;
+  quote: number;
+  impactPct: number;
+  feeUsd: number;
+  sizeUsd: number;
+}
+
 export interface PlannedClose {
   id: string;
-  reason: "invalidation" | "stop" | "horizon";
+  reason: "invalidation" | "stop" | "horizon" | "dead";
   quote: number;
   net: number;
+  net2x: number;
+  impactPct: number | null;
+  feeUsd: number | null;
+  failure: string | null;
   text: string;
 }
 
 export interface PassResult {
   config: PhaseCConfig;
   retuneBlocked: boolean;
+  protocolViolation: string | null;
   lock: { fingerprint: string; body: string } | null;
   pauseReason: string | null;
   entries: PlannedEntry[];
-  opens: Array<{ id: string; quote: number }>;
+  opens: PlannedOpen[];
   closes: PlannedClose[];
   immediate: string[];
   digest: string | null;
@@ -110,102 +133,209 @@ export interface PassResult {
   paper: PaperEvaluation;
 }
 
-function blankCoin(mint: string, now: Date, quote: MarketQuote, xEnabled: boolean): PassCoin {
+function sizeFor(config: PhaseCConfig, sizePct: number): number {
+  return stageSizeUsd(config.bankroll, sizePct) ?? sizePct;
+}
+
+function bidFor(
+  mint: string,
+  sizeUsd: number,
+  quotes: ReadonlyMap<string, MarketQuote>,
+  bids: PassInput["bids"],
+  which: "one" | "two",
+): SizeBid {
+  const explicit = bids?.[mint]?.[which];
+  if (explicit) return explicit;
+  const quote = quotes.get(mint);
+  if (!quote) return { ok: false, reason: "no_quote" };
+  if (quote.liquidityUsd === 0) return { ok: false, reason: "no_liquidity" };
+  if (!(quote.priceUsd > 0) || !(sizeUsd > 0)) return { ok: false, reason: "no_quote" };
   return {
-    mint,
-    createdAt: new Date(now.getTime() - 3 * 60 * 60 * 1000),
-    graduatedAt: new Date(now.getTime() - 2 * 60 * 60 * 1000),
-    curveCompletedAt: new Date(now.getTime() - 2 * 60 * 60 * 1000),
-    trackedBuyers: 0,
-    xMentions: xEnabled ? 0 : null,
+    ok: true,
+    execPriceUsd: quote.priceUsd,
+    midPriceUsd: quote.priceUsd,
+    impactPct: 0,
+    feeUsd: 0,
+    sizeUsd,
     liquidityUsd: quote.liquidityUsd,
-    transferFeeBps: null,
-    mintAuthorityActive: null,
-    freezeAuthorityActive: null,
-    exitQuoteImpactPct: null,
-    top10HoldersPct: null,
-    sniperBundlePct: null,
-    uniqueMakers1h: null,
-    creatorSells: 0,
-    quoteError: false,
   };
+}
+
+function entryBid(position: PassPosition, fallbackSize: number): SizeBid {
+  if (!(position.entryQuote !== null && position.entryQuote > 0)) {
+    return { ok: false, reason: "no_quote" };
+  }
+  return {
+    ok: true,
+    execPriceUsd: position.entryQuote,
+    midPriceUsd: position.entryQuote,
+    impactPct: 0,
+    feeUsd: position.entryFeeUsd ?? 0,
+    sizeUsd: position.entrySizeUsd ?? fallbackSize,
+    liquidityUsd: 1,
+  };
+}
+
+function screenOf(coin: PassCoin, liquidity: number | null, rules: ScreenRules) {
+  const facts: ScreenFacts = {
+    mintAuthorityActive: coin.mintAuthorityActive,
+    freezeAuthorityActive: coin.freezeAuthorityActive,
+    transferFeeBps: coin.transferFeeBps,
+    exitQuoteImpactPct: coin.exitQuoteImpactPct,
+    top10HoldersPct: coin.top10HoldersPct,
+    sniperBundlePct: coin.sniperBundlePct,
+    liquidityUsd: coin.liquidityUsd ?? liquidity,
+    uniqueMakers1h: coin.uniqueMakers1h,
+    creatorSells: coin.creatorSells,
+    quoteError: coin.quoteError,
+  };
+  return screenCoin(facts, rules);
 }
 
 export function runPhaseCPass(input: PassInput): PassResult {
   const currentBody = protocolBody(input.config);
   const currentFingerprint = protocolFingerprint(currentBody);
-  const retuneBlocked = input.locked !== null && input.locked.fingerprint !== currentFingerprint;
-  const config = input.locked?.config ?? input.config;
-  const lock =
-    input.locked === null
-      ? { fingerprint: currentFingerprint, body: JSON.stringify(input.config) }
+  const registering = input.locked === null;
+  const protocolViolation =
+    input.locked !== null && input.locked.fingerprint !== currentFingerprint
+      ? "config changed after registration"
       : null;
+  const config = input.locked?.config ?? input.config;
+  const lock = registering
+    ? { fingerprint: currentFingerprint, body: JSON.stringify(input.config) }
+    : null;
+  const allowEntries = !registering && protocolViolation === null;
   const quotes = new Map(input.quotes.map((quote) => [quote.mint, quote]));
-  const known = new Set(input.coins.map((coin) => coin.mint));
-  const coins = [...input.coins];
-  for (const quote of input.quotes) {
-    if (known.has(quote.mint)) continue;
-    if ((quote.priceChange1hPct ?? 0) < config.secondWaveMinChangePct) continue;
-    coins.push(blankCoin(quote.mint, input.now, quote, config.xEnabled));
-  }
+  const coins = input.coins;
 
   const failedMints = new Set<string>();
   for (const coin of coins) {
-    const quote = quotes.get(coin.mint) ?? null;
-    const screen = screenCoin(
-      {
-        mintAuthorityActive: coin.mintAuthorityActive,
-        freezeAuthorityActive: coin.freezeAuthorityActive,
-        transferFeeBps: coin.transferFeeBps,
-        exitQuoteImpactPct: coin.exitQuoteImpactPct,
-        top10HoldersPct: coin.top10HoldersPct,
-        sniperBundlePct: coin.sniperBundlePct,
-        liquidityUsd: coin.liquidityUsd ?? quote?.liquidityUsd ?? null,
-        uniqueMakers1h: coin.uniqueMakers1h,
-        creatorSells: coin.creatorSells,
-        quoteError: coin.quoteError,
-      },
-      input.rules,
-    );
+    const screen = screenOf(coin, quotes.get(coin.mint)?.liquidityUsd ?? null, input.rules);
     if (screen.verdict === "fail") failedMints.add(coin.mint);
   }
 
-  const opens: PassResult["opens"] = [];
+  const opens: PlannedOpen[] = [];
   const openIds = new Set<string>();
-  for (const position of input.positions) {
-    if (position.status !== "pending") continue;
-    if (input.now.getTime() < position.entryAfter.getTime()) continue;
-    const quote = quotes.get(position.mint);
-    if (!quote) continue;
-    opens.push({ id: position.id, quote: quote.priceUsd });
-    openIds.add(position.id);
-  }
-
   const closes: PlannedClose[] = [];
   const immediate: string[] = [];
   const closedIds = new Set<string>();
+
   for (const position of input.positions) {
+    if (position.status !== "pending") continue;
+    const due = input.now.getTime() >= position.entryAfter.getTime();
+    const expired = input.now.getTime() >= position.entryAfter.getTime() + config.horizonMs;
+    if (!due) continue;
+    const one = bidFor(position.mint, sizeFor(config, position.sizePct), quotes, input.bids, "one");
+    if (one.ok && one.liquidityUsd !== 0) {
+      opens.push({
+        id: position.id,
+        quote: one.execPriceUsd,
+        impactPct: one.impactPct,
+        feeUsd: one.feeUsd,
+        sizeUsd: one.sizeUsd,
+      });
+      openIds.add(position.id);
+      continue;
+    }
+    const failed = !one.ok && one.reason === "no_liquidity";
+    if (failed || expired) {
+      const reason = one.ok ? "no_liquidity" : one.reason;
+      closes.push({
+        id: position.id,
+        reason: "dead",
+        quote: 0,
+        net: FULL_LOSS,
+        net2x: FULL_LOSS,
+        impactPct: null,
+        feeUsd: null,
+        failure: reason,
+        text: `exit dead ${position.mint} net ${FULL_LOSS.toFixed(4)} 1x and 2x`,
+      });
+      closedIds.add(position.id);
+      immediate.push(`exit dead ${position.mint} full loss`);
+    }
+  }
+
+  for (const position of input.positions) {
+    if (closedIds.has(position.id)) continue;
     const openedAt = position.openedAt ?? (openIds.has(position.id) ? input.now : null);
-    const entryQuote = position.entryQuote ?? quotes.get(position.mint)?.priceUsd ?? null;
     if (position.status === "pending" && !openIds.has(position.id)) continue;
-    if (!openedAt || entryQuote === null) continue;
-    const latest = quotes.get(position.mint)?.priceUsd ?? null;
+    if (!openedAt) continue;
+    const entry = entryBid(position, sizeFor(config, position.sizePct));
+    const exitOne = bidFor(
+      position.mint,
+      entry.ok ? entry.sizeUsd : sizeFor(config, position.sizePct),
+      quotes,
+      input.bids,
+      "one",
+    );
+    const exitTwo = bidFor(
+      position.mint,
+      (entry.ok ? entry.sizeUsd : sizeFor(config, position.sizePct)) * 2,
+      quotes,
+      input.bids,
+      "two",
+    );
+    const latest = exitOne.ok ? exitOne.execPriceUsd : null;
+    const deadQuote = !exitOne.ok || exitOne.liquidityUsd === 0;
+    const horizonReached = input.now.getTime() >= openedAt.getTime() + config.horizonMs;
+    if (deadQuote && horizonReached) {
+      closes.push({
+        id: position.id,
+        reason: "dead",
+        quote: 0,
+        net: FULL_LOSS,
+        net2x: FULL_LOSS,
+        impactPct: null,
+        feeUsd: null,
+        failure: exitOne.ok ? "no_liquidity" : exitOne.reason,
+        text: `exit dead ${position.mint} net ${FULL_LOSS.toFixed(4)} 1x and 2x`,
+      });
+      closedIds.add(position.id);
+      immediate.push(`exit dead ${position.mint} full loss`);
+      continue;
+    }
     const decision = planExit({
       openedAt,
       now: input.now,
-      entryQuote,
+      entryQuote: entry.ok ? entry.execPriceUsd : 0,
       latestQuote: latest,
       stopPct: config.exitStopPct,
       horizonMs: config.horizonMs,
       screenFailed: position.screenFailed || failedMints.has(position.mint),
     });
     if (!decision.exit || latest === null) continue;
-    const net = quotedNetReturn(entryQuote, latest, config.feeBps, config.slippageBps);
-    if (net === null) continue;
-    const text = `exit ${decision.reason} ${position.mint} net ${net.toFixed(4)}`;
-    closes.push({ id: position.id, reason: decision.reason, quote: latest, net, text });
+    const treatment = assignExitTreatment(position.mint);
+    const net =
+      treatment === "scale_out"
+        ? scaleOutRoundTrip(entry, exitOne)
+        : quotedRoundTrip(entry, exitOne);
+    const net2x =
+      treatment === "scale_out"
+        ? scaleOutRoundTrip(entry, exitTwo)
+        : quotedRoundTrip(entry, exitTwo);
+    const text = `exit ${decision.reason} ${position.mint} ${treatment} net1x ${net.toFixed(4)} net2x ${net2x.toFixed(4)}`;
+    closes.push({
+      id: position.id,
+      reason: decision.reason,
+      quote: latest,
+      net,
+      net2x,
+      impactPct: exitOne.ok ? exitOne.impactPct : null,
+      feeUsd: exitOne.ok ? exitOne.feeUsd : null,
+      failure: null,
+      text,
+    });
     closedIds.add(position.id);
     immediate.push(text);
+  }
+
+  for (const position of input.positions) {
+    if (position.status !== "open" || closedIds.has(position.id)) continue;
+    const coin = coins.find((item) => item.mint === position.mint);
+    if (coin && (coin.creatorSells > 0 || (coin.trackedSells ?? 0) > 0)) {
+      immediate.push(`exit warning ${position.mint} tracked wallet or creator sold`);
+    }
   }
 
   const lossPct = bankrollLossPct([
@@ -232,73 +362,63 @@ export function runPhaseCPass(input: PassInput): PassResult {
   const seen = new Set(input.alerted.map((row) => `${row.mint}:${row.stage}`));
   const entries: PlannedEntry[] = [];
   let recent = input.recentEntryCount;
-  for (const coin of coins) {
-    const quote = quotes.get(coin.mint) ?? null;
-    const stage = stageForCoin(coin, input.now, quote, config);
-    if (!stage || seen.has(`${coin.mint}:${stage}`)) continue;
-    const facts: ScreenFacts = {
-      mintAuthorityActive: coin.mintAuthorityActive,
-      freezeAuthorityActive: coin.freezeAuthorityActive,
-      transferFeeBps: coin.transferFeeBps,
-      exitQuoteImpactPct: coin.exitQuoteImpactPct,
-      top10HoldersPct: coin.top10HoldersPct,
-      sniperBundlePct: coin.sniperBundlePct,
-      liquidityUsd: coin.liquidityUsd ?? quote?.liquidityUsd ?? null,
-      uniqueMakers1h: coin.uniqueMakers1h,
-      creatorSells: coin.creatorSells,
-      quoteError: coin.quoteError,
-    };
-    const screen = screenCoin(facts, input.rules);
-    if (screen.verdict !== "pass") continue;
-    const arm = assignArm(coin.mint, stage, coin.trackedBuyers);
-    const strength = scoreStrength(stage, { ...coin, liquidityUsd: facts.liquidityUsd });
-    const size = sizeForStage(stage, config.sizePct, config.bankroll);
-    const decision = entryDecision({
-      openCount: liveCount,
-      maxConcurrent: config.maxConcurrent,
-      mintBusy: busy.has(coin.mint),
-      exitPlan: exitPlanText(),
-      paused,
-    });
-    if (!decision.ok) continue;
-    if (recent >= config.maxPerHour) continue;
-    const text = formatEntry({
-      stage,
-      arm,
-      mint: coin.mint,
-      sizePct: size.pct,
-      bankroll: config.bankroll,
-      strength,
-      exitPlan: EXIT_PLAN,
-      warnings: screen.warnings,
-    });
-    const held = quietHold({
-      now: input.now,
-      quietHours: config.quietHours,
-      kind: "entry",
-      stage,
-      strength,
-      sizePct: size.pct,
-      minStrength: config.quietPostGradMinStrength,
-      minSizePct: config.quietPostGradMinSizePct,
-    });
-    entries.push({
-      mint: coin.mint,
-      stage,
-      arm,
-      sizePct: size.pct,
-      amount: size.amount,
-      strength,
-      exitPlan: EXIT_PLAN,
-      text,
-      held,
-      entryAfter: new Date(input.now.getTime() + config.entryDelaySec * 1000),
-    });
-    if (!held) immediate.push(text);
-    busy.add(coin.mint);
-    seen.add(`${coin.mint}:${stage}`);
-    liveCount += 1;
-    recent += 1;
+  if (allowEntries) {
+    for (const coin of coins) {
+      const stage = stageForCoin(coin, input.now);
+      if (!stage || seen.has(`${coin.mint}:${stage}`)) continue;
+      const screen = screenOf(coin, quotes.get(coin.mint)?.liquidityUsd ?? null, input.rules);
+      if (screen.verdict !== "pass") continue;
+      const arm = assignArm(coin.mint, stage, coin.trackedBuyers);
+      const strength = scoreStrength(stage, coin);
+      const size = sizeForStage(stage, config.sizePct, config.bankroll);
+      const treatment = assignExitTreatment(coin.mint);
+      const decision = entryDecision({
+        openCount: liveCount,
+        maxConcurrent: config.maxConcurrent,
+        mintBusy: busy.has(coin.mint),
+        exitPlan: exitPlanText(),
+        paused,
+      });
+      if (!decision.ok || recent >= config.maxPerHour) continue;
+      const text = formatEntry({
+        stage,
+        arm,
+        mint: coin.mint,
+        sizePct: size.pct,
+        bankroll: config.bankroll,
+        strength,
+        exitPlan: `${EXIT_PLAN}; treatment ${treatment}`,
+        warnings: screen.warnings,
+      });
+      const held = quietHold({
+        now: input.now,
+        quietHours: config.quietHours,
+        kind: "entry",
+        stage,
+        strength,
+        sizePct: size.pct,
+        minStrength: config.quietPostGradMinStrength,
+        minSizePct: config.quietPostGradMinSizePct,
+      });
+      entries.push({
+        mint: coin.mint,
+        stage,
+        arm,
+        sizePct: size.pct,
+        amount: size.amount,
+        strength,
+        exitPlan: EXIT_PLAN,
+        treatment,
+        text,
+        held,
+        entryAfter: new Date(input.now.getTime() + config.entryDelaySec * 1000),
+      });
+      if (!held) immediate.push(text);
+      busy.add(coin.mint);
+      seen.add(`${coin.mint}:${stage}`);
+      liveCount += 1;
+      recent += 1;
+    }
   }
 
   const quiet = inQuietHours(input.now, config.quietHours);
@@ -320,7 +440,7 @@ export function runPhaseCPass(input: PassInput): PassResult {
       minStrength: config.quietPostGradMinStrength,
       minSizePct: config.quietPostGradMinSizePct,
     });
-    if (!held) immediate.push(text);
+    if (!held && allowEntries) immediate.push(text);
     return { ...request, text, held };
   });
 
@@ -330,6 +450,7 @@ export function runPhaseCPass(input: PassInput): PassResult {
     windowDays: config.paperWindowDays,
     minAlerts: config.paperMinAlerts,
     maxDrawdownPct: config.paperMaxDrawdownPct,
+    expectedAlerts: input.expectedAlerts ?? null,
     returns: [
       ...input.resolved,
       ...closes.map((row) => {
@@ -338,6 +459,7 @@ export function runPhaseCPass(input: PassInput): PassResult {
           at: input.now,
           arm: position?.arm ?? "screen_only",
           net: row.net,
+          sizePct: position?.sizePct ?? 0,
         };
       }),
     ],
@@ -345,7 +467,8 @@ export function runPhaseCPass(input: PassInput): PassResult {
 
   return {
     config,
-    retuneBlocked,
+    retuneBlocked: protocolViolation !== null,
+    protocolViolation,
     lock,
     pauseReason: pauseNow ? `paper loss ${lossPct.toFixed(2)}% of bankroll` : null,
     entries,

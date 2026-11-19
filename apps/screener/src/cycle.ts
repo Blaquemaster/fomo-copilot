@@ -64,14 +64,33 @@ export async function runPhaseCCycle(input: {
     pendingTiers: await input.store.pendingTiers(),
     registeredAt: stored?.registeredAt ?? null,
   });
-  if (result.retuneBlocked) input.warn("phase C config change ignored until this paper test ends");
+  if (result.protocolViolation) input.warn(`protocol violation: ${result.protocolViolation}`);
   if (result.lock) {
     await input.store.saveProtocol(result.lock.fingerprint, result.lock.body, input.now);
   }
   if (result.pauseReason) await input.store.pause(etDay(input.now), result.pauseReason, input.now);
-  for (const open of result.opens) await input.store.openPosition(open.id, open.quote, input.now);
+  for (const open of result.opens) {
+    await input.store.openPosition(
+      open.id,
+      open.quote,
+      open.impactPct,
+      open.feeUsd,
+      open.sizeUsd,
+      input.now,
+    );
+  }
   for (const close of result.closes) {
-    await input.store.closePosition(close.id, close.quote, close.net, close.reason, input.now);
+    await input.store.closePosition({
+      id: close.id,
+      quote: close.quote,
+      net: close.net,
+      net2x: close.net2x,
+      reason: close.reason,
+      impactPct: close.impactPct,
+      feeUsd: close.feeUsd,
+      failure: close.failure,
+      at: input.now,
+    });
   }
   const sentIds: string[] = [];
   for (const entry of result.entries) {

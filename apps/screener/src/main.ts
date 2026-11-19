@@ -8,7 +8,7 @@ import {
 } from "@fomo/core";
 
 import { runPhaseCCycle } from "./cycle.js";
-import { loadMarketQuotes } from "./quotes.js";
+import { loadMarketQuotes, pollDue, type QuoteUsage } from "./quotes.js";
 
 const PASS_MS = 60_000;
 
@@ -26,6 +26,10 @@ await startApp({
     process.once("SIGTERM", stop);
     try {
       await migrate(pool);
+      let quotes: Awaited<ReturnType<typeof loadMarketQuotes>>["quotes"] = [];
+      let lastPollAt: number | null = null;
+      let dexBucket: Awaited<ReturnType<typeof loadMarketQuotes>>["dexBucket"] | undefined;
+      let geckoBucket: Awaited<ReturnType<typeof loadMarketQuotes>>["geckoBucket"] | undefined;
       logger.info(
         {
           destination: env.ALERT_DESTINATION ?? "test",
@@ -37,8 +41,17 @@ await startApp({
         const started = Date.now();
         try {
           const source = env.SECOND_WAVE_SOURCE ?? "live";
-          const mints = source === "live" ? await store.graduatedMints(30) : [];
-          const quotes = await loadMarketQuotes({ source, mints });
+          const pollMinutes = env.MARKET_POLL_MINUTES ?? 10;
+          if (pollDue(lastPollAt, Date.now(), pollMinutes)) {
+            const mints = source === "live" ? await store.graduatedMints(5_000) : [];
+            const loaded = await loadMarketQuotes({ source, mints, dexBucket, geckoBucket });
+            quotes = loaded.quotes;
+            dexBucket = loaded.dexBucket;
+            geckoBucket = loaded.geckoBucket;
+            lastPollAt = Date.now();
+            const usage: QuoteUsage = loaded.usage;
+            logger.info({ ...usage }, "quote poll");
+          }
           const destination = resolveAlertChat({
             destination: env.ALERT_DESTINATION ?? "test",
             testChatId: env.TELEGRAM_TEST_CHAT_ID ?? null,

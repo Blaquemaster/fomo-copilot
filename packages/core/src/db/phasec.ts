@@ -78,6 +78,7 @@ export class PhaseCRepository implements PhaseCStore {
       uniqueMakers1h: null,
       creatorSells: Number(row.creator_sells),
       quoteError: false,
+      secondWave: null,
     }));
   }
 
@@ -105,11 +106,14 @@ export class PhaseCRepository implements PhaseCStore {
       entry_after: Date;
       opened_at: Date | null;
       entry_quote: number | null;
+      entry_size_usd: number | null;
+      entry_fee_usd: number | null;
       size_pct: number;
       exit_plan: string;
       screen_failed: boolean;
     }>(
-      `select id, mint, stage, arm, status, alert_at, entry_after, opened_at, entry_quote, size_pct, exit_plan, screen_failed
+      `select id, mint, stage, arm, status, alert_at, entry_after, opened_at, entry_quote,
+              entry_size_usd, entry_fee_usd, size_pct, exit_plan, screen_failed
        from phasec_position
        where status in ('pending', 'open')
        order by alert_at`,
@@ -124,6 +128,8 @@ export class PhaseCRepository implements PhaseCStore {
       entryAfter: date(row.entry_after),
       openedAt: row.opened_at ? date(row.opened_at) : null,
       entryQuote: row.entry_quote === null ? null : Number(row.entry_quote),
+      entrySizeUsd: row.entry_size_usd === null ? null : Number(row.entry_size_usd),
+      entryFeeUsd: row.entry_fee_usd === null ? null : Number(row.entry_fee_usd),
       sizePct: Number(row.size_pct),
       exitPlan: row.exit_plan,
       screenFailed: row.screen_failed,
@@ -243,27 +249,50 @@ export class PhaseCRepository implements PhaseCStore {
     );
   }
 
-  async openPosition(id: string, quote: number, at: Date): Promise<void> {
-    await this.pool.query(
-      `update phasec_position
-       set status = 'open', opened_at = $2, entry_quote = $3
-       where id = $1 and status = 'pending'`,
-      [id, at.toISOString(), quote],
-    );
-  }
-
-  async closePosition(
+  async openPosition(
     id: string,
     quote: number,
-    net: number,
-    reason: string,
+    impactPct: number,
+    feeUsd: number,
+    sizeUsd: number,
     at: Date,
   ): Promise<void> {
     await this.pool.query(
       `update phasec_position
-       set status = 'closed', exit_quote = $2, net_return = $3, exit_reason = $4, closed_at = $5
-       where id = $1 and status = 'open'`,
-      [id, quote, net, reason, at.toISOString()],
+       set status = 'open', opened_at = $6, entry_quote = $2, entry_impact_pct = $3,
+           entry_fee_usd = $4, entry_size_usd = $5
+       where id = $1 and status = 'pending'`,
+      [id, quote, impactPct, feeUsd, sizeUsd, at.toISOString()],
+    );
+  }
+
+  async closePosition(input: {
+    id: string;
+    quote: number;
+    net: number;
+    net2x: number;
+    reason: string;
+    impactPct: number | null;
+    feeUsd: number | null;
+    failure: string | null;
+    at: Date;
+  }): Promise<void> {
+    await this.pool.query(
+      `update phasec_position
+       set status = 'closed', exit_quote = $2, net_return = $3, net_return_2x = $4,
+           exit_reason = $5, exit_impact_pct = $6, exit_fee_usd = $7, quote_failure = $8, closed_at = $9
+       where id = $1 and status in ('open', 'pending')`,
+      [
+        input.id,
+        input.quote,
+        input.net,
+        input.net2x,
+        input.reason,
+        input.impactPct,
+        input.feeUsd,
+        input.failure,
+        input.at.toISOString(),
+      ],
     );
   }
 
@@ -343,8 +372,13 @@ export class PhaseCRepository implements PhaseCStore {
   }
 
   async resolvedReturns(): Promise<ResolvedReturn[]> {
-    const result = await this.pool.query<{ closed_at: Date; arm: PaperArm; net_return: number }>(
-      `select closed_at, arm, net_return from phasec_position
+    const result = await this.pool.query<{
+      closed_at: Date;
+      arm: PaperArm;
+      net_return: number;
+      size_pct: number;
+    }>(
+      `select closed_at, arm, net_return, size_pct from phasec_position
        where status = 'closed' and net_return is not null and closed_at is not null
        order by closed_at`,
     );
@@ -352,13 +386,16 @@ export class PhaseCRepository implements PhaseCStore {
       at: date(row.closed_at),
       arm: row.arm,
       net: Number(row.net_return),
+      sizePct: Number(row.size_pct),
     }));
   }
 
   async graduatedMints(limit: number): Promise<string[]> {
     const result = await this.pool.query<{ mint: string }>(
       `select mint from candidates
-       where graduated_at is not null and graduated_at < now() - interval '30 minutes'
+       where graduated_at is not null
+         and graduated_at <= now() - interval '24 hours'
+         and graduated_at >= now() - interval '30 days'
        order by graduated_at desc
        limit $1`,
       [limit],

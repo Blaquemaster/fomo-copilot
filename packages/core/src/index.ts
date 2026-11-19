@@ -223,15 +223,34 @@ export { PhaseCRepository } from "./db/phasec.js";
 export { phaseCConfigFromEnv, screenRulesFromThresholds } from "./phasec/config.js";
 export { formatWeeklyReview, resolveAlertChat } from "./phasec/deliver.js";
 export {
+  DEX_BATCH,
+  DEX_REQUESTS_PER_MIN,
+  GECKO_REQUESTS_PER_MIN,
   dexScreenerTokenUrl,
   geckoTerminalTokenUrl,
   MIHAO_MINT,
   mihaoFixtureQuote,
   parseDexScreener,
   parseGeckoTerminal,
+  quoteBackoffMs,
   quoteUrlAllowed,
+  takeTokens,
   type MarketQuote,
+  type TokenBucket,
 } from "./phasec/market.js";
+export {
+  curveBid,
+  jupiterQuoteUrl,
+  parseJupiterQuote,
+  quotedRoundTrip,
+  type SizeBid,
+} from "./phasec/quote.js";
+export {
+  deadCoinObservation,
+  mihaoObservation,
+  secondWaveSignal,
+  tooYoungObservation,
+} from "./phasec/secondWave.js";
 export { runPhaseCPass, type PassCoin } from "./phasec/pass.js";
 export { parseLockedConfig, type PhaseCConfig } from "./phasec/protocol.js";
 export type { PhaseCStore } from "./phasec/store.js";

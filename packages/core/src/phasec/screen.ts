@@ -28,20 +28,32 @@ export interface ScreenResult {
   warnings: string[];
 }
 
-/** Known hard failures block. A quote-source error is WATCH. Missing authority is a warning, not a pass block. */
+const REQUIRED: Array<[keyof ScreenFacts, string]> = [
+  ["mintAuthorityActive", "mint authority"],
+  ["freezeAuthorityActive", "freeze authority"],
+  ["exitQuoteImpactPct", "exit impact"],
+  ["top10HoldersPct", "holders"],
+  ["sniperBundlePct", "snipers"],
+  ["liquidityUsd", "liquidity"],
+];
+
+/** A missing required field is WATCH. A known hard failure is FAIL. */
 export function screenCoin(facts: ScreenFacts, rules: ScreenRules): ScreenResult {
   const hard: string[] = [];
   const warnings: string[] = [];
+  const missing: string[] = [];
   if (rules.failMintAuthority && facts.mintAuthorityActive === true) hard.push("mint authority");
-  if (rules.failFreezeAuthority && facts.freezeAuthorityActive === true)
+  if (rules.failFreezeAuthority && facts.freezeAuthorityActive === true) {
     hard.push("freeze authority");
-  if (facts.mintAuthorityActive === null) warnings.push("mint authority unchecked");
-  if (facts.freezeAuthorityActive === null) warnings.push("freeze authority unchecked");
+  }
   if (facts.transferFeeBps !== null && facts.transferFeeBps > rules.transferFeeBpsAbove) {
     hard.push(`transfer fee ${facts.transferFeeBps.toString()} bps`);
   }
   if (facts.exitQuoteImpactPct !== null && facts.exitQuoteImpactPct > rules.exitImpactPctAbove) {
     hard.push(`exit impact ${facts.exitQuoteImpactPct.toString()}%`);
+  }
+  for (const [key, label] of REQUIRED) {
+    if (facts[key] === null) missing.push(label);
   }
   if (facts.top10HoldersPct !== null && facts.top10HoldersPct > rules.top10Warn) {
     warnings.push(`top 10 holders ${facts.top10HoldersPct.toString()}%`);
@@ -57,7 +69,16 @@ export function screenCoin(facts: ScreenFacts, rules: ScreenRules): ScreenResult
   }
   if (facts.creatorSells > 0) warnings.push(`creator sells ${facts.creatorSells.toString()}`);
   if (hard.length > 0) return { verdict: "fail", hard, warnings };
-  if (facts.quoteError)
-    return { verdict: "watch", hard, warnings: [...warnings, "quote source error"] };
+  if (missing.length > 0 || facts.quoteError) {
+    return {
+      verdict: "watch",
+      hard,
+      warnings: [
+        ...warnings,
+        ...missing.map((label) => `${label} missing`),
+        ...(facts.quoteError ? ["quote source error"] : []),
+      ],
+    };
+  }
   return { verdict: "pass", hard, warnings };
 }

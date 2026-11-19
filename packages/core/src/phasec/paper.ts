@@ -4,7 +4,10 @@ import { etWeekStart } from "./time.js";
 export interface ResolvedReturn {
   at: Date;
   arm: PaperArm;
+  /** Fraction of the position, after the quoted round trip. -1 is a full loss. */
   net: number;
+  /** Stage size as a percent of bankroll. The equity curve uses this, not 100. */
+  sizePct: number;
 }
 
 export interface WeekSplit {
@@ -20,32 +23,48 @@ export interface WeekSplit {
 export interface PaperEvaluation {
   status: "collecting" | "extend" | "go" | "no_go";
   alerts: number;
-  mean: number | null;
+  /** Bankroll profit as a fraction. Positive means the bankroll grew. */
+  bankrollPnl: number | null;
   maxDrawdownPct: number;
   weeks: WeekSplit[];
+  powerSampleSize: number;
+  powerWarning: string | null;
 }
 
-export function quotedNetReturn(
-  entry: number,
-  exit: number,
-  feeBps: number,
-  slippageBps: number,
-): number | null {
-  if (!(entry > 0) || !(exit > 0)) return null;
-  const cost = (2 * (feeBps + slippageBps)) / 10_000;
-  return exit / entry - 1 - cost;
+/** Detect a 5 point mean net return at 50% volatility, two-sided 5%. */
+export function powerSampleSize(sigma = 0.5, effect = 0.05, z = 1.96): number {
+  if (!(effect > 0) || !(sigma >= 0)) return 1;
+  return Math.ceil(((z * sigma) / effect) ** 2);
 }
 
-export function maxDrawdownPct(returns: readonly number[]): number {
+export function powerWarning(
+  expectedAlerts: number | null,
+  needed: number,
+  windowDays: number,
+): string | null {
+  if (expectedAlerts === null) {
+    return `powered sample is ${needed.toString()}; expected alert volume was not supplied, so it cannot be shown to support that sample`;
+  }
+  if (expectedAlerts < needed) {
+    return `powered sample is ${needed.toString()} but about ${expectedAlerts.toString()} alerts are expected in ${windowDays.toString()} days`;
+  }
+  return null;
+}
+
+/** Equity starts at 1. Each trade adds sizePct/100 * net. Drawdown is peak to trough of that curve. */
+export function bankrollCurve(rows: readonly { sizePct: number; net: number }[]): {
+  pnl: number;
+  maxDrawdownPct: number;
+} {
   let equity = 1;
   let peak = 1;
   let worst = 0;
-  for (const value of returns) {
-    equity *= 1 + value;
+  for (const row of rows) {
+    equity += (row.sizePct / 100) * row.net;
     if (equity > peak) peak = equity;
     if (peak > 0) worst = Math.max(worst, (peak - equity) / peak);
   }
-  return worst * 100;
+  return { pnl: equity - 1, maxDrawdownPct: worst * 100 };
 }
 
 function quantile(sorted: readonly number[], p: number): number {
@@ -112,26 +131,28 @@ export function evaluatePaper(input: {
   windowDays: number;
   minAlerts: number;
   maxDrawdownPct: number;
+  expectedAlerts?: number | null;
   returns: readonly ResolvedReturn[];
 }): PaperEvaluation {
   const ordered = [...input.returns].sort((left, right) => left.at.getTime() - right.at.getTime());
-  const mean =
-    ordered.length === 0 ? null : ordered.reduce((sum, row) => sum + row.net, 0) / ordered.length;
-  const drawdown = maxDrawdownPct(ordered.map((row) => row.net));
+  const curve = bankrollCurve(ordered);
   const windowEnd = input.registeredAt.getTime() + input.windowDays * 24 * 60 * 60 * 1000;
   let status: PaperEvaluation["status"];
   if (ordered.length < input.minAlerts) {
     status = input.now.getTime() < windowEnd ? "collecting" : "extend";
-  } else if (mean !== null && mean > 0 && drawdown < input.maxDrawdownPct) {
+  } else if (curve.pnl > 0 && curve.maxDrawdownPct < input.maxDrawdownPct) {
     status = "go";
   } else {
     status = "no_go";
   }
+  const needed = powerSampleSize();
   return {
     status,
     alerts: ordered.length,
-    mean,
-    maxDrawdownPct: drawdown,
+    bankrollPnl: ordered.length === 0 ? null : curve.pnl,
+    maxDrawdownPct: curve.maxDrawdownPct,
     weeks: weeklySplits(ordered),
+    powerSampleSize: needed,
+    powerWarning: powerWarning(input.expectedAlerts ?? null, needed, input.windowDays),
   };
 }

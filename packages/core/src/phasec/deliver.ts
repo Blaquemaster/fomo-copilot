@@ -86,8 +86,8 @@ export function formatWeeklyReview(input: {
 }): string {
   const lines = [
     `Weekly review ${input.week}`,
-    `paper ${input.paper.status} alerts ${input.paper.alerts.toString()} mean ${
-      input.paper.mean === null ? "n/a" : input.paper.mean.toFixed(4)
+    `paper ${input.paper.status} alerts ${input.paper.alerts.toString()} bankroll pnl ${
+      input.paper.bankrollPnl === null ? "n/a" : input.paper.bankrollPnl.toFixed(4)
     } max drawdown ${input.paper.maxDrawdownPct.toFixed(2)}%`,
     input.walletChanges.length === 0
       ? "wallet list: no change"

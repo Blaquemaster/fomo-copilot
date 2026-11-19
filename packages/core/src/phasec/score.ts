@@ -1,12 +1,12 @@
 import {
   POST_GRAD_MINUTES,
+  SCORE_WEIGHTS,
   TRENCH_MAX_AGE_MIN,
   mintBucket,
   type PaperArm,
-  type PhaseCConfig,
   type Stage,
 } from "./protocol.js";
-import type { MarketQuote } from "./market.js";
+import type { SecondWaveLabel } from "./secondWave.js";
 
 export interface ScoreCoin {
   mint: string;
@@ -17,21 +17,16 @@ export interface ScoreCoin {
   /** Null when the X source is off. Absence is not a penalty. */
   xMentions: number | null;
   liquidityUsd: number | null;
+  /** Null unless a real graduation time was stored. Never invented. */
+  secondWave?: SecondWaveLabel | null;
 }
 
-export function stageForCoin(
-  coin: ScoreCoin,
-  now: Date,
-  quote: MarketQuote | null,
-  config: Pick<PhaseCConfig, "secondWaveMinChangePct">,
-): Stage | null {
+export function stageForCoin(coin: ScoreCoin, now: Date): Stage | null {
+  if (coin.secondWave === "dead") return null;
   if (coin.graduatedAt) {
     const sinceMin = (now.getTime() - coin.graduatedAt.getTime()) / 60_000;
-    if (sinceMin <= POST_GRAD_MINUTES) return "post_graduation";
-    const change = quote?.priceChange1hPct;
-    if (change !== null && change !== undefined && change >= config.secondWaveMinChangePct) {
-      return "second_wave";
-    }
+    if (sinceMin >= 0 && sinceMin <= POST_GRAD_MINUTES) return "post_graduation";
+    if (coin.secondWave === "breakout") return "second_wave";
     return null;
   }
   if (coin.curveCompletedAt) return "near_graduation";
@@ -41,13 +36,13 @@ export function stageForCoin(
 }
 
 export function scoreStrength(stage: Stage, coin: ScoreCoin): number {
-  let score = 0.35;
-  if (stage === "post_graduation") score += 0.2;
-  if (stage === "near_graduation") score += 0.1;
-  if (coin.trackedBuyers >= 1) score += 0.2;
-  if (coin.trackedBuyers >= 3) score += 0.1;
-  if (coin.xMentions !== null && coin.xMentions >= 2) score += 0.15;
-  if ((coin.liquidityUsd ?? 0) >= 15_000) score += 0.1;
+  let score = SCORE_WEIGHTS.base;
+  if (stage === "post_graduation") score += SCORE_WEIGHTS.postGrad;
+  if (stage === "near_graduation") score += SCORE_WEIGHTS.nearGrad;
+  if (coin.trackedBuyers >= 1) score += SCORE_WEIGHTS.oneBuyer;
+  if (coin.trackedBuyers >= 3) score += SCORE_WEIGHTS.threeBuyers;
+  if (coin.xMentions !== null && coin.xMentions >= 2) score += SCORE_WEIGHTS.xMentions;
+  if ((coin.liquidityUsd ?? 0) >= 15_000) score += SCORE_WEIGHTS.liquidity;
   return Math.min(1, Math.round(score * 100) / 100);
 }
 

@@ -1,5 +1,9 @@
 # Decision log
 
+## 2026-11-19 — Phase C quotes are sized and the screen does not guess
+
+A paper entry is registered before the first fill. The lock hashes the arms, the two exit treatments, the score weights, the screen thresholds, the power sample, and the go rule. A later change is a protocol violation and blocks new entries. Costs are the quote's own impact and fee at 1x and 2x the stage size. A missing required screen field is WATCH. A dead exit, or a pending entry that never gets a quote, closes as a full loss so the slot frees. Second wave is a 30-day universe of coins graduated at least a day ago. DexScreener and GeckoTerminal are polled every 10 minutes behind a token bucket.
+
 ## 2026-11-19 — Phase C paper test
 
 The screener scores four stages: trench 0.5% of bankroll, near graduation 1%, post graduation 2%, and second wave 1%. A missing bankroll still prints the percent. X mentions are optional and stay off. Second wave quotes come from DexScreener, then GeckoTerminal, never Helius and never a swap or execute URL. The mihao fixture is the offline sample.

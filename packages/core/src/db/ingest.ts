@@ -458,8 +458,25 @@ create table if not exists phasec_position (
   net_return double precision,
   size_pct double precision not null,
   exit_plan text not null,
-  screen_failed boolean not null default false
+  screen_failed boolean not null default false,
+  entry_impact_pct double precision,
+  entry_fee_usd double precision,
+  entry_size_usd double precision,
+  exit_impact_pct double precision,
+  exit_fee_usd double precision,
+  net_return_2x double precision,
+  quote_failure text,
+  exit_treatment text
 );
+
+alter table phasec_position add column if not exists entry_impact_pct double precision;
+alter table phasec_position add column if not exists entry_fee_usd double precision;
+alter table phasec_position add column if not exists entry_size_usd double precision;
+alter table phasec_position add column if not exists exit_impact_pct double precision;
+alter table phasec_position add column if not exists exit_fee_usd double precision;
+alter table phasec_position add column if not exists net_return_2x double precision;
+alter table phasec_position add column if not exists quote_failure text;
+alter table phasec_position add column if not exists exit_treatment text;
 
 create index if not exists phasec_position_status_idx on phasec_position (status);
 

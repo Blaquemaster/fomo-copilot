@@ -116,8 +116,10 @@ export const envSchema = z.object({
   TELEGRAM_TEST_CHAT_ID: z
     .string()
     .trim()
-    .regex(/^[1-9]\d*$/)
+    .regex(/^-?[1-9]\d*$/)
     .optional(),
+  /** Minutes between DexScreener and GeckoTerminal polls. Default 10, allowed 5 to 15. */
+  MARKET_POLL_MINUTES: z.coerce.number().int().min(5).max(15).optional(),
   SECOND_WAVE_SOURCE: z.enum(["live", "fixture"]).optional(),
   WALLET_TIER_PROMOTE_RATE: z.coerce.number().min(0).max(1).optional(),
   EXIT_STOP_PCT: z.coerce.number().min(0).max(100).optional(),

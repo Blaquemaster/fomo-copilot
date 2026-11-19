@@ -246,12 +246,19 @@ jobs:
                   raise SystemExit("BANKROLL must be a positive number")
               return raw
 
+          def market_poll():
+              raw = os.environ.get("MARKET_POLL_MINUTES", "").strip() or "10"
+              if not raw.isdigit() or not 5 <= int(raw) <= 15:
+                  raise SystemExit("MARKET_POLL_MINUTES must be an integer from 5 to 15")
+              return raw
+
           def optional_chat(name):
               raw = os.environ.get(name, "").strip()
               if not raw:
                   return None
-              if not raw.isdigit() or int(raw) <= 0:
-                  raise SystemExit(f"{name} must be a positive integer")
+              digits = raw[1:] if raw.startswith("-") else raw
+              if not digits.isdigit() or int(digits) == 0:
+                  raise SystemExit(f"{name} must be a non-zero integer")
               return raw
 
           def slot_margin():
@@ -326,6 +333,7 @@ jobs:
               line("PAPER_WINDOW_DAYS", bounded("PAPER_WINDOW_DAYS", "7", 365)),
               line("PAPER_ENTRY_DELAY_SEC", bounded("PAPER_ENTRY_DELAY_SEC", "90", 86400)),
               line("SECOND_WAVE_MIN_CHANGE_PCT", percent("SECOND_WAVE_MIN_CHANGE_PCT", "20")),
+              line("MARKET_POLL_MINUTES", market_poll()),
               line("THRESHOLDS_PATH", "/app/config/thresholds.yaml"),
           ] + ([line("BANKROLL", bankroll)] if (bankroll := optional_bankroll()) else [])
             + ([line("TELEGRAM_TEST_CHAT_ID", test_chat)] if (test_chat := optional_chat("TELEGRAM_TEST_CHAT_ID")) else [])
@@ -351,6 +359,12 @@ jobs:
           git checkout main
           git pull --ff-only origin main
           test -f .env.incoming
+          if [ -f .env ] && ! grep -q '^TELEGRAM_TEST_CHAT_ID=' .env.incoming; then
+            existing="$(grep '^TELEGRAM_TEST_CHAT_ID=' .env || true)"
+            if [ -n "$existing" ]; then
+              printf '%s\n' "$existing" >> .env.incoming
+            fi
+          fi
           mv .env.incoming .env
           chmod 600 .env
           docker compose --env-file .env -f infra/docker-compose.yml up -d --build

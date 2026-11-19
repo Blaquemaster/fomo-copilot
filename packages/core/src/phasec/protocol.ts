@@ -14,8 +14,28 @@ export const PAPER_ARMS = [
 ] as const;
 export type PaperArm = (typeof PAPER_ARMS)[number];
 
-export const EXIT_PLAN =
-  "quote-only; stop at the configured percent below entry; measure net return at +1h after the quoted fee and slippage; no add";
+export const EXIT_TREATMENTS = ["fixed_horizon", "scale_out"] as const;
+export type ExitTreatment = (typeof EXIT_TREATMENTS)[number];
+
+export const SCALE_OUT_PLAN =
+  "scale out half the position at +50% quoted, remainder at +1h or the stop; no add";
+
+export const EXIT_PLAN = SCALE_OUT_PLAN;
+
+/** Weights locked with the registration. X is optional and adds nothing when it is absent. */
+export const SCORE_WEIGHTS = {
+  base: 0.35,
+  postGrad: 0.2,
+  nearGrad: 0.1,
+  oneBuyer: 0.2,
+  threeBuyers: 0.1,
+  xMentions: 0.15,
+  liquidity: 0.1,
+} as const;
+
+export function assignExitTreatment(mint: string): ExitTreatment {
+  return mintBucket(mint, 2) === 0 ? "fixed_horizon" : "scale_out";
+}
 
 export const TRENCH_MAX_AGE_MIN = 360;
 export const POST_GRAD_MINUTES = 30;
@@ -34,11 +54,10 @@ export interface PhaseCConfig {
   paperWindowDays: number;
   paperMinAlerts: number;
   paperMaxDrawdownPct: number;
-  feeBps: number;
-  slippageBps: number;
   maxPerHour: number;
   promoteRate: number;
   secondWaveMinChangePct: number;
+  marketPollMinutes: number;
   xEnabled: boolean;
   destination: "test" | "admin";
 }
@@ -56,7 +75,6 @@ export function protocolBody(config: PhaseCConfig): string {
   return JSON.stringify({
     version: 1,
     arms: PAPER_ARMS,
-    outcome: "net_return_at_1h_after_quoted_costs",
     sizePct: config.sizePct,
     dailyLossCutoffPct: config.dailyLossCutoffPct,
     maxConcurrent: config.maxConcurrent,
@@ -69,11 +87,14 @@ export function protocolBody(config: PhaseCConfig): string {
     paperWindowDays: config.paperWindowDays,
     paperMinAlerts: config.paperMinAlerts,
     paperMaxDrawdownPct: config.paperMaxDrawdownPct,
-    feeBps: config.feeBps,
-    slippageBps: config.slippageBps,
     maxPerHour: config.maxPerHour,
     promoteRate: config.promoteRate,
     secondWaveMinChangePct: config.secondWaveMinChangePct,
+    marketPollMinutes: config.marketPollMinutes,
+    weights: SCORE_WEIGHTS,
+    exitTreatments: EXIT_TREATMENTS,
+    outcome: "bankroll_pnl_at_1h_after_quoted_costs",
+    goRule: "positive bankroll pnl, min alerts, max drawdown under the locked percent",
   });
 }
 

@@ -9,8 +9,9 @@ import {
   parseDexScreener,
   parseGeckoTerminal,
   quoteUrlAllowed,
+  takeTokens,
 } from "./market.js";
-import { evaluatePaper, quotedNetReturn } from "./paper.js";
+import { bankrollCurve, evaluatePaper, powerSampleSize } from "./paper.js";
 import { runPhaseCPass, type PassCoin, type PassInput } from "./pass.js";
 import {
   defaultSizePct,
@@ -21,7 +22,14 @@ import {
 } from "./protocol.js";
 import { entryDecision, planTierPromotions } from "./risk.js";
 import { assignArm, scoreStrength } from "./score.js";
+import { curveBid, jupiterQuoteUrl, quotedRoundTrip } from "./quote.js";
 import { screenCoin, type ScreenRules } from "./screen.js";
+import {
+  deadCoinObservation,
+  mihaoObservation,
+  secondWaveSignal,
+  tooYoungObservation,
+} from "./secondWave.js";
 import { inQuietHours } from "./time.js";
 
 const rules: ScreenRules = {
@@ -50,11 +58,10 @@ function config(overrides: Partial<PhaseCConfig> = {}): PhaseCConfig {
     paperWindowDays: 7,
     paperMinAlerts: 100,
     paperMaxDrawdownPct: 15,
-    feeBps: 50,
-    slippageBps: 150,
     maxPerHour: 6,
     promoteRate: 0.75,
     secondWaveMinChangePct: 20,
+    marketPollMinutes: 10,
     xEnabled: false,
     destination: "test",
     ...overrides,
@@ -97,11 +104,15 @@ function mintFor(
 }
 
 function pass(overrides: Partial<PassInput> = {}): PassInput {
+  const cfg = overrides.config ?? config();
   return {
     now: new Date("2026-11-19T16:30:00.000Z"),
-    config: config(),
+    config: cfg,
     rules,
-    locked: null,
+    locked:
+      overrides.locked === undefined
+        ? { fingerprint: protocolFingerprint(protocolBody(cfg)), config: cfg }
+        : overrides.locked,
     coins: [],
     quotes: [],
     positions: [],
@@ -157,7 +168,8 @@ describe("phase C", () => {
     );
     expect(screenCoin({ ...plain, mintAuthorityActive: true }, rules).verdict).toBe("fail");
     expect(screenCoin({ ...plain, quoteError: true }, rules).verdict).toBe("watch");
-    expect(quotedNetReturn(1, 1, 50, 150)).toBeCloseTo(-0.04);
+    expect(screenCoin({ ...plain, mintAuthorityActive: null }, rules).verdict).toBe("watch");
+    expect(screenCoin({ ...plain, liquidityUsd: null }, rules).verdict).toBe("watch");
     expect(
       entryDecision({
         openCount: 0,
@@ -305,7 +317,9 @@ describe("phase C", () => {
       windowDays: 7,
       minAlerts: 100,
       maxDrawdownPct: 15,
-      returns: [{ at: new Date("2026-11-02T00:00:00.000Z"), arm: "screen_only", net: 0.01 }],
+      returns: [
+        { at: new Date("2026-11-02T00:00:00.000Z"), arm: "screen_only", net: 0.01, sizePct: 2 },
+      ],
     });
     expect(early.status).toBe("collecting");
     const extended = evaluatePaper({
@@ -314,16 +328,16 @@ describe("phase C", () => {
       windowDays: 7,
       minAlerts: 100,
       maxDrawdownPct: 15,
-      returns:
-        early.weeks.length >= 0
-          ? [{ at: new Date("2026-11-02T00:00:00.000Z"), arm: "screen_only", net: 0.01 }]
-          : [],
+      returns: [
+        { at: new Date("2026-11-02T00:00:00.000Z"), arm: "screen_only", net: 0.01, sizePct: 2 },
+      ],
     });
     expect(extended.status).toBe("extend");
     const sample = Array.from({ length: 100 }, (_unused, index) => ({
       at: new Date(Date.UTC(2026, 10, 2, 0, index)),
       arm: "screen_only" as const,
       net: 0.01,
+      sizePct: 2,
     }));
     const go = evaluatePaper({
       registeredAt: new Date("2026-11-01T00:00:00.000Z"),
@@ -370,12 +384,36 @@ describe("phase C", () => {
       parseGeckoTerminal({ data: { attributes: { address: quote.mint, price_usd: "0.0042" } } })
         ?.priceUsd,
     ).toBe(0.0042);
-    const result = runPhaseCPass(pass({ quotes: [quote] }));
+    const now = new Date("2026-11-19T16:30:00.000Z");
+    expect(secondWaveSignal(mihaoObservation(now), now)).toBe("breakout");
+    expect(secondWaveSignal(deadCoinObservation(now), now)).toBe("dead");
+    expect(secondWaveSignal(tooYoungObservation(now), now)).toBe("too_young");
+    const observed = mihaoObservation(now);
+    const result = runPhaseCPass(
+      pass({
+        now,
+        coins: [
+          coin(observed.mint, {
+            graduatedAt: observed.graduatedAt,
+            createdAt: new Date(now.getTime() - 4 * 24 * 60 * 60 * 1000),
+            secondWave: "breakout",
+            trackedBuyers: 2,
+          }),
+        ],
+      }),
+    );
     expect(result.entries[0]?.stage).toBe("second_wave");
     expect(
       result.entries[0]?.arm === "second_wave_a" || result.entries[0]?.arm === "second_wave_b",
     ).toBe(true);
     expect(result.entries[0]?.sizePct).toBe(1);
+    expect(result.entries[0]?.text).toContain("scale out half");
+    expect(
+      quoteUrlAllowed(
+        jupiterQuoteUrl("So11111111111111111111111111111111111111112", quote.mint, "1000000"),
+      ),
+    ).toBe(true);
+    expect(quoteUrlAllowed("https://quote-api.jup.ag/v6/swap")).toBe(false);
     expect(quoteUrlAllowed(dexScreenerTokenUrl([quote.mint]))).toBe(true);
     expect(quoteUrlAllowed(geckoTerminalTokenUrl(quote.mint))).toBe(true);
     expect(quoteUrlAllowed("https://api.dexscreener.com/latest/dex/swap/abc")).toBe(false);
@@ -416,13 +454,39 @@ describe("phase C", () => {
       paper: {
         status: "collecting",
         alerts: 1,
-        mean: 0.01,
+        bankrollPnl: 0.01,
         maxDrawdownPct: 0,
         weeks: [],
+        powerSampleSize: 385,
+        powerWarning: null,
       },
     });
     expect(text).toContain("wallet list: +wallet-a, -wallet-b");
     expect(text).toContain("X mention source is off");
     expect(text).toContain("wallet-c");
+  });
+
+  it("registers before any paper entry and prices a curve bid at the stage size", () => {
+    const mint = mintFor("trench", 0, "screen_only", "Reg");
+    const unregistered = runPhaseCPass(pass({ locked: null, coins: [coin(mint)] }));
+    expect(unregistered.entries).toEqual([]);
+    expect(unregistered.lock).not.toBeNull();
+    const bid = curveBid(
+      { virtualSol: 30, virtualTokens: 1_000_000_000, solPriceUsd: 150, feeBps: null },
+      50,
+    );
+    expect(bid.ok).toBe(true);
+    if (bid.ok) expect(bid.impactPct).toBeGreaterThan(0);
+    const dead = quotedRoundTrip(bid, { ok: false, reason: "no_liquidity" });
+    expect(dead).toBe(-1);
+    const curve = bankrollCurve([
+      { sizePct: 2, net: -1 },
+      { sizePct: 2, net: 0.5 },
+    ]);
+    expect(curve.maxDrawdownPct).toBeCloseTo(2, 5);
+    expect(curve.pnl).toBeCloseTo(-0.01, 5);
+    expect(powerSampleSize()).toBe(385);
+    const bucket = takeTokens({ tokens: 1, refilledAt: 0 }, 0, 10, 3);
+    expect(bucket.granted).toBe(1);
   });
 });

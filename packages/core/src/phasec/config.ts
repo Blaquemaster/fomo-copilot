@@ -37,11 +37,10 @@ export function phaseCConfigFromEnv(env: Env, thresholds: Thresholds): PhaseCCon
     paperWindowDays: env.PAPER_WINDOW_DAYS ?? 7,
     paperMinAlerts: env.PAPER_MIN_ALERTS ?? 100,
     paperMaxDrawdownPct: env.PAPER_MAX_DRAWDOWN_PCT ?? 15,
-    feeBps: thresholds.paper.assumed_fee_bps,
-    slippageBps: thresholds.paper.assumed_slippage_bps,
     maxPerHour: thresholds.alerts.max_per_hour,
     promoteRate: env.WALLET_TIER_PROMOTE_RATE ?? 0.75,
     secondWaveMinChangePct: env.SECOND_WAVE_MIN_CHANGE_PCT ?? 20,
+    marketPollMinutes: env.MARKET_POLL_MINUTES ?? 10,
     xEnabled: env.X_MENTION_SOURCE === "fixture",
     destination: env.ALERT_DESTINATION ?? "test",
   };

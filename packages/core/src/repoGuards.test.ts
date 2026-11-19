@@ -130,6 +130,8 @@ describe("repository guards", () => {
     expect(workflow).toContain('percent("DAILY_LOSS_CUTOFF_PCT", "3")');
     expect(workflow).toContain('bounded("MAX_CONCURRENT_POSITIONS", "5"');
     expect(workflow).toContain('pick("SECOND_WAVE_SOURCE", "live"');
+    expect(workflow).toContain("market_poll()");
+    expect(workflow).toContain("TELEGRAM_TEST_CHAT_ID");
     const bsc = readFileSync(path.join(root, "apps/ingestor/src/bsc.ts"), "utf8");
     expect(bsc).not.toContain("gopluslabs");
     expect(bsc).not.toContain("honeypot.is");
