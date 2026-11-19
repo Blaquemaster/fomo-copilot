@@ -1,8 +1,17 @@
 import { rpcCredits } from "@fomo/core";
 
+function readU64(data: Uint8Array, offset: number): bigint {
+  let value = 0n;
+  for (let index = 0; index < 8; index += 1) {
+    value += BigInt(data[offset + index] ?? 0) << (8n * BigInt(index));
+  }
+  return value;
+}
+
 export function parseMintAccount(data: Uint8Array): {
   mintAuthorityActive: boolean;
   freezeAuthorityActive: boolean;
+  supply: bigint;
 } | null {
   if (data.length < 82) return null;
   const option = (offset: number) =>
@@ -13,6 +22,7 @@ export function parseMintAccount(data: Uint8Array): {
   return {
     mintAuthorityActive: option(0),
     freezeAuthorityActive: option(46),
+    supply: readU64(data, 36),
   };
 }
 
@@ -32,11 +42,81 @@ export function screenCreditProjection(newMintsPerDay: number): {
   return { perDay, perMonth: perDay * 30 };
 }
 
+const holderCache = new Map<string, { pct: number; at: number }>();
+const HOLDER_REFRESH_MS = 6 * 60 * 60 * 1000;
+
+export async function loadTopHolders(input: {
+  apiKey: string;
+  mints: readonly string[];
+  supplies: ReadonlyMap<string, bigint>;
+  nowMs: number;
+  fetchImpl?: typeof fetch;
+}): Promise<{ rows: Array<{ mint: string; top10Pct: number }>; credits: number }> {
+  const fetchImpl = input.fetchImpl ?? fetch;
+  const rows = [];
+  let credits = 0;
+  for (const mint of input.mints) {
+    const cached = holderCache.get(mint);
+    if (cached && input.nowMs - cached.at < HOLDER_REFRESH_MS) {
+      rows.push({ mint, top10Pct: cached.pct });
+      continue;
+    }
+    const supply = input.supplies.get(mint);
+    if (supply === undefined || supply <= 0n) continue;
+    try {
+      const response = await fetchImpl(
+        `https://mainnet.helius-rpc.com/?api-key=${encodeURIComponent(input.apiKey)}`,
+        {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({
+            jsonrpc: "2.0",
+            id: 1,
+            method: "getTokenLargestAccounts",
+            params: [mint],
+          }),
+        },
+      );
+      credits += rpcCredits("getTokenLargestAccounts");
+      if (!response.ok) continue;
+      const body = (await response.json()) as {
+        result?: { value?: Array<{ amount?: string }> };
+      };
+      const amounts = (body.result?.value ?? [])
+        .map((row) => {
+          try {
+            return BigInt(row.amount ?? "0");
+          } catch {
+            return 0n;
+          }
+        })
+        .filter((amount) => amount > 0n);
+      const pct = topHolderPct(
+        amounts.map((amount) => Number(amount)),
+        Number(supply),
+      );
+      if (pct === null) continue;
+      holderCache.set(mint, { pct, at: input.nowMs });
+      rows.push({ mint, top10Pct: pct });
+    } catch {
+      // The coin stays WATCH until a later pass.
+    }
+  }
+  return { rows, credits };
+}
+
 export async function loadMintAuthorities(input: {
   apiKey: string;
   mints: readonly string[];
   fetchImpl?: typeof fetch;
-}): Promise<Array<{ mint: string; mintAuthorityActive: boolean; freezeAuthorityActive: boolean }>> {
+}): Promise<
+  Array<{
+    mint: string;
+    mintAuthorityActive: boolean;
+    freezeAuthorityActive: boolean;
+    supply: bigint;
+  }>
+> {
   const fetchImpl = input.fetchImpl ?? fetch;
   const rows = [];
   for (const mint of input.mints) {

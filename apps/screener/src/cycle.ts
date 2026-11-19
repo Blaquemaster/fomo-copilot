@@ -22,7 +22,7 @@ import {
   type Thresholds,
 } from "@fomo/core";
 
-import { loadMintAuthorities, screenCreditProjection } from "./accounts.js";
+import { loadMintAuthorities, loadTopHolders, screenCreditProjection } from "./accounts.js";
 import { collectJupiterBids, type JupiterRequest } from "./jupiter.js";
 
 function readEntriesStart(body: string): Date | null {
@@ -71,7 +71,18 @@ export async function runPhaseCCycle(input: {
       mints: missingAuthority.slice(0, 20),
       fetchImpl: input.fetchImpl,
     });
-    await input.store.recordScreenCredits(loaded.length, input.now);
+    const holders = await loadTopHolders({
+      apiKey: input.env.HELIUS_API_KEY,
+      mints: missingAuthority.slice(0, 20),
+      supplies: new Map(loaded.map((row) => [row.mint, row.supply])),
+      nowMs: input.now.getTime(),
+      fetchImpl: input.fetchImpl,
+    });
+    await input.store.recordScreenCredits(loaded.length + holders.credits, input.now);
+    for (const row of holders.rows) {
+      const coin = coins.find((item) => item.mint === row.mint);
+      if (coin) coin.top10HoldersPct = row.top10Pct;
+    }
     for (const row of loaded) {
       const coin = coins.find((item) => item.mint === row.mint);
       if (!coin) continue;
