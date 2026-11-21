@@ -4,6 +4,14 @@ Phase 0 deploys to a DigitalOcean Basic droplet you create yourself: 1 GiB RAM, 
 
 Helius is not called yet. Leave the key on the free plan until Phase 1 is designed. Free does not include `transactionSubscribe` (Developer is $49/month). See [decisions.md](decisions.md).
 
+## Phase C
+
+The screener scores stored coins and writes paper positions. It does not send a swap or an execute request. Set `TELEGRAM_TEST_CHAT_ID` to a chat that is not the admin chat. `ALERT_DESTINATION` stays `test`, so those messages never go to `TELEGRAM_ADMIN_CHAT_ID`.
+
+After deploy, `docker compose logs screener` should show `phase C screener started`. One pass per minute reads candidates, polls DexScreener for graduated mints when `SECOND_WAVE_SOURCE=live`, and writes `phasec_alert` and `phasec_position`. A new position stays `pending` until 90 seconds after the alert, then stores the quote as `entry_quote`. An hour later, or at a 25% stop, it closes and stores `net_return`. `phasec_protocol` is written once. A later change to the size, loss, or paper settings is ignored and logged until that row is removed on purpose.
+
+`psql` checks: `select stage, arm, size_pct, net_return, net_return_2x, quote_failure from phasec_position order by alert_at desc limit 20;`. The first pass only writes `phasec_protocol`. Entries start on the next pass. Quiet hours are 23:00–07:00 ET. Quote polls default to every 10 minutes. An unset `TELEGRAM_TEST_CHAT_ID` on deploy keeps the value already in the server `.env`. Group ids may be negative.
+
 ## GitHub secrets
 
 Add these in the repository Settings, Secrets and variables, Actions. Names must match. Values stay in GitHub; they are written to `/opt/fomo-copilot/.env` on the server at deploy time and are not committed.

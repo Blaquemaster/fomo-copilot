@@ -1,5 +1,19 @@
 # Decision log
 
+## 2026-11-19 — Phase C quotes are sized and the screen does not guess
+
+A paper entry is registered before the first fill. The lock hashes the arms, the two exit treatments, the score weights, the screen thresholds, the power sample, and the go rule. A later change is a protocol violation and blocks new entries. Costs are the quote's own impact and fee at 1x and 2x the stage size. A missing required screen field is WATCH. A dead exit, or a pending entry that never gets a quote, closes as a full loss so the slot frees. Second wave is a 30-day universe of coins graduated at least a day ago. DexScreener and GeckoTerminal are polled every 10 minutes behind a token bucket.
+
+## 2026-11-19 — Phase C paper test
+
+The screener scores four stages: trench 0.5% of bankroll, near graduation 1%, post graduation 2%, and second wave 1%. A missing bankroll still prints the percent. X mentions are optional and stay off. Second wave quotes come from DexScreener, then GeckoTerminal, never Helius and never a swap or execute URL. The mihao fixture is the offline sample.
+
+Safety hard-fails a known mint authority, freeze authority, transfer fee, or exit impact. A quote-source error is WATCH. Alerts are warn-and-pause only. There is no averaging down, an exit plan is stored at entry, five positions can be open, and a 3% bankroll loss pauses new alerts until the next ET day.
+
+Quiet hours are 23:00–07:00 ET. Only a post-graduation alert at or above strength 0.7 and size 2%, plus exit warnings, send immediately. The rest wait for the morning digest. Until `ALERT_DESTINATION=admin`, messages go to `TELEGRAM_TEST_CHAT_ID` and never the admin chat.
+
+The paper test is locked on the first pass: screen-only, wallets plus optional X, a random PASS control, and a second-wave split. Entry is the quote 90 seconds after the alert. The primary result is net return one hour later after the configured fee and slippage on both sides. Go requires a positive mean, 100 measured alerts, and max drawdown under 15%. Fewer than 100 alerts after 7 days extends the test. A changed rule does not retune the lock. Wallet list and X watchlist changes are a weekly note. Promoting a wallet to the high size tier queues an approval and does not apply it.
+
 ## 2026-11-18 — Scoring version 2 rebuilds the live list
 
 `tracked_wallet.scoring_version` is 2 for lists built by these rules. Existing rows default to 1, so the next refresh replaces the whole live set once and resubscribes, instead of keeping the old 100% wallets under the 20% churn cap. Later refreshes use the churn cap again.

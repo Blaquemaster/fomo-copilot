@@ -338,6 +338,32 @@ create table if not exists wallet_early_buy (
 );
 
 create index if not exists wallet_early_buy_mint_idx on wallet_early_buy (mint);
+alter table wallet_early_buy add column if not exists sol_amount double precision;
+alter table wallet_early_buy add column if not exists token_amount double precision;
+alter table wallet_early_buy add column if not exists block_time bigint;
+alter table wallet_early_buy add column if not exists funder text;
+alter table wallet_early_buy add column if not exists delayed_mark_usd double precision;
+alter table wallet_early_buy add column if not exists delayed_mark_at timestamptz;
+alter table wallet_early_buy add column if not exists delayed_mark_source text;
+alter table wallet_early_buy add column if not exists exit_mark_usd double precision;
+alter table wallet_early_buy add column if not exists bought_at timestamptz;
+alter table wallet_early_buy add column if not exists exit_mark_at timestamptz;
+alter table wallet_fill add column if not exists sol_amount double precision;
+alter table wallet_fill add column if not exists token_amount double precision;
+alter table wallet_fill add column if not exists block_time bigint;
+alter table wallet_backfill_mint add column if not exists mark_reread boolean not null default false;
+create table if not exists phasec_score_shadow (
+  id integer primary key,
+  ranked_count integer not null,
+  lookback_start text,
+  lookback_end text,
+  cutoff text,
+  entry_count integer not null default 0,
+  scoring_version integer not null,
+  test_closed boolean not null default false,
+  updated_at timestamptz not null,
+  constraint phasec_score_shadow_one check (id = 1)
+);
 
 create table if not exists wallet_backfill_mint (
   mint text primary key,
@@ -404,6 +430,9 @@ create table if not exists pump_trade (
 );
 
 create index if not exists pump_trade_mint_slot_idx on pump_trade (mint, slot);
+create index if not exists wallet_fill_mint_idx on wallet_fill (mint);
+create index if not exists candidates_recent_idx on candidates (first_seen_at desc);
+create index if not exists candidates_graduated_idx on candidates (graduated_at desc) where graduated_at is not null;
 
 create table if not exists pump_coin_stats (
   mint text primary key,
@@ -415,6 +444,137 @@ create table if not exists pump_coin_stats (
 );
 
 create index if not exists ingest_recall_audit_ran_idx on ingest_recall_audit (ran_at desc);
+
+alter table tracked_wallet add column if not exists size_tier text not null default 'base';
+
+create table if not exists phasec_protocol (
+  id integer primary key,
+  fingerprint text not null,
+  body text not null,
+  registered_at timestamptz not null,
+  constraint phasec_protocol_singleton check (id = 1)
+);
+
+create table if not exists phasec_alert (
+  id bigserial primary key,
+  mint text not null,
+  stage text not null,
+  arm text not null,
+  kind text not null,
+  created_at timestamptz not null,
+  delivered_at timestamptz,
+  held_reason text,
+  size_pct double precision,
+  strength double precision,
+  body text not null
+);
+
+create index if not exists phasec_alert_created_idx on phasec_alert (created_at desc);
+
+create table if not exists phasec_position (
+  id bigserial primary key,
+  mint text not null,
+  stage text not null,
+  arm text not null,
+  status text not null,
+  alert_at timestamptz not null,
+  entry_after timestamptz not null,
+  opened_at timestamptz,
+  entry_quote double precision,
+  exit_quote double precision,
+  closed_at timestamptz,
+  exit_reason text,
+  net_return double precision,
+  size_pct double precision not null,
+  exit_plan text not null,
+  screen_failed boolean not null default false,
+  entry_impact_pct double precision,
+  entry_fee_usd double precision,
+  entry_size_usd double precision,
+  exit_impact_pct double precision,
+  exit_fee_usd double precision,
+  net_return_2x double precision,
+  quote_failure text,
+  exit_treatment text
+);
+
+alter table phasec_position add column if not exists entry_impact_pct double precision;
+alter table phasec_position add column if not exists entry_fee_usd double precision;
+alter table phasec_position add column if not exists entry_size_usd double precision;
+alter table phasec_position add column if not exists exit_impact_pct double precision;
+alter table phasec_position add column if not exists exit_fee_usd double precision;
+alter table phasec_position add column if not exists net_return_2x double precision;
+alter table phasec_position add column if not exists quote_failure text;
+alter table phasec_position add column if not exists exit_treatment text;
+
+create index if not exists phasec_position_status_idx on phasec_position (status);
+
+create table if not exists phasec_pause (
+  day date primary key,
+  reason text not null,
+  paused_at timestamptz not null
+);
+
+create table if not exists phasec_tier_request (
+  id bigserial primary key,
+  wallet text not null,
+  from_tier text not null,
+  to_tier text not null,
+  status text not null,
+  requested_at timestamptz not null
+);
+
+create unique index if not exists phasec_tier_pending_idx
+  on phasec_tier_request (wallet) where status = 'pending';
+
+create table if not exists phasec_weekly (
+  week_start date primary key,
+  body text not null,
+  created_at timestamptz not null
+);
+
+create table if not exists phasec_wallet_snapshot (
+  address text primary key
+);
+
+alter table phasec_position add column if not exists entry_out_amount text;
+alter table phasec_position add column if not exists sell_warned boolean not null default false;
+alter table phasec_position add column if not exists scaled_at timestamptz;
+alter table phasec_position add column if not exists fomo_fee_usd double precision;
+alter table phasec_position add column if not exists quote_source text;
+alter table phasec_position add column if not exists restarted_at timestamptz;
+alter table phasec_alert add column if not exists fingerprint text;
+alter table phasec_alert add column if not exists tradable_in_fomo boolean;
+alter table phasec_alert add column if not exists minutes_from_alert_to_listed double precision;
+alter table phasec_alert add column if not exists restarted_at timestamptz;
+create index if not exists wallet_fill_mint_side_idx on wallet_fill (mint, side);
+
+create table if not exists phasec_mint_cache (
+  mint text primary key,
+  mint_authority_active boolean,
+  freeze_authority_active boolean,
+  top10_pct double precision,
+  sniper_pct double precision,
+  curve_liquidity_usd double precision,
+  exit_impact_pct double precision,
+  exit_impact_at timestamptz,
+  fetched_at timestamptz not null
+);
+alter table phasec_mint_cache add column if not exists sniper_pct double precision;
+alter table phasec_mint_cache add column if not exists curve_liquidity_usd double precision;
+
+create table if not exists phasec_market_snapshot (
+  mint text not null,
+  polled_at timestamptz not null,
+  price_usd double precision,
+  liquidity_usd double precision,
+  volume_1h double precision,
+  volume_24h double precision,
+  primary key (mint, polled_at)
+);
+alter table phasec_market_snapshot add column if not exists volume_24h double precision;
+alter table phasec_mint_cache add column if not exists exit_impact_pct double precision;
+alter table phasec_mint_cache add column if not exists exit_impact_at timestamptz;
 `;
 
 export function createPool(
@@ -559,6 +719,10 @@ export async function migrate(pool: pg.Pool): Promise<void> {
     await client.query(
       "insert into schema_migrations (id) values ($1) on conflict (id) do nothing",
       ["020_scoring_version"],
+    );
+    await client.query(
+      "insert into schema_migrations (id) values ($1) on conflict (id) do nothing",
+      ["021_phase_c"],
     );
     await client.query(
       `update ingest_recall_audit a
@@ -1394,6 +1558,14 @@ export class IngestRepository {
       createdSlot: number | null;
       createdAt: Date | null;
       venue: string | null;
+      solAmount: number | null;
+      tokenAmount: number | null;
+      blockTimeSec: number | null;
+      funder: string | null;
+      delayedMarkUsd: number | null;
+      delayedMarkSource: "jupiter" | "curve_modeled" | "history_swap" | null;
+      exitMarkUsd: number | null;
+      signature: string | null;
     }>
   > {
     const result = await this.pool.query<{
@@ -1405,18 +1577,35 @@ export class IngestRepository {
       created_slot: string | null;
       created_at: Date | null;
       venue: string | null;
+      sol_amount: number | null;
+      token_amount: number | null;
+      block_time: string | null;
+      funder: string | null;
+      delayed_mark_usd: number | null;
+      delayed_mark_source: string | null;
+      exit_mark_usd: number | null;
+      signature: string | null;
     }>(
       `select t.wallet, t.mint, t.side, t.slot, c.created_slot, c.created_at, c.venue,
+              t.sol_amount, t.token_amount, t.block_time, t.funder,
+              t.delayed_mark_usd, t.delayed_mark_source, t.exit_mark_usd, t.signature,
               exists (
                 select 1 from raw_events g
                 where g.mint = t.mint
                   and g.event_kind in ('pump_migrate', 'launchlab_migrate', 'dbc_migration_damm_v2')
               ) as graduated
        from (
-         select trader as wallet, mint, side, slot from pump_trade
+         select trader as wallet, mint, side, slot,
+                null::double precision as sol_amount, null::double precision as token_amount,
+                null::bigint as block_time, null::text as funder,
+                null::double precision as delayed_mark_usd, null::text as delayed_mark_source,
+                null::double precision as exit_mark_usd, signature
+         from pump_trade
          where trader is not null and is_creator = false and side in ('buy', 'sell')
          union all
-         select wallet, mint, side, slot from wallet_early_buy
+         select wallet, mint, side, slot, sol_amount, token_amount, block_time, funder,
+                delayed_mark_usd, delayed_mark_source, exit_mark_usd, signature
+         from wallet_early_buy
          where is_creator = false and side in ('buy', 'sell')
        ) t
        left join ingest_coin c on c.mint = t.mint`,
@@ -1430,7 +1619,99 @@ export class IngestRepository {
       createdSlot: row.created_slot === null ? null : Number(row.created_slot),
       createdAt: row.created_at,
       venue: row.venue,
+      solAmount: row.sol_amount === null ? null : Number(row.sol_amount),
+      tokenAmount: row.token_amount === null ? null : Number(row.token_amount),
+      blockTimeSec: row.block_time === null ? null : Number(row.block_time),
+      funder: row.funder,
+      delayedMarkUsd: row.delayed_mark_usd === null ? null : Number(row.delayed_mark_usd),
+      delayedMarkSource: ((): "jupiter" | "curve_modeled" | "history_swap" | null => {
+        const source = row.delayed_mark_source;
+        if (source === "history_swap" || source === "jupiter" || source === "curve_modeled") {
+          return source;
+        }
+        return null;
+      })(),
+      exitMarkUsd: row.exit_mark_usd === null ? null : Number(row.exit_mark_usd),
+      signature: row.signature,
+      boughtAt: row.block_time === null ? null : new Date(Number(row.block_time) * 1000),
     }));
+  }
+
+  async requeueMarkBackfillOnce(): Promise<number> {
+    const result = await this.pool.query(
+      `update wallet_backfill_mint
+       set status = 'open', pagination_token = null, mark_reread = true, updated_at = now()
+       where status in ('done', 'skipped') and mark_reread = false`,
+    );
+    return result.rowCount ?? 0;
+  }
+
+  async saveHistoryMarks(
+    rows: ReadonlyArray<{
+      signature: string;
+      wallet: string;
+      mint: string;
+      delayedMarkUsd: number;
+      delayedMarkAt: Date;
+      exitMarkUsd: number;
+      boughtAt: Date;
+    }>,
+  ): Promise<void> {
+    for (const row of rows) {
+      await this.pool.query(
+        `update wallet_early_buy
+         set delayed_mark_usd = $4, delayed_mark_at = $5, delayed_mark_source = 'history_swap',
+             exit_mark_usd = $6, exit_mark_at = $5, bought_at = $7
+         where signature = $1 and wallet = $2 and mint = $3 and delayed_mark_usd is null`,
+        [
+          row.signature,
+          row.wallet,
+          row.mint,
+          row.delayedMarkUsd,
+          row.delayedMarkAt.toISOString(),
+          row.exitMarkUsd,
+          row.boughtAt.toISOString(),
+        ],
+      );
+    }
+  }
+
+  async saveScoreShadow(input: {
+    rankedCount: number;
+    lookbackStart: string | null;
+    lookbackEnd: string | null;
+    cutoff: string | null;
+    entryCount: number;
+    scoringVersion: number;
+  }): Promise<void> {
+    await this.pool.query(
+      `insert into phasec_score_shadow
+        (id, ranked_count, lookback_start, lookback_end, cutoff, entry_count, scoring_version, updated_at)
+       values (1, $1, $2, $3, $4, $5, $6, now())
+       on conflict (id) do update set
+         ranked_count = excluded.ranked_count,
+         lookback_start = excluded.lookback_start,
+         lookback_end = excluded.lookback_end,
+         cutoff = excluded.cutoff,
+         entry_count = excluded.entry_count,
+         scoring_version = excluded.scoring_version,
+         updated_at = now()`,
+      [
+        input.rankedCount,
+        input.lookbackStart,
+        input.lookbackEnd,
+        input.cutoff,
+        input.entryCount,
+        input.scoringVersion,
+      ],
+    );
+  }
+
+  async paperTestClosed(): Promise<boolean> {
+    const result = await this.pool.query<{ test_closed: boolean }>(
+      "select test_closed from phasec_score_shadow where id = 1",
+    );
+    return result.rows[0]?.test_closed === true;
   }
 
   async activeScoringVersion(): Promise<number | null> {
@@ -1441,6 +1722,11 @@ export class IngestRepository {
     if (version === null || version === undefined) return null;
     const parsed = Number(version);
     return Number.isFinite(parsed) ? parsed : null;
+  }
+
+  async paperTestOpen(): Promise<boolean> {
+    const result = await this.pool.query("select 1 from phasec_protocol where id = 1");
+    return (result.rowCount ?? 0) > 0;
   }
 
   async activeTrackedWallets(): Promise<string[]> {
@@ -1715,15 +2001,24 @@ export class IngestRepository {
       side: string;
       venue: string;
       isCreator: boolean;
+      solAmount?: number | null;
+      tokenAmount?: number | null;
+      blockTimeSec?: number | null;
+      funder?: string | null;
     }>,
   ): Promise<number> {
     let stored = 0;
     for (const row of rows) {
       const result = await this.pool.query(
         `insert into wallet_early_buy
-          (signature, event_index, slot, mint, wallet, side, venue, is_creator)
-         values ($1,$2,$3,$4,$5,$6,$7,$8)
-         on conflict (signature, event_index, wallet) do nothing`,
+          (signature, event_index, slot, mint, wallet, side, venue, is_creator,
+           sol_amount, token_amount, block_time, funder)
+         values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)
+         on conflict (signature, event_index, wallet) do update set
+           sol_amount = coalesce(excluded.sol_amount, wallet_early_buy.sol_amount),
+           token_amount = coalesce(excluded.token_amount, wallet_early_buy.token_amount),
+           block_time = coalesce(excluded.block_time, wallet_early_buy.block_time),
+           funder = coalesce(excluded.funder, wallet_early_buy.funder)`,
         [
           row.signature,
           row.eventIndex,
@@ -1733,6 +2028,31 @@ export class IngestRepository {
           row.side,
           row.venue,
           row.isCreator,
+          row.solAmount ?? null,
+          row.tokenAmount ?? null,
+          row.blockTimeSec ?? null,
+          row.funder ?? null,
+        ],
+      );
+      await this.pool.query(
+        `insert into wallet_fill
+          (signature, event_index, slot, mint, wallet, side, venue, sol_amount, token_amount, block_time)
+         values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)
+         on conflict (signature, event_index, wallet) do update set
+           sol_amount = coalesce(excluded.sol_amount, wallet_fill.sol_amount),
+           token_amount = coalesce(excluded.token_amount, wallet_fill.token_amount),
+           block_time = coalesce(excluded.block_time, wallet_fill.block_time)`,
+        [
+          row.signature,
+          row.eventIndex,
+          row.slot,
+          row.mint,
+          row.wallet,
+          row.side,
+          row.venue,
+          row.solAmount ?? null,
+          row.tokenAmount ?? null,
+          row.blockTimeSec ?? null,
         ],
       );
       stored += result.rowCount ?? 0;

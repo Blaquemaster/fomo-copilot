@@ -104,7 +104,9 @@ export {
   SCORING_VERSION,
   applyLossMaturity,
   chunkWallets,
+  mayApplyV3List,
   scoreProvenWallets,
+  walletLookback,
   shrunkHitRate,
   type ScoreOptions,
   walletBudgetOpen,
@@ -116,6 +118,11 @@ export {
   type ScoredWallet,
   type WalletFillDraft,
 } from "./ingest/wallets.js";
+export {
+  applyHistoryMarks,
+  historyMarkForBuy,
+  HISTORY_MARK_SOURCE,
+} from "./ingest/historyMarks.js";
 export {
   EARLY_BUYER_MAX_PAGES,
   EARLY_BUYER_PAGE_LIMIT,
@@ -219,3 +226,62 @@ export {
 } from "./ingest/frameStats.js";
 export { formatIngestStatus, formatSpotCheck } from "./ingest/statusText.js";
 export { IngestRepository, createPool, migrate } from "./db/ingest.js";
+export { PhaseCRepository } from "./db/phasec.js";
+export { phaseCConfigFromEnv, screenRulesFromThresholds } from "./phasec/config.js";
+export { lookupTradableInFomo } from "./phasec/fomoLookup.js";
+export { formatWeeklyReview, resolveAlertChat } from "./phasec/deliver.js";
+export {
+  DEX_BATCH,
+  DEX_REQUESTS_PER_MIN,
+  GECKO_REQUESTS_PER_MIN,
+  dexScreenerTokenUrl,
+  geckoTerminalTokenUrl,
+  MIHAO_MINT,
+  mihaoFixtureQuote,
+  parseDexScreener,
+  parseGeckoTerminal,
+  quoteBackoffMs,
+  quoteUrlAllowed,
+  takeTokens,
+  type MarketQuote,
+  type TokenBucket,
+} from "./phasec/market.js";
+export {
+  SOL_MINT,
+  USDC_MINT,
+  jupiterQuoteUrl,
+  jupiterRatePerMin,
+  curveFallbackBid,
+  fomoFeeUsd,
+  lamportsForUsd,
+  liquidityFromSellImpact,
+  modeledSellQuote,
+  netFromDelayedMarks,
+  parseJupiterQuote,
+  quoteKey,
+  type QuotePurpose,
+  quotedRoundTrip,
+  stageSizeUsd,
+  type SizeBid,
+} from "./phasec/quote.js";
+export {
+  deadCoinObservation,
+  mihaoObservation,
+  secondWaveSignal,
+  tooYoungObservation,
+  type SecondWaveObservation,
+} from "./phasec/secondWave.js";
+export { runPhaseCPass, type PassCoin, type PassPosition } from "./phasec/pass.js";
+export { isFlapMint, stageForCoin } from "./phasec/score.js";
+export type { ScreenRules } from "./phasec/screen.js";
+export {
+  assignExitTreatment,
+  defaultSizePct,
+  parseLockedConfig,
+  protocolBody,
+  protocolFingerprint,
+  type PhaseCConfig,
+} from "./phasec/protocol.js";
+export { classifyJupiterHttp } from "./phasec/quote.js";
+export type { PhaseCStore } from "./phasec/store.js";
+export { etDay, etDayRange, etWeekStart, inQuietHours, nextEtMidnight } from "./phasec/time.js";

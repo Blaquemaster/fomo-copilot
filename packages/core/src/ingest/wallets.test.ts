@@ -9,9 +9,11 @@ import {
   WALLET_SUB_CHUNK,
   WALLET_TRADE_NAMES,
 } from "./programs.js";
+import { historyMarkForBuy } from "./historyMarks.js";
 import {
   applyLossMaturity,
   chunkWallets,
+  mayApplyV3List,
   nextTrackedSet,
   scoreProvenWallets,
   walletBudgetOpen,
@@ -26,6 +28,21 @@ const graduated = (wallet: string, mint: string, side: "buy" | "sell"): EarlyBuy
   mint,
   side,
   graduated: true,
+  delayedMarkUsd: side === "buy" ? 1 : null,
+  delayedMarkSource: side === "buy" ? "jupiter" : null,
+  exitMarkUsd: side === "buy" ? 1.5 : null,
+  boughtAt: new Date("2026-01-01T00:00:00.000Z"),
+});
+
+const loss = (wallet: string, mint: string): EarlyBuy => ({
+  wallet,
+  mint,
+  side: "buy",
+  graduated: false,
+  delayedMarkUsd: 1,
+  delayedMarkSource: "jupiter",
+  exitMarkUsd: 0.5,
+  boughtAt: new Date("2026-01-02T00:00:00.000Z"),
 });
 
 describe("proven wallets", () => {
@@ -40,7 +57,7 @@ describe("proven wallets", () => {
       [
         graduated("winner", "mint-a", "buy"),
         graduated("winner", "mint-b", "buy"),
-        { wallet: "winner", mint: "mint-c", side: "buy", graduated: false, outcomeKnown: true },
+        loss("winner", "mint-c"),
         { wallet: "unknown", mint: "mint-d", side: "buy", graduated: false, outcomeKnown: false },
         { wallet: "unknown", mint: "mint-e", side: "buy", graduated: false, outcomeKnown: false },
         graduated("seller", "mint-a", "buy"),
@@ -53,7 +70,7 @@ describe("proven wallets", () => {
     );
     expect(scored.map((row) => row.address)).toEqual(["winner"]);
     expect(scored[0]).toMatchObject({ earlyEntries: 3, earlyWins: 2, hitRate: 3 / 5 });
-    expect(scored[0]?.derivation).toContain("funding source unknown");
+    expect(scored[0]?.derivation).toContain("cluster_unknown");
   });
 
   it("drops same-slot snipers, same-slot scalps, and very wide bots", () => {
@@ -67,7 +84,7 @@ describe("proven wallets", () => {
           slot: 10,
           createdSlot: 10,
         },
-        { wallet: "snipe", mint: "mint-b", side: "buy", graduated: false, slot: 4, createdSlot: 3 },
+        loss("snipe", "mint-b"),
       ],
       300,
       { minEntries: 1, minLosses: 1 },
@@ -91,7 +108,7 @@ describe("proven wallets", () => {
           slot: 10,
           createdSlot: 10,
         },
-        { wallet: "snipe", mint: "mint-b", side: "buy", graduated: false, slot: 4, createdSlot: 3 },
+        loss("snipe", "mint-b"),
       ],
       300,
       { minEntries: 1, minLosses: 1 },
@@ -99,10 +116,10 @@ describe("proven wallets", () => {
     expect(laterBuy).toEqual([]);
     const scalp = scoreProvenWallets(
       [
-        { wallet: "bot", mint: "mint-a", side: "buy", graduated: true, slot: 8, createdSlot: 1 },
-        { wallet: "bot", mint: "mint-a", side: "sell", graduated: true, slot: 8, createdSlot: 1 },
-        { wallet: "bot", mint: "mint-b", side: "buy", graduated: true, slot: 9, createdSlot: 1 },
-        { wallet: "bot", mint: "mint-c", side: "buy", graduated: false, slot: 12, createdSlot: 1 },
+        { ...graduated("bot", "mint-a", "buy"), slot: 8, createdSlot: 1 },
+        { ...graduated("bot", "mint-a", "sell"), slot: 8, createdSlot: 1 },
+        { ...graduated("bot", "mint-b", "buy"), slot: 9, createdSlot: 1 },
+        { ...loss("bot", "mint-c"), slot: 12, createdSlot: 1 },
       ],
       300,
       { minEntries: 2, minLosses: 1, minShrunkRate: 0 },
@@ -125,12 +142,12 @@ describe("proven wallets", () => {
       [
         graduated("low", "low-w1", "buy"),
         graduated("low", "low-w2", "buy"),
-        { wallet: "low", mint: "low-l1", side: "buy", graduated: false },
-        { wallet: "low", mint: "low-l2", side: "buy", graduated: false },
-        { wallet: "low", mint: "low-l3", side: "buy", graduated: false },
+        loss("low", "low-l1"),
+        loss("low", "low-l2"),
+        loss("low", "low-l3"),
         graduated("kept", "kept-w1", "buy"),
         graduated("kept", "kept-w2", "buy"),
-        { wallet: "kept", mint: "kept-l1", side: "buy", graduated: false },
+        loss("kept", "kept-l1"),
       ],
       300,
       { minEntries: 3, minLosses: 1 },
@@ -142,12 +159,11 @@ describe("proven wallets", () => {
   it("ranks by the shrunk hit rate", () => {
     const rows: EarlyBuy[] = [];
     for (const wallet of ["b-wallet", "a-wallet"]) {
-      rows.push(graduated(wallet, `${wallet}-1`, "buy"), graduated(wallet, `${wallet}-2`, "buy"), {
-        wallet,
-        mint: `${wallet}-loss`,
-        side: "buy",
-        graduated: false,
-      });
+      rows.push(
+        graduated(wallet, `${wallet}-1`, "buy"),
+        graduated(wallet, `${wallet}-2`, "buy"),
+        loss(wallet, `${wallet}-loss`),
+      );
     }
     rows.push(graduated("a-wallet", "a-wallet-3", "buy"));
     const scored = scoreProvenWallets(rows, 2, { minEntries: 2, minLosses: 1 });
@@ -226,6 +242,158 @@ describe("proven wallets", () => {
     });
     expect(refresh.keep).toEqual(["new-wallet"]);
     expect(refresh.replaced).toBe(5);
+  });
+
+  it("drops a graduation that has no delayed mark and a mark worse than the fill", () => {
+    expect(
+      scoreProvenWallets(
+        [
+          {
+            wallet: "grad",
+            mint: "g1",
+            side: "buy",
+            graduated: true,
+            fillPriceUsd: 1,
+          },
+          loss("grad", "g2"),
+        ],
+        10,
+        { minEntries: 1, minLosses: 1 },
+      ),
+    ).toEqual([]);
+    const worse = scoreProvenWallets(
+      [
+        {
+          wallet: "late",
+          mint: "m1",
+          side: "buy",
+          graduated: true,
+          fillPriceUsd: 1,
+          delayedMarkUsd: 2,
+          delayedMarkSource: "jupiter",
+          exitMarkUsd: 1.2,
+          boughtAt: new Date("2026-01-01T00:00:00.000Z"),
+        },
+        loss("late", "m2"),
+      ],
+      10,
+      { minEntries: 1, minLosses: 1 },
+    );
+    expect(worse).toEqual([]);
+    const kept = scoreProvenWallets(
+      [
+        {
+          wallet: "late",
+          mint: "m1",
+          side: "buy",
+          graduated: false,
+          fillPriceUsd: 3,
+          delayedMarkUsd: 1,
+          delayedMarkSource: "curve_modeled",
+          exitMarkUsd: 1.4,
+          boughtAt: new Date("2026-01-01T00:00:00.000Z"),
+        },
+        loss("late", "m2"),
+      ],
+      10,
+      { minEntries: 1, minLosses: 1, minShrunkRate: 0 },
+    );
+    expect(kept.map((row) => row.address)).toEqual(["late"]);
+  });
+
+  it("requires ten entries and drops a wallet that fails the held-out window", () => {
+    const rows: EarlyBuy[] = [];
+    for (let index = 0; index < 8; index += 1) {
+      rows.push({
+        ...graduated("short", `s${index.toString()}`, "buy"),
+        boughtAt: new Date(Date.UTC(2026, 0, index + 1)),
+      });
+    }
+    rows.push({
+      ...loss("short", "sloss"),
+      boughtAt: new Date(Date.UTC(2026, 0, 20)),
+    });
+    expect(scoreProvenWallets(rows, 10)).toEqual([]);
+    const wide: EarlyBuy[] = [];
+    for (let index = 0; index < 8; index += 1) {
+      wide.push({
+        ...graduated("wide", `w${index.toString()}`, "buy"),
+        boughtAt: new Date(Date.UTC(2026, 0, index + 1)),
+      });
+    }
+    wide.push({ ...loss("wide", "hearly"), boughtAt: new Date(Date.UTC(2026, 0, 9)) });
+    wide.push({
+      ...graduated("wide", "wlate", "buy"),
+      boughtAt: new Date(Date.UTC(2026, 0, 20)),
+    });
+    expect(scoreProvenWallets(wide, 10, { minEntries: 2, minLosses: 1, holdOut: true })).toEqual(
+      [],
+    );
+    const creator = scoreProvenWallets(
+      [{ ...graduated("creator", "own", "buy"), creator: true }, loss("creator", "other")],
+      10,
+      { minEntries: 1, minLosses: 1 },
+    );
+    expect(creator).toEqual([]);
+  });
+
+  it("uses a later swap as the delayed mark and keeps an empty v3 list off the reset", () => {
+    const buy = {
+      mint: "coin",
+      wallet: "self",
+      side: "buy" as const,
+      slot: 1_000,
+      blockTimeSec: 1_000_000,
+      solAmount: 1,
+      tokenAmount: 100,
+      signature: "entry",
+    };
+    const near = {
+      ...buy,
+      wallet: "other",
+      blockTimeSec: 1_000_090,
+      solAmount: 2,
+      tokenAmount: 100,
+      signature: "near",
+    };
+    const own = { ...near, wallet: "self", signature: "entry" };
+    const exit = {
+      ...near,
+      blockTimeSec: 1_000_000 + 2 * 60 * 60,
+      solAmount: 3,
+      tokenAmount: 100,
+      signature: "exit",
+    };
+    const mark = historyMarkForBuy({ buy, swaps: [own, near, exit], horizonSec: 2 * 60 * 60 });
+    expect(mark?.delayedMarkUsd).toBe(0.02);
+    expect(mark?.delayedMarkSource).toBe("history_swap");
+    expect(historyMarkForBuy({ buy, swaps: [own], horizonSec: 7200 })).toBeNull();
+    expect(mayApplyV3List({ paperOpen: false, rankedCount: 0, testClosed: false })).toBe(false);
+    expect(mayApplyV3List({ paperOpen: true, rankedCount: 4, testClosed: true })).toBe(false);
+    expect(mayApplyV3List({ paperOpen: false, rankedCount: 4, testClosed: false })).toBe(false);
+    expect(mayApplyV3List({ paperOpen: false, rankedCount: 4, testClosed: true })).toBe(true);
+    const rows: EarlyBuy[] = [];
+    for (let index = 0; index < 8; index += 1) {
+      rows.push({
+        ...graduated("hold", `h${index.toString()}`, "buy"),
+        boughtAt: new Date(Date.UTC(2026, 0, index + 1)),
+      });
+    }
+    rows.push({ ...loss("hold", "hloss"), boughtAt: new Date(Date.UTC(2026, 0, 9)) });
+    rows.push({ ...loss("hold", "hloss2"), boughtAt: new Date(Date.UTC(2026, 0, 10)) });
+    rows.push({
+      ...graduated("hold", "hout-win", "buy"),
+      boughtAt: new Date(Date.UTC(2026, 0, 28)),
+    });
+    rows.push({ ...loss("hold", "hout-loss"), boughtAt: new Date(Date.UTC(2026, 0, 29)) });
+    const passed = scoreProvenWallets(rows, 10, {
+      minEntries: 10,
+      holdOut: true,
+      holdOutMinEntries: 2,
+      minLosses: 1,
+      minShrunkRate: 0.5,
+    });
+    expect(passed.map((row) => row.address)).toEqual(["hold"]);
   });
 
   it("returns nothing when there is no stored early buy", () => {

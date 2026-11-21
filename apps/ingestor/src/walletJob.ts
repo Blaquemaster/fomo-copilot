@@ -2,12 +2,15 @@ import {
   MICROS_PER_CREDIT,
   WALLET_BACKFILL_FEATURE,
   allowanceCredits,
+  applyHistoryMarks,
   collectEarlyBuyers,
   earlyBuyerHistoryParams,
   SCORING_VERSION,
   applyLossMaturity,
+  mayApplyV3List,
   nextTrackedSet,
   scoreProvenWallets,
+  walletLookback,
   utcMonth,
   walletCreditCapMicros,
   type Env,
@@ -134,35 +137,88 @@ async function runWalletPass(input: {
     return "retry";
   }
   const maxWallets = input.env.WALLET_MAX_WALLETS ?? 300;
-  const ranked = scoreProvenWallets(
+  await input.repo.requeueMarkBackfillOnce();
+  const marked = applyHistoryMarks(
     applyLossMaturity(await input.repo.earlyBuys(), new Date(), {
       pumpMs: (input.env.WALLET_LOSS_AGE_MINUTES ?? 120) * 60 * 1000,
       meteoraMs: (input.env.WALLET_LOSS_AGE_METEORA_MINUTES ?? 60) * 60 * 1000,
     }),
-    maxWallets,
-    {
-      minEntries: input.env.WALLET_MIN_ENTRIES ?? 5,
-      minLosses: input.env.WALLET_MIN_LOSSES ?? 1,
-      minShrunkRate: input.env.WALLET_MIN_SHRUNK_RATE ?? 0.6,
-      botMaxEntries: input.env.WALLET_BOT_MAX_ENTRIES ?? 80,
-    },
   );
-  const active = await input.repo.activeTrackedWallets();
-  const storedVersion = await input.repo.activeScoringVersion();
-  const reset = storedVersion !== null && storedVersion !== SCORING_VERSION;
-  const refresh = nextTrackedSet({
-    ranked,
-    active,
-    maxWallets,
-    maxChurnPct: input.env.WALLET_CHURN_PCT ?? 20,
-    reset,
+  await input.repo.saveHistoryMarks(
+    marked.flatMap((row) => {
+      if (
+        row.side !== "buy" ||
+        !row.signature ||
+        row.delayedMarkUsd == null ||
+        row.exitMarkUsd == null ||
+        !(row.delayedMarkAt instanceof Date) ||
+        !(row.boughtAt instanceof Date)
+      ) {
+        return [];
+      }
+      return [
+        {
+          signature: row.signature,
+          wallet: row.wallet,
+          mint: row.mint,
+          delayedMarkUsd: row.delayedMarkUsd,
+          delayedMarkAt: row.delayedMarkAt,
+          exitMarkUsd: row.exitMarkUsd,
+          boughtAt: row.boughtAt,
+        },
+      ];
+    }),
+  );
+  const ranked = scoreProvenWallets(marked, maxWallets, {
+    minEntries: input.env.WALLET_MIN_ENTRIES ?? 10,
+    holdOut: true,
+    holdOutMinEntries: 2,
+    cutoff: input.env.WALLET_SCORE_CUTOFF ? new Date(input.env.WALLET_SCORE_CUTOFF) : null,
+    minLosses: input.env.WALLET_MIN_LOSSES ?? 1,
+    minShrunkRate: input.env.WALLET_MIN_SHRUNK_RATE ?? 0.6,
+    botMaxEntries: input.env.WALLET_BOT_MAX_ENTRIES ?? 80,
   });
-  if (reset || refresh.upsert.length > 0 || refresh.replaced > 0) {
-    await input.repo.applyWalletRefresh(
-      { keep: refresh.keep, upsert: refresh.upsert, scoringVersion: SCORING_VERSION },
-      new Date(),
+  const look = walletLookback(marked);
+  await input.repo.saveScoreShadow({
+    rankedCount: ranked.length,
+    lookbackStart: look.lookbackStart,
+    lookbackEnd: look.lookbackEnd,
+    cutoff: look.cutoff,
+    entryCount: look.entryCount,
+    scoringVersion: SCORING_VERSION,
+  });
+  const active = await input.repo.activeTrackedWallets();
+  const paperOpen = await input.repo.paperTestOpen();
+  const testClosed = await input.repo.paperTestClosed();
+  let kept = active.length;
+  let replaced = 0;
+  let added = 0;
+  if (!mayApplyV3List({ paperOpen, rankedCount: ranked.length, testClosed })) {
+    input.logger.info(
+      { wallets: active.length, shadowRanked: ranked.length, paperOpen, testClosed },
+      "v3 score is a dry run; the tracked list stays as it is",
     );
-    input.onWallets?.(refresh.keep);
+    input.onWallets?.(active);
+  } else {
+    const storedVersion = await input.repo.activeScoringVersion();
+    const reset = storedVersion !== null && storedVersion !== SCORING_VERSION;
+    const refresh = nextTrackedSet({
+      ranked,
+      active,
+      maxWallets,
+      maxChurnPct: input.env.WALLET_CHURN_PCT ?? 20,
+      reset,
+    });
+    if (reset || refresh.upsert.length > 0 || refresh.replaced > 0) {
+      await input.repo.applyWalletRefresh(
+        { keep: refresh.keep, upsert: refresh.upsert, scoringVersion: SCORING_VERSION },
+        new Date(),
+      );
+      input.onWallets?.(refresh.keep);
+    }
+    kept = refresh.keep.length;
+    replaced = refresh.replaced;
+    added = refresh.added;
   }
   await input.repo.markWalletJob(new Date());
   input.logger.info(
@@ -171,9 +227,9 @@ async function runWalletPass(input: {
       buyers: result.buyers,
       mintsDone: result.mintsDone,
       stopped: result.stopped,
-      wallets: refresh.keep.length,
-      replaced: refresh.replaced,
-      added: refresh.added,
+      wallets: kept,
+      replaced,
+      added,
     },
     "wallet backfill and refresh",
   );

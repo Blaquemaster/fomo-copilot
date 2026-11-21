@@ -1,3 +1,4 @@
+import { netFromDelayedMarks } from "../phasec/quote.js";
 import {
   QUOTE_MINTS,
   WALLET_SUB_CHUNK,
@@ -7,14 +8,13 @@ import {
 } from "./programs.js";
 
 /**
- * Registered before the first build, and before any Phase D window exists.
- * A winner is a mint that later graduated (pump migrate, LaunchLab migrate, or
- * DBC migration). An early buy is a non-creator buy already stored in pump_trade,
- * which only keeps the short window after create. Lookback is all of that stored
- * history. The list must be frozen before Phase D and is not tuned on a paper window.
+ * A win is a delayed mark to an exit mark after the FOMO fee.
+ * Graduation is not a price and is not a win. A missing mark is dropped.
+ * The live v2 list stays in place until a paper test has closed and a v3
+ * dry-run against stored history marks is non-empty.
  */
 /** Bump when the scoring rules change enough that the live list must be rebuilt. */
-export const SCORING_VERSION = 2;
+export const SCORING_VERSION = 3;
 
 export const LOSS_AGE_MS = {
   pump: 2 * 60 * 60 * 1000,
@@ -23,16 +23,16 @@ export const LOSS_AGE_MS = {
 } as const;
 
 export const PROVEN_WALLET_RULE = {
-  minEntries: 5,
+  minEntries: 10,
   minLosses: 1,
   botMaxEntries: 80,
   /** Beta(1, 1). Shrunk rate is (wins + 1) / (entries + 2). */
   minShrunkRate: 0.6,
   priorWins: 1,
   priorLosses: 1,
-  lookback: "all stored history before Phase D",
-  earlyWindow: "non-creator buys on coins whose outcome is known",
-  winner: "mint with a stored graduation",
+  lookback: "stored buys with a delayed mark, split before and after the cutoff",
+  earlyWindow: "non-creator buys with a priced delayed entry and a priced exit",
+  winner: "delayed mark to exit mark is profitable after the FOMO fee; graduation is not a win",
 } as const;
 
 export interface EarlyBuy {
@@ -46,6 +46,19 @@ export interface EarlyBuy {
   createdSlot?: number | null;
   createdAt?: Date | string | null;
   venue?: string | null;
+  /** Wallet's own fill. Not the follower entry. */
+  fillPriceUsd?: number | null;
+  solAmount?: number | null;
+  tokenAmount?: number | null;
+  blockTimeSec?: number | null;
+  signature?: string | null;
+  delayedMarkUsd?: number | null;
+  delayedMarkAt?: Date | null;
+  delayedMarkSource?: "jupiter" | "curve_modeled" | "history_swap" | null;
+  exitMarkUsd?: number | null;
+  boughtAt?: Date | string | null;
+  creator?: boolean;
+  funder?: string | null;
 }
 
 export interface ScoreOptions {
@@ -55,6 +68,12 @@ export interface ScoreOptions {
   minShrunkRate?: number;
   priorWins?: number;
   priorLosses?: number;
+  /** When set, buys at or after this time are the out-of-sample window. */
+  cutoff?: Date | null;
+  /** Default true on the live path. Tests of other rules can turn it off. */
+  holdOut?: boolean;
+  /** Out-of-sample marked-trade floor. The in-sample window still uses minEntries. */
+  holdOutMinEntries?: number;
 }
 
 export interface ScoredWallet {
@@ -87,6 +106,7 @@ export function scoreProvenWallets(
   const minShrunkRate = options.minShrunkRate ?? PROVEN_WALLET_RULE.minShrunkRate;
   const priorWins = options.priorWins ?? PROVEN_WALLET_RULE.priorWins;
   const priorLosses = options.priorLosses ?? PROVEN_WALLET_RULE.priorLosses;
+  const holdOut = options.holdOut ?? false;
   const byWallet = new Map<
     string,
     {
@@ -111,19 +131,16 @@ export function scoreProvenWallets(
   for (const [address, bucket] of byWallet) {
     if (bucket.buys.size > botMaxEntries) continue;
     const counted = [...bucket.buys.values()].filter(
-      (row) => !isSniper(row) && !isScalp(row, bucket.sells),
+      (row) => !isSniper(row) && !isScalp(row, bucket.sells) && row.creator !== true,
     );
-    const earlyEntries = counted.length;
+    const priced = counted.filter((row) => markedNet(row) !== null);
+    const sample = holdOut ? inSample(priced, options.cutoff ?? null) : priced;
+    const earlyEntries = sample.length;
     if (earlyEntries < minEntries) continue;
-    const earlyWins = counted.filter((row) => bucket.graduated.has(row.mint)).length;
+    const earlyWins = sample.filter((row) => (markedNet(row) ?? 0) > 0).length;
     const earlyLosses = earlyEntries - earlyWins;
     if (earlyWins < 1 || earlyLosses < minLosses) continue;
-    const winnerSells = [...bucket.sells.values()].filter((row) => {
-      const buy = bucket.buys.get(row.mint);
-      if (buy && isScalp(buy, bucket.sells)) return false;
-      return bucket.graduated.has(row.mint);
-    }).length;
-    if (winnerSells >= earlyWins) continue;
+    if (holdOut && !outOfSamplePasses(priced, options.cutoff ?? null, options)) continue;
     const snipes = [...bucket.buys.values()].filter((row) => isSniper(row)).length;
     const scalps = [...bucket.buys.values()].filter((row) => isScalp(row, bucket.sells)).length;
     if (snipes > earlyEntries || scalps > earlyEntries) continue;
@@ -134,8 +151,7 @@ export function scoreProvenWallets(
       earlyEntries,
       earlyWins,
       hitRate,
-      derivation:
-        "shrunk hit rate on covered coins, wins and losers; same-slot snipes and same-slot round trips are left out; funding source unknown so each address counts once",
+      derivation: derivationFor(address, rows, options.cutoff ?? null, holdOut),
     });
   }
   scored.sort((left, right) => {
@@ -143,7 +159,160 @@ export function scoreProvenWallets(
     if (right.earlyWins !== left.earlyWins) return right.earlyWins - left.earlyWins;
     return left.address < right.address ? -1 : 1;
   });
-  return scored.slice(0, Math.max(0, maxWallets));
+  return excludeFundingClusters(scored, rows).slice(0, Math.max(0, maxWallets));
+}
+
+function markedNet(row: EarlyBuy): number | null {
+  if (row.delayedMarkUsd == null || row.exitMarkUsd == null) return null;
+  return netFromDelayedMarks(row.delayedMarkUsd, row.exitMarkUsd);
+}
+
+function buyTime(row: EarlyBuy): number | null {
+  const value = row.boughtAt;
+  if (value instanceof Date) return value.getTime();
+  if (typeof value === "string") {
+    const parsed = new Date(value).getTime();
+    return Number.isNaN(parsed) ? null : parsed;
+  }
+  return null;
+}
+
+function cutoffMs(rows: readonly EarlyBuy[], explicit: Date | null): number | null {
+  if (explicit) return explicit.getTime();
+  const times = rows.map(buyTime).filter((value): value is number => value !== null);
+  if (times.length < 2) return null;
+  const start = Math.min(...times);
+  const end = Math.max(...times);
+  if (end <= start) return null;
+  return start + 0.8 * (end - start);
+}
+
+function inSample(rows: readonly EarlyBuy[], explicit: Date | null): EarlyBuy[] {
+  const cut = cutoffMs(rows, explicit);
+  if (cut === null) return [...rows];
+  return rows.filter((row) => {
+    const time = buyTime(row);
+    return time !== null && time < cut;
+  });
+}
+
+function windowPasses(rows: readonly EarlyBuy[], options: ScoreOptions): boolean {
+  const minEntries = options.minEntries ?? PROVEN_WALLET_RULE.minEntries;
+  const minLosses = options.minLosses ?? PROVEN_WALLET_RULE.minLosses;
+  const minShrunkRate = options.minShrunkRate ?? PROVEN_WALLET_RULE.minShrunkRate;
+  const priorWins = options.priorWins ?? PROVEN_WALLET_RULE.priorWins;
+  const priorLosses = options.priorLosses ?? PROVEN_WALLET_RULE.priorLosses;
+  if (rows.length < minEntries) return false;
+  const wins = rows.filter((row) => (markedNet(row) ?? 0) > 0).length;
+  const losses = rows.length - wins;
+  if (wins < 1 || losses < minLosses) return false;
+  return shrunkHitRate(wins, rows.length, priorWins, priorLosses) >= minShrunkRate;
+}
+
+function outOfSamplePasses(
+  rows: readonly EarlyBuy[],
+  explicit: Date | null,
+  options: ScoreOptions,
+): boolean {
+  const cut = cutoffMs(rows, explicit);
+  if (cut === null) return false;
+  const held = rows.filter((row) => {
+    const time = buyTime(row);
+    return time !== null && time >= cut;
+  });
+  return windowPasses(held, { ...options, minEntries: options.holdOutMinEntries ?? 2 });
+}
+
+/** v3 may replace the tracked list only after the paper test has closed and the dry-run is non-empty. */
+export function mayApplyV3List(input: {
+  paperOpen: boolean;
+  rankedCount: number;
+  testClosed: boolean;
+}): boolean {
+  if (input.paperOpen) return false;
+  if (input.rankedCount <= 0) return false;
+  return input.testClosed;
+}
+
+function derivationFor(
+  address: string,
+  rows: readonly EarlyBuy[],
+  cutoff: Date | null,
+  holdOut: boolean,
+): string {
+  const mine = rows.filter((row) => row.wallet === address && row.side === "buy");
+  const times = mine.map(buyTime).filter((value): value is number => value !== null);
+  const start = times.length === 0 ? "none" : new Date(Math.min(...times)).toISOString();
+  const end = times.length === 0 ? "none" : new Date(Math.max(...times)).toISOString();
+  const cut = cutoff
+    ? cutoff.toISOString()
+    : (() => {
+        const ms = cutoffMs(mine, null);
+        return ms === null ? "none" : new Date(ms).toISOString();
+      })();
+  const funderKnown = mine.some((row) => row.funder);
+  return [
+    `scoring v${SCORING_VERSION.toString()}`,
+    `lookback ${start} to ${end}`,
+    `entries ${mine.length.toString()}`,
+    `cutoff ${holdOut ? cut : "off"}`,
+    funderKnown ? "funding cluster checked" : "cluster_unknown",
+    "delayed mark is the entry; graduation is not a win",
+  ].join("; ");
+}
+
+function excludeFundingClusters(
+  scored: readonly ScoredWallet[],
+  rows: readonly EarlyBuy[],
+): ScoredWallet[] {
+  const funder = new Map<string, string | null>();
+  const first = new Map<string, number>();
+  for (const row of rows) {
+    if (row.side !== "buy") continue;
+    if (!funder.has(row.wallet)) funder.set(row.wallet, row.funder ?? null);
+    const time = buyTime(row);
+    if (time === null) continue;
+    const previous = first.get(row.wallet);
+    if (previous === undefined || time < previous) first.set(row.wallet, time);
+  }
+  const drop = new Set<string>();
+  const kept = scored.map((row) => row.address);
+  for (const address of kept) {
+    const source = funder.get(address);
+    if (!source) continue;
+    const siblings = kept.filter((other) => {
+      if (other === address || drop.has(other)) return false;
+      const otherSource = funder.get(other);
+      return other === source || otherSource === source || otherSource === address;
+    });
+    for (const other of siblings) {
+      const left = first.get(address) ?? Number.POSITIVE_INFINITY;
+      const right = first.get(other) ?? Number.POSITIVE_INFINITY;
+      drop.add(left <= right ? other : address);
+    }
+  }
+  return scored.filter((row) => !drop.has(row.address));
+}
+
+export function walletLookback(rows: readonly EarlyBuy[]): {
+  scoringVersion: number;
+  lookbackStart: string | null;
+  lookbackEnd: string | null;
+  entryCount: number;
+  cutoff: string | null;
+  minEntries: number;
+} {
+  const buys = rows.filter((row) => row.side === "buy");
+  const times = buys.map(buyTime).filter((value): value is number => value !== null);
+  const cut = cutoffMs(buys, null);
+  return {
+    scoringVersion: SCORING_VERSION,
+    lookbackStart: times.length === 0 ? null : new Date(Math.min(...times)).toISOString(),
+    lookbackEnd: times.length === 0 ? null : new Date(Math.max(...times)).toISOString(),
+    entryCount: buys.length,
+    cutoff: cut === null ? null : new Date(cut).toISOString(),
+    minEntries: PROVEN_WALLET_RULE.minEntries,
+  };
 }
 
 function keepEarliest(bucket: Map<string, EarlyBuy>, row: EarlyBuy): void {

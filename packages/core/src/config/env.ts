@@ -96,6 +96,44 @@ export const envSchema = z.object({
   WALLET_BOT_MAX_ENTRIES: z.coerce.number().int().min(1).max(100_000).optional(),
   /** Consecutive history failures before a mint is skipped. Default 5. */
   WALLET_BACKFILL_FAIL_LIMIT: z.coerce.number().int().min(1).max(100).optional(),
+  /** Dollar bankroll. Unset means alerts show the size percent only. */
+  BANKROLL: z.coerce.number().positive().max(1_000_000_000).optional(),
+  /** Paper bankroll in USD. Deploy default 1000. */
+  PAPER_BANKROLL_USD: z.coerce.number().positive().max(1_000_000_000).optional(),
+  SIZE_TRENCH_PCT: z.coerce.number().min(0).max(100).optional(),
+  SIZE_NEAR_GRADUATION_PCT: z.coerce.number().min(0).max(100).optional(),
+  SIZE_POST_GRADUATION_PCT: z.coerce.number().min(0).max(100).optional(),
+  SIZE_SECOND_WAVE_PCT: z.coerce.number().min(0).max(100).optional(),
+  /** Paper loss, as a percent of bankroll, that pauses alerts until the next ET day. Default 3. */
+  DAILY_LOSS_CUTOFF_PCT: z.coerce.number().min(0).max(100).optional(),
+  MAX_CONCURRENT_POSITIONS: z.coerce.number().int().min(1).max(100).optional(),
+  QUIET_HOURS: z
+    .string()
+    .regex(/^([01]\d|2[0-3]):[0-5]\d-([01]\d|2[0-3]):[0-5]\d$/)
+    .optional(),
+  QUIET_POST_GRAD_MIN_STRENGTH: z.coerce.number().min(0).max(1).optional(),
+  QUIET_POST_GRAD_MIN_SIZE_PCT: z.coerce.number().min(0).max(100).optional(),
+  /** test until go-live. admin is the switch that may use the admin chat. */
+  ALERT_DESTINATION: z.enum(["test", "admin"]).optional(),
+  TELEGRAM_TEST_CHAT_ID: z
+    .string()
+    .trim()
+    .regex(/^-?[1-9]\d*$/)
+    .optional(),
+  /** Minutes between DexScreener and GeckoTerminal polls. Default 10, allowed 5 to 15. */
+  MARKET_POLL_MINUTES: z.coerce.number().int().min(5).max(15).optional(),
+  SECOND_WAVE_SOURCE: z.enum(["live", "fixture"]).optional(),
+  /** Optional. Raises the Jupiter quote budget from 30 to 60 requests a minute. */
+  JUPITER_API_KEY: z.string().min(8).max(256).optional(),
+  WALLET_TIER_PROMOTE_RATE: z.coerce.number().min(0).max(1).optional(),
+  EXIT_STOP_PCT: z.coerce.number().min(0).max(100).optional(),
+  PAPER_MIN_ALERTS: z.coerce.number().int().min(1).max(1_000_000).optional(),
+  PAPER_MAX_DRAWDOWN_PCT: z.coerce.number().min(0).max(100).optional(),
+  PAPER_WINDOW_DAYS: z.coerce.number().int().min(1).max(365).optional(),
+  PAPER_ENTRY_DELAY_SEC: z.coerce.number().int().min(0).max(86_400).optional(),
+  FOMO_FEE_SCHEDULE: z.enum(["solana_lowest_fee", "solana_other"]).optional(),
+  WALLET_SCORE_CUTOFF: z.string().datetime().optional(),
+  SECOND_WAVE_MIN_CHANGE_PCT: z.coerce.number().min(0).max(10_000).optional(),
 });
 
 export type Env = z.infer<typeof envSchema>;
@@ -164,6 +202,7 @@ export function loadEnv(source: NodeJS.ProcessEnv = process.env): Env {
 /** Values that must never appear in logs or crash alerts. Longest first. */
 export function secretValuesFromEnv(env: Env): string[] {
   const values = [env.TELEGRAM_BOT_TOKEN, env.HELIUS_API_KEY, env.POSTGRES_PASSWORD];
+  if (env.JUPITER_API_KEY) values.push(env.JUPITER_API_KEY);
   if (env.BSC_WSS_URL && !env.BSC_WSS_URL.includes("bsc-rpc.publicnode.com")) {
     values.push(env.BSC_WSS_URL);
   }

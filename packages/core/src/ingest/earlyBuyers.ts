@@ -26,6 +26,10 @@ export interface EarlyBuyerRow {
   side: "buy" | "sell";
   venue: string;
   isCreator: boolean;
+  solAmount?: number | null;
+  tokenAmount?: number | null;
+  blockTimeSec?: number | null;
+  funder?: string | null;
 }
 
 export interface BackfillTarget {
@@ -117,9 +121,13 @@ export function earlyBuyersFromHistory(
     (typeof record["signature"] === "string" ? record["signature"] : null);
   const slot = typeof record["slot"] === "number" ? record["slot"] : 0;
   if (signature === null) return [];
+  const blockTimeSec = typeof record["blockTime"] === "number" ? record["blockTime"] : null;
   const version = transactionVersion(record["version"] ?? transaction?.["version"]);
   if (version === "unsupported") return [];
   const decoded = decodeRpcTransaction(record, signature);
+  const message = asRecord(transaction?.["message"]);
+  const meta = asRecord(record["meta"]);
+  const keys = accountKeys(message, meta, version);
   const rows: EarlyBuyerRow[] = [];
   for (const observation of decoded.observations) {
     if (observation.mint !== target.mint || observation.creatorWallet === null) continue;
@@ -134,11 +142,10 @@ export function earlyBuyersFromHistory(
       side,
       venue: target.venue,
       isCreator: observation.creatorWallet === target.creator,
+      blockTimeSec,
+      ...swapSize(meta, keys, observation.creatorWallet, target.mint),
     });
   }
-  const message = asRecord(transaction?.["message"]);
-  const meta = asRecord(record["meta"]);
-  const keys = accountKeys(message, meta, version);
   for (const instruction of instructionsOf(message, meta, keys)) {
     const found = venueBuyer(instruction, target, meta, keys);
     if (found === null) continue;
@@ -151,9 +158,32 @@ export function earlyBuyersFromHistory(
       side: found.side,
       venue: target.venue,
       isCreator: found.wallet === target.creator,
+      blockTimeSec,
+      ...swapSize(meta, keys, found.wallet, target.mint),
     });
   }
   return rows.filter((row) => !row.isCreator);
+}
+
+function swapSize(
+  meta: Record<string, unknown> | null,
+  keys: readonly string[],
+  wallet: string,
+  mint: string,
+): { solAmount: number | null; tokenAmount: number | null } {
+  const index = keys.indexOf(wallet);
+  const pre = Array.isArray(meta?.["preBalances"]) ? meta["preBalances"][index] : null;
+  const post = Array.isArray(meta?.["postBalances"]) ? meta["postBalances"][index] : null;
+  const sol =
+    typeof pre === "number" && typeof post === "number"
+      ? Math.abs(post - pre) / 1_000_000_000
+      : null;
+  const delta = tokenDelta(meta, wallet, mint);
+  const token = delta === null ? null : Number(delta < 0n ? -delta : delta);
+  return {
+    solAmount: sol !== null && sol > 0 ? sol : null,
+    tokenAmount: token !== null && token > 0 ? token : null,
+  };
 }
 
 function tradeSide(kind: string): "buy" | "sell" | null {
