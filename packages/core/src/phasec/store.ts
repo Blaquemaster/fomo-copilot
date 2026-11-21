@@ -117,4 +117,21 @@ export interface PhaseCStore {
   saveWeekly(week: string, body: string, at: Date): Promise<void>;
   resolvedReturns(): Promise<ResolvedReturn[]>;
   graduatedMints(limit: number): Promise<string[]>;
+  saveAutobuyIntents(
+    rows: readonly {
+      kind: "entry" | "exit";
+      mint: string;
+      arm: string;
+      stage: string;
+      sizeUsd: number | null;
+      quotePrice: number | null;
+      expectedOut: string | null;
+      slippageBps: number | null;
+      reason: string;
+      simulated: "ok" | "err" | "skipped";
+    }[],
+    at: Date,
+  ): Promise<void>;
+  autobuySpentSince(start: Date): Promise<number>;
+  autobuyReview(): Promise<{ entries: number; exits: number }>;
 }

@@ -228,6 +228,18 @@ export { formatIngestStatus, formatSpotCheck } from "./ingest/statusText.js";
 export { IngestRepository, createPool, migrate } from "./db/ingest.js";
 export { PhaseCRepository } from "./db/phasec.js";
 export { phaseCConfigFromEnv, screenRulesFromThresholds } from "./phasec/config.js";
+export {
+  admitAutobuy,
+  autobuyLimits,
+  buildJupiterSwapTx,
+  JUPITER_SWAP_URL,
+  noopSigner,
+  resolveAutobuyMode,
+  simulateSwapTransaction,
+  type AutobuyIntent,
+  type AutobuyMode,
+  type Signer,
+} from "./autobuy/run.js";
 export { lookupTradableInFomo } from "./phasec/fomoLookup.js";
 export { formatWeeklyReview, resolveAlertChat } from "./phasec/deliver.js";
 export {

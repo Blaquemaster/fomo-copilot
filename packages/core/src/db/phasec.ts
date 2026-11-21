@@ -759,4 +759,62 @@ export class PhaseCRepository implements PhaseCStore {
     );
     return result.rows.map((row) => row.mint);
   }
+
+  async saveAutobuyIntents(
+    rows: readonly {
+      kind: "entry" | "exit";
+      mint: string;
+      arm: string;
+      stage: string;
+      sizeUsd: number | null;
+      quotePrice: number | null;
+      expectedOut: string | null;
+      slippageBps: number | null;
+      reason: string;
+      simulated: "ok" | "err" | "skipped";
+    }[],
+    at: Date,
+  ): Promise<void> {
+    for (const row of rows) {
+      await this.pool.query(
+        `insert into autobuy_intent
+          (kind, mint, arm, stage, size_usd, quote_price, expected_out, slippage_bps, reason, simulated, created_at)
+         values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)`,
+        [
+          row.kind,
+          row.mint,
+          row.arm,
+          row.stage,
+          row.sizeUsd,
+          row.quotePrice,
+          row.expectedOut,
+          row.slippageBps,
+          row.reason,
+          row.simulated,
+          at.toISOString(),
+        ],
+      );
+    }
+  }
+
+  async autobuySpentSince(start: Date): Promise<number> {
+    const result = await this.pool.query<{ spent: string | null }>(
+      `select coalesce(sum(size_usd), 0)::text as spent from autobuy_intent
+       where kind = 'entry' and reason = 'dry_run' and created_at >= $1`,
+      [start.toISOString()],
+    );
+    return Number(result.rows[0]?.spent ?? 0);
+  }
+
+  async autobuyReview(): Promise<{ entries: number; exits: number }> {
+    const result = await this.pool.query<{ kind: string; count: string }>(
+      "select kind, count(*)::text as count from autobuy_intent group by kind",
+    );
+    const counts = { entries: 0, exits: 0 };
+    for (const row of result.rows) {
+      if (row.kind === "entry") counts.entries = Number(row.count);
+      if (row.kind === "exit") counts.exits = Number(row.count);
+    }
+    return counts;
+  }
 }
