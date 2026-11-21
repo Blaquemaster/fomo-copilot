@@ -208,6 +208,7 @@ export function scaleOutRoundTrip(
 /**
  * Constant-product sell of a token amount against virtual reserves.
  * Used only when Jupiter has no route and the coin is still on a curve.
+ * For Meteora DBC this is a rough reserve approximation. The pool prices from sqrt_price.
  */
 export function modeledSellQuote(input: {
   virtualSolLamports: bigint;
@@ -265,4 +266,39 @@ export function netFromDelayedMarks(
   const grossExit = notional * (exitMarkUsd / delayedMarkUsd);
   const proceeds = grossExit - fomoFeeUsd(grossExit, schedule) - fomoFeeUsd(notional, schedule);
   return proceeds / notional - 1;
+}
+
+/** Jupiter no_route on a curve coin becomes a labeled constant-product sell. Graduated coins stay Jupiter. */
+export function curveFallbackBid(input: {
+  bid: SizeBid | undefined;
+  graduated: boolean;
+  virtualSolLamports: bigint | null;
+  virtualTokenRaw: bigint | null;
+  amountInRaw: string;
+  solPriceUsd: number;
+  sizeUsd: number;
+}): SizeBid | undefined {
+  if (input.graduated || input.bid?.ok) return input.bid;
+  if (input.bid && input.bid.reason !== "no_route") return input.bid;
+  if (
+    input.virtualSolLamports === null ||
+    input.virtualTokenRaw === null ||
+    !(input.solPriceUsd > 0)
+  ) {
+    return input.bid;
+  }
+  let amount: bigint;
+  try {
+    amount = BigInt(input.amountInRaw);
+  } catch {
+    return input.bid;
+  }
+  const modeled = modeledSellQuote({
+    virtualSolLamports: input.virtualSolLamports,
+    virtualTokenRaw: input.virtualTokenRaw,
+    amountInRaw: amount,
+    solPriceUsd: input.solPriceUsd,
+    sizeUsd: input.sizeUsd,
+  });
+  return modeled.ok ? modeled : input.bid;
 }

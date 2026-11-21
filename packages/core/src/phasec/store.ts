@@ -85,6 +85,15 @@ export interface PhaseCStore {
   voidPaperWindow(at: Date): Promise<void>;
   clearProtocol(): Promise<void>;
   tradableCounts(): Promise<{ yes: number; no: number; unknown: number }>;
+  scoreShadow(): Promise<{
+    rankedCount: number;
+    lookbackStart: string | null;
+    lookbackEnd: string | null;
+    cutoff: string | null;
+    entryCount: number;
+    scoringVersion: number;
+  } | null>;
+  markPaperClosed(): Promise<void>;
   closePosition(input: {
     id: string;
     quote: number;

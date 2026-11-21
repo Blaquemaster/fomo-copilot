@@ -8,11 +8,10 @@ import {
 } from "./programs.js";
 
 /**
- * Registered before the first build, and before any Phase D window exists.
- * A winner is a mint that later graduated (pump migrate, LaunchLab migrate, or
- * DBC migration). An early buy is a non-creator buy already stored in pump_trade,
- * which only keeps the short window after create. Lookback is all of that stored
- * history. The list must be frozen before Phase D and is not tuned on a paper window.
+ * A win is a delayed mark to an exit mark after the FOMO fee.
+ * Graduation is not a price and is not a win. A missing mark is dropped.
+ * The live v2 list stays in place until a paper test has closed and a v3
+ * dry-run against stored history marks is non-empty.
  */
 /** Bump when the scoring rules change enough that the live list must be rebuilt. */
 export const SCORING_VERSION = 3;
@@ -49,8 +48,13 @@ export interface EarlyBuy {
   venue?: string | null;
   /** Wallet's own fill. Not the follower entry. */
   fillPriceUsd?: number | null;
+  solAmount?: number | null;
+  tokenAmount?: number | null;
+  blockTimeSec?: number | null;
+  signature?: string | null;
   delayedMarkUsd?: number | null;
-  delayedMarkSource?: "jupiter" | "curve_modeled" | null;
+  delayedMarkAt?: Date | null;
+  delayedMarkSource?: "jupiter" | "curve_modeled" | "history_swap" | null;
   exitMarkUsd?: number | null;
   boughtAt?: Date | string | null;
   creator?: boolean;
@@ -68,6 +72,8 @@ export interface ScoreOptions {
   cutoff?: Date | null;
   /** Default true on the live path. Tests of other rules can turn it off. */
   holdOut?: boolean;
+  /** Out-of-sample marked-trade floor. The in-sample window still uses minEntries. */
+  holdOutMinEntries?: number;
 }
 
 export interface ScoredWallet {
@@ -135,12 +141,6 @@ export function scoreProvenWallets(
     const earlyLosses = earlyEntries - earlyWins;
     if (earlyWins < 1 || earlyLosses < minLosses) continue;
     if (holdOut && !outOfSamplePasses(priced, options.cutoff ?? null, options)) continue;
-    const winnerSells = [...bucket.sells.values()].filter((row) => {
-      const buy = bucket.buys.get(row.mint);
-      if (buy && isScalp(buy, bucket.sells)) return false;
-      return bucket.graduated.has(row.mint);
-    }).length;
-    if (winnerSells >= earlyWins) continue;
     const snipes = [...bucket.buys.values()].filter((row) => isSniper(row)).length;
     const scalps = [...bucket.buys.values()].filter((row) => isScalp(row, bucket.sells)).length;
     if (snipes > earlyEntries || scalps > earlyEntries) continue;
@@ -220,7 +220,18 @@ function outOfSamplePasses(
     const time = buyTime(row);
     return time !== null && time >= cut;
   });
-  return windowPasses(held, options);
+  return windowPasses(held, { ...options, minEntries: options.holdOutMinEntries ?? 2 });
+}
+
+/** v3 may replace the tracked list only after the paper test has closed and the dry-run is non-empty. */
+export function mayApplyV3List(input: {
+  paperOpen: boolean;
+  rankedCount: number;
+  testClosed: boolean;
+}): boolean {
+  if (input.paperOpen) return false;
+  if (input.rankedCount <= 0) return false;
+  return input.testClosed;
 }
 
 function derivationFor(

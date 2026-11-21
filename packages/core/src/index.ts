@@ -104,6 +104,7 @@ export {
   SCORING_VERSION,
   applyLossMaturity,
   chunkWallets,
+  mayApplyV3List,
   scoreProvenWallets,
   walletLookback,
   shrunkHitRate,
@@ -117,6 +118,11 @@ export {
   type ScoredWallet,
   type WalletFillDraft,
 } from "./ingest/wallets.js";
+export {
+  applyHistoryMarks,
+  historyMarkForBuy,
+  HISTORY_MARK_SOURCE,
+} from "./ingest/historyMarks.js";
 export {
   EARLY_BUYER_MAX_PAGES,
   EARLY_BUYER_PAGE_LIMIT,
@@ -245,6 +251,7 @@ export {
   USDC_MINT,
   jupiterQuoteUrl,
   jupiterRatePerMin,
+  curveFallbackBid,
   fomoFeeUsd,
   lamportsForUsd,
   liquidityFromSellImpact,

@@ -81,38 +81,44 @@ export function parseLaunchLabCurve(data: Uint8Array): {
 }
 
 /**
- * Meteora DBC virtual pool. quote_reserve then base_reserve sit after the
- * volatility tracker and five pubkeys. The offsets are the layout we model against.
+ * Meteora DBC virtual pool: 8-byte disc, 64-byte VolatilityTracker, five pubkeys,
+ * then base_reserve at 232 and quote_reserve at 240.
+ * modeledSellQuote treats those reserves as a constant-product pool. DBC itself
+ * prices from sqrt_price, so this is a rough reserve approximation.
  */
-export const METEORA_QUOTE_RESERVE_OFFSET = 232;
-export const METEORA_BASE_RESERVE_OFFSET = 240;
+export const METEORA_BASE_RESERVE_OFFSET = 232;
+export const METEORA_QUOTE_RESERVE_OFFSET = 240;
 
 export function parseMeteoraCurve(data: Uint8Array): {
   virtualTokenRaw: bigint;
   virtualSolLamports: bigint;
 } | null {
-  if (data.length < METEORA_BASE_RESERVE_OFFSET + 8) return null;
+  if (data.length < METEORA_QUOTE_RESERVE_OFFSET + 8) return null;
   return {
-    virtualSolLamports: readU64(data, METEORA_QUOTE_RESERVE_OFFSET),
     virtualTokenRaw: readU64(data, METEORA_BASE_RESERVE_OFFSET),
+    virtualSolLamports: readU64(data, METEORA_QUOTE_RESERVE_OFFSET),
   };
 }
 
-export function parseVenueCurve(data: Uint8Array): {
+export function parseVenueCurve(
+  data: Uint8Array,
+  venue: string,
+): {
   venue: "pump" | "launchlab" | "meteora";
   virtualTokenRaw: bigint;
   virtualSolLamports: bigint;
 } | null {
-  if (data.length >= METEORA_BASE_RESERVE_OFFSET + 8) {
-    const meteora = parseMeteoraCurve(data);
-    if (meteora && meteora.virtualSolLamports > 0n && meteora.virtualTokenRaw > 0n) {
-      return { venue: "meteora", ...meteora };
-    }
+  if (venue === "launchlab") {
     const launch = parseLaunchLabCurve(data);
-    if (launch && launch.virtualSolLamports > 0n && launch.virtualTokenRaw > 0n) {
-      return { venue: "launchlab", ...launch };
-    }
+    if (!launch || launch.virtualSolLamports <= 0n || launch.virtualTokenRaw <= 0n) return null;
+    return { venue: "launchlab", ...launch };
   }
+  if (venue === "meteora" || venue === "dbc") {
+    const meteora = parseMeteoraCurve(data);
+    if (!meteora || meteora.virtualSolLamports <= 0n || meteora.virtualTokenRaw <= 0n) return null;
+    return { venue: "meteora", ...meteora };
+  }
+  if (venue !== "pump" && venue !== "pumpswap") return null;
   const pump = parsePumpCurve(data);
   if (!pump || pump.virtualSolLamports <= 0n) return null;
   const token = pump.virtualTokenRaw > 0n ? pump.virtualTokenRaw : 1n;
@@ -236,7 +242,7 @@ export async function loadCreateSlotSnipers(input: {
 
 export async function loadCurveLiquidity(input: {
   apiKey: string;
-  coins: readonly { mint: string; bondingCurve: string }[];
+  coins: readonly { mint: string; bondingCurve: string; venue?: string | null }[];
   solPriceUsd: number;
   fetchImpl?: typeof fetch;
 }): Promise<{
@@ -274,7 +280,7 @@ export async function loadCurveLiquidity(input: {
       };
       const encoded = body.result?.value?.data?.[0];
       if (!encoded) continue;
-      const parsed = parseVenueCurve(Buffer.from(encoded, "base64"));
+      const parsed = parseVenueCurve(Buffer.from(encoded, "base64"), coin.venue ?? "pump");
       if (!parsed) continue;
       const liquidityUsd = curveLiquidityUsd(
         { virtualSolLamports: parsed.virtualSolLamports, realSolLamports: 0n },

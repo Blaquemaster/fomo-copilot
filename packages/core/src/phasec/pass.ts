@@ -47,6 +47,7 @@ export interface PassCoin extends ScoreCoin {
   trackedSells?: number;
   quoteError: boolean;
   bondingCurve?: string | null;
+  poolType?: string | null;
   createdSlot?: number | null;
   quoteSource?: "jupiter" | "curve_modeled";
 }

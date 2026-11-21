@@ -30,6 +30,7 @@ import {
   jupiterQuoteUrl,
   jupiterRatePerMin,
   liquidityFromSellImpact,
+  curveFallbackBid,
   modeledSellQuote,
   parseJupiterQuote,
   quoteKey,
@@ -675,6 +676,57 @@ describe("phase C", () => {
       rules,
     );
     expect(screened.verdict).toBe("pass");
+    const fallback = curveFallbackBid({
+      bid: { ok: false, reason: "no_route" },
+      graduated: false,
+      virtualSolLamports: 30_000_000_000n,
+      virtualTokenRaw: 1_000_000_000_000n,
+      amountInRaw: "10000000000",
+      solPriceUsd: 150,
+      sizeUsd: 5,
+    });
+    expect(fallback?.ok && fallback.source).toBe("curve_modeled");
+    expect(
+      curveFallbackBid({
+        bid: { ok: false, reason: "no_route" },
+        graduated: true,
+        virtualSolLamports: 30_000_000_000n,
+        virtualTokenRaw: 1_000_000_000_000n,
+        amountInRaw: "10000000000",
+        solPriceUsd: 150,
+        sizeUsd: 5,
+      }),
+    ).toEqual({ ok: false, reason: "no_route" });
+    const review = formatWeeklyReview({
+      week: "2026-11-16",
+      walletChanges: [],
+      xChanges: [],
+      promotionsWaiting: [],
+      paper: {
+        status: "collecting",
+        alerts: 0,
+        bankrollPnl: null,
+        leaveOneOutPnl: null,
+        medianNet: null,
+        controlPnl: null,
+        controlAlerts: 0,
+        maxDrawdownPct: 0,
+        weeks: [],
+        powerSampleSize: 385,
+        powerWarning: null,
+      },
+      tradable: { yes: 0, no: 0, unknown: 3 },
+      walletScore: {
+        scoringVersion: 3,
+        lookbackStart: "2026-01-01T00:00:00.000Z",
+        lookbackEnd: "2026-01-20T00:00:00.000Z",
+        entryCount: 12,
+        cutoff: "2026-01-16T00:00:00.000Z",
+        rankedCount: 0,
+      },
+    });
+    expect(review).toContain("tradable in fomo: yes 0 no 0 unknown 3");
+    expect(review).toContain("dry-run 0");
   });
 
   it("waits until entryAfter and uses the entry bid rather than the screen quote", () => {

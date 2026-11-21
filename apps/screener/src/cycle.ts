@@ -7,10 +7,10 @@ import {
   formatWeeklyReview,
   inQuietHours,
   lookupTradableInFomo,
+  curveFallbackBid,
   lamportsForUsd,
   jupiterRatePerMin,
   liquidityFromSellImpact,
-  modeledSellQuote,
   nextEtMidnight,
   quoteKey,
   parseLockedConfig,
@@ -192,7 +192,11 @@ export async function runPhaseCCycle(input: {
             stageForCoin(coin, input.now) !== null,
         )
         .slice(0, 8)
-        .map((coin) => ({ mint: coin.mint, bondingCurve: coin.bondingCurve ?? "" })),
+        .map((coin) => ({
+          mint: coin.mint,
+          bondingCurve: coin.bondingCurve ?? "",
+          venue: coin.poolType,
+        })),
       fetchImpl: input.fetchImpl,
     });
     await input.store.recordScreenCredits(curves.credits, input.now);
@@ -302,6 +306,24 @@ export async function runPhaseCCycle(input: {
     nowMs: input.now.getTime(),
     bucket: solQuote.bucket,
   });
+  for (const request of requests) {
+    if (request.side !== "sell" || (request.purpose !== "exit" && request.purpose !== "scale")) {
+      continue;
+    }
+    const key = quoteKey(request.mint, request.purpose, request.which);
+    const coin = coins.find((item) => item.mint === request.mint);
+    const reserves = curveReserves.get(request.mint);
+    const next = curveFallbackBid({
+      bid: quoted.bids[key],
+      graduated: coin?.graduatedAt != null,
+      virtualSolLamports: reserves?.virtualSolLamports ?? null,
+      virtualTokenRaw: reserves?.virtualTokenRaw ?? null,
+      amountInRaw: request.amount,
+      solPriceUsd: solPrice ?? 0,
+      sizeUsd: request.sizeUsd,
+    });
+    if (next) quoted.bids[key] = next;
+  }
   const screenSells: JupiterRequest[] = [];
   for (const coin of coins) {
     const probe = quoted.bids[quoteKey(coin.mint, "probe", "1x")];
@@ -337,14 +359,16 @@ export async function runPhaseCCycle(input: {
       solPrice !== null &&
       (!bid || (!bid.ok && bid.reason === "no_route"))
     ) {
-      const modeled = modeledSellQuote({
+      const modeled = curveFallbackBid({
+        bid,
+        graduated: false,
         virtualSolLamports: reserves.virtualSolLamports,
         virtualTokenRaw: reserves.virtualTokenRaw,
-        amountInRaw: BigInt(probe.outAmount),
+        amountInRaw: probe.outAmount,
         solPriceUsd: solPrice,
         sizeUsd: probe.sizeUsd,
       });
-      if (modeled.ok) {
+      if (modeled?.ok && modeled.source === "curve_modeled") {
         sold.bids[key] = modeled;
         bid = modeled;
       }
@@ -558,12 +582,28 @@ export async function runPhaseCCycle(input: {
     const previous = await input.store.snapshot();
     const active = await input.store.activeAddresses();
     const pending = await input.store.pendingTiers();
+    const tradable = await input.store.tradableCounts();
+    const shadow = await input.store.scoreShadow();
+    if (result.paper.status === "go" || result.paper.status === "no_go") {
+      await input.store.markPaperClosed();
+    }
     const text = formatWeeklyReview({
       week,
       walletChanges: previous.length === 0 ? [] : addressDiff(previous, active),
       xChanges: config.xEnabled ? [] : ["X mention source is off"],
       promotionsWaiting: pending,
       paper: result.paper,
+      tradable,
+      walletScore: shadow
+        ? {
+            scoringVersion: shadow.scoringVersion,
+            lookbackStart: shadow.lookbackStart,
+            lookbackEnd: shadow.lookbackEnd,
+            entryCount: shadow.entryCount,
+            cutoff: shadow.cutoff,
+            rankedCount: shadow.rankedCount,
+          }
+        : undefined,
     });
     await input.store.saveWeekly(week, text, input.now);
     await input.store.replaceSnapshot(active);

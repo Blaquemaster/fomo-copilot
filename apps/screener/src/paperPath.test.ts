@@ -23,6 +23,7 @@ import {
   curveLiquidityUsd,
   parseLaunchLabCurve,
   parseMeteoraCurve,
+  parseVenueCurve,
   parseMintAccount,
   parsePumpCurve,
   screenCreditProjection,
@@ -290,7 +291,19 @@ describe("quoted paper path", () => {
       meteora[240 + index] = Number((8_000_000_000n >> BigInt(8 * index)) & 0xffn);
     }
     expect(parseLaunchLabCurve(launch)?.virtualSolLamports).toBe(2_000_000_000n);
-    expect(parseMeteoraCurve(meteora)?.virtualTokenRaw).toBe(8_000_000_000n);
+    expect(parseMeteoraCurve(meteora)?.virtualTokenRaw).toBe(4_000_000_000n);
+    expect(parseMeteoraCurve(meteora)?.virtualSolLamports).toBe(8_000_000_000n);
+    const liveLaunch = new Uint8Array(429);
+    for (let index = 0; index < 8; index += 1) {
+      liveLaunch[37 + index] = Number((1_073_000_000_000_000n >> BigInt(8 * index)) & 0xffn);
+      liveLaunch[45 + index] = Number((9_950_000_000n >> BigInt(8 * index)) & 0xffn);
+      liveLaunch[232 + index] = 1;
+      liveLaunch[240 + index] = 2;
+    }
+    expect(parseLaunchLabCurve(liveLaunch)?.virtualSolLamports).toBe(9_950_000_000n);
+    expect(parseMeteoraCurve(liveLaunch)?.virtualSolLamports).not.toBe(9_950_000_000n);
+    expect(parseVenueCurve(liveLaunch, "launchlab")?.venue).toBe("launchlab");
+    expect(parseVenueCurve(meteora, "meteora")?.virtualSolLamports).toBe(8_000_000_000n);
     const nowWave = new Date("2026-11-19T16:30:00.000Z");
     expect(secondWaveSignal(mihaoObservation(nowWave), nowWave)).toBe("breakout");
     expect(quoteUrlAllowed("https://api.jup.ag/swap")).toBe(false);

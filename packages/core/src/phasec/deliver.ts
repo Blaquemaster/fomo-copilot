@@ -96,6 +96,7 @@ export function formatWeeklyReview(input: {
     lookbackEnd: string | null;
     entryCount: number;
     cutoff: string | null;
+    rankedCount?: number;
   };
 }): string {
   const lines = [
@@ -111,7 +112,7 @@ export function formatWeeklyReview(input: {
       ? `tradable in fomo: yes ${input.tradable.yes.toString()} no ${input.tradable.no.toString()} unknown ${input.tradable.unknown.toString()}`
       : "tradable in fomo: unknown",
     input.walletScore
-      ? `wallet score v${input.walletScore.scoringVersion.toString()} lookback ${input.walletScore.lookbackStart ?? "none"} to ${input.walletScore.lookbackEnd ?? "none"} entries ${input.walletScore.entryCount.toString()} cutoff ${input.walletScore.cutoff ?? "none"}`
+      ? `wallet score v${input.walletScore.scoringVersion.toString()} lookback ${input.walletScore.lookbackStart ?? "none"} to ${input.walletScore.lookbackEnd ?? "none"} entries ${input.walletScore.entryCount.toString()} cutoff ${input.walletScore.cutoff ?? "none"} dry-run ${input.walletScore.rankedCount?.toString() ?? "n/a"}`
       : "wallet score: not recorded",
     input.walletChanges.length === 0
       ? "wallet list: no change"

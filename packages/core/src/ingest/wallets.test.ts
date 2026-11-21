@@ -9,9 +9,11 @@ import {
   WALLET_SUB_CHUNK,
   WALLET_TRADE_NAMES,
 } from "./programs.js";
+import { historyMarkForBuy } from "./historyMarks.js";
 import {
   applyLossMaturity,
   chunkWallets,
+  mayApplyV3List,
   nextTrackedSet,
   scoreProvenWallets,
   walletBudgetOpen,
@@ -333,6 +335,65 @@ describe("proven wallets", () => {
       { minEntries: 1, minLosses: 1 },
     );
     expect(creator).toEqual([]);
+  });
+
+  it("uses a later swap as the delayed mark and keeps an empty v3 list off the reset", () => {
+    const buy = {
+      mint: "coin",
+      wallet: "self",
+      side: "buy" as const,
+      slot: 1_000,
+      blockTimeSec: 1_000_000,
+      solAmount: 1,
+      tokenAmount: 100,
+      signature: "entry",
+    };
+    const near = {
+      ...buy,
+      wallet: "other",
+      blockTimeSec: 1_000_090,
+      solAmount: 2,
+      tokenAmount: 100,
+      signature: "near",
+    };
+    const own = { ...near, wallet: "self", signature: "entry" };
+    const exit = {
+      ...near,
+      blockTimeSec: 1_000_000 + 2 * 60 * 60,
+      solAmount: 3,
+      tokenAmount: 100,
+      signature: "exit",
+    };
+    const mark = historyMarkForBuy({ buy, swaps: [own, near, exit], horizonSec: 2 * 60 * 60 });
+    expect(mark?.delayedMarkUsd).toBe(0.02);
+    expect(mark?.delayedMarkSource).toBe("history_swap");
+    expect(historyMarkForBuy({ buy, swaps: [own], horizonSec: 7200 })).toBeNull();
+    expect(mayApplyV3List({ paperOpen: false, rankedCount: 0, testClosed: false })).toBe(false);
+    expect(mayApplyV3List({ paperOpen: true, rankedCount: 4, testClosed: true })).toBe(false);
+    expect(mayApplyV3List({ paperOpen: false, rankedCount: 4, testClosed: false })).toBe(false);
+    expect(mayApplyV3List({ paperOpen: false, rankedCount: 4, testClosed: true })).toBe(true);
+    const rows: EarlyBuy[] = [];
+    for (let index = 0; index < 8; index += 1) {
+      rows.push({
+        ...graduated("hold", `h${index.toString()}`, "buy"),
+        boughtAt: new Date(Date.UTC(2026, 0, index + 1)),
+      });
+    }
+    rows.push({ ...loss("hold", "hloss"), boughtAt: new Date(Date.UTC(2026, 0, 9)) });
+    rows.push({ ...loss("hold", "hloss2"), boughtAt: new Date(Date.UTC(2026, 0, 10)) });
+    rows.push({
+      ...graduated("hold", "hout-win", "buy"),
+      boughtAt: new Date(Date.UTC(2026, 0, 28)),
+    });
+    rows.push({ ...loss("hold", "hout-loss"), boughtAt: new Date(Date.UTC(2026, 0, 29)) });
+    const passed = scoreProvenWallets(rows, 10, {
+      minEntries: 10,
+      holdOut: true,
+      holdOutMinEntries: 2,
+      minLosses: 1,
+      minShrunkRate: 0.5,
+    });
+    expect(passed.map((row) => row.address)).toEqual(["hold"]);
   });
 
   it("returns nothing when there is no stored early buy", () => {

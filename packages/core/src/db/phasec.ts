@@ -50,10 +50,11 @@ export class PhaseCRepository implements PhaseCStore {
       liquidity_usd: number | null;
       exit_impact_pct: number | null;
       bonding_curve: string | null;
+      pool_type: string | null;
       created_slot: string | null;
     }>(
       `with newest as (
-         select c.mint, c.first_seen_at, c.graduated_at, c.curve_completed_at
+         select c.mint, c.first_seen_at, c.graduated_at, c.curve_completed_at, c.pool, c.pool_type
          from candidates c
          where c.source <> 'audit'
            and c.mint !~* '^0x'
@@ -73,7 +74,8 @@ export class PhaseCRepository implements PhaseCStore {
               coalesce(snap.liquidity_usd, cache.curve_liquidity_usd) as liquidity_usd,
               case when cache.exit_impact_at > now() - interval '10 minutes'
                 then cache.exit_impact_pct else null end as exit_impact_pct,
-              pc.bonding_curve,
+              coalesce(pc.bonding_curve, n.pool) as bonding_curve,
+              n.pool_type,
               pc.created_slot
        from newest n
        left join coin_wallet_signal w on w.mint = n.mint
@@ -125,6 +127,7 @@ export class PhaseCRepository implements PhaseCStore {
       quoteError: false,
       secondWave: null,
       bondingCurve: row.bonding_curve,
+      poolType: row.pool_type,
       createdSlot: row.created_slot === null ? null : Number(row.created_slot),
     }));
   }
@@ -607,6 +610,46 @@ export class PhaseCRepository implements PhaseCStore {
       else counts.unknown += count;
     }
     return counts;
+  }
+
+  async scoreShadow(): Promise<{
+    rankedCount: number;
+    lookbackStart: string | null;
+    lookbackEnd: string | null;
+    cutoff: string | null;
+    entryCount: number;
+    scoringVersion: number;
+  } | null> {
+    const result = await this.pool.query<{
+      ranked_count: number;
+      lookback_start: string | null;
+      lookback_end: string | null;
+      cutoff: string | null;
+      entry_count: number;
+      scoring_version: number;
+    }>(
+      `select ranked_count, lookback_start, lookback_end, cutoff, entry_count, scoring_version
+       from phasec_score_shadow where id = 1`,
+    );
+    const row = result.rows[0];
+    if (!row) return null;
+    return {
+      rankedCount: Number(row.ranked_count),
+      lookbackStart: row.lookback_start,
+      lookbackEnd: row.lookback_end,
+      cutoff: row.cutoff,
+      entryCount: Number(row.entry_count),
+      scoringVersion: Number(row.scoring_version),
+    };
+  }
+
+  async markPaperClosed(): Promise<void> {
+    await this.pool.query(
+      `insert into phasec_score_shadow
+        (id, ranked_count, entry_count, scoring_version, test_closed, updated_at)
+       values (1, 0, 0, 3, true, now())
+       on conflict (id) do update set test_closed = true, updated_at = now()`,
+    );
   }
 
   async wallets(): Promise<TierWallet[]> {
