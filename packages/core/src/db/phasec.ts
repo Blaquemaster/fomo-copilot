@@ -366,7 +366,7 @@ export class PhaseCRepository implements PhaseCStore {
         `insert into phasec_mint_cache
           (mint, mint_authority_active, freeze_authority_active, top10_pct, sniper_pct, curve_liquidity_usd,
            exit_impact_pct, exit_impact_at, fetched_at)
-         values ($1,$2,$3,$4,$5,$6,$7, case when $7 is null then null else $8 end, $8)
+         values ($1,$2,$3,$4,$5,$6,$7, case when $7::double precision is null then null else $8::timestamptz end, $8::timestamptz)
          on conflict (mint) do update set
            mint_authority_active = coalesce(excluded.mint_authority_active, phasec_mint_cache.mint_authority_active),
            freeze_authority_active = coalesce(excluded.freeze_authority_active, phasec_mint_cache.freeze_authority_active),

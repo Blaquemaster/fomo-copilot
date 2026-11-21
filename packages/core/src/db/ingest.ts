@@ -351,7 +351,6 @@ alter table wallet_early_buy add column if not exists exit_mark_at timestamptz;
 alter table wallet_fill add column if not exists sol_amount double precision;
 alter table wallet_fill add column if not exists token_amount double precision;
 alter table wallet_fill add column if not exists block_time bigint;
-alter table wallet_backfill_mint add column if not exists mark_reread boolean not null default false;
 create table if not exists phasec_score_shadow (
   id integer primary key,
   ranked_count integer not null,
@@ -381,6 +380,7 @@ create table if not exists wallet_backfill_mint (
 
 alter table wallet_backfill_mint add column if not exists failures integer not null default 0;
 alter table wallet_backfill_mint add column if not exists last_error text;
+alter table wallet_backfill_mint add column if not exists mark_reread boolean not null default false;
 
 create table if not exists wallet_job (
   id integer primary key,
