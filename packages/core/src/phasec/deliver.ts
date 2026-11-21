@@ -98,6 +98,7 @@ export function formatWeeklyReview(input: {
     cutoff: string | null;
     rankedCount?: number;
   };
+  autobuy?: { entries: number; exits: number; paperAlerts: number };
 }): string {
   const lines = [
     `Weekly review ${input.week}`,
@@ -123,7 +124,10 @@ export function formatWeeklyReview(input: {
     input.promotionsWaiting.length === 0
       ? "tier promotions waiting: none"
       : `tier promotions waiting: ${input.promotionsWaiting.join(", ")}`,
-  ];
+    input.autobuy
+      ? `autobuy dry-run intents ${input.autobuy.entries.toString()} exits ${input.autobuy.exits.toString()} paper alerts ${input.autobuy.paperAlerts.toString()}`
+      : "",
+  ].filter((line) => line !== "");
   for (const week of input.paper.weeks) {
     lines.push(
       `${week.week} ${week.arm} n=${week.n.toString()} mean=${week.mean.toFixed(4)} median=${week.median.toFixed(4)} p10=${week.p10.toFixed(4)} p90=${week.p90.toFixed(4)}`,

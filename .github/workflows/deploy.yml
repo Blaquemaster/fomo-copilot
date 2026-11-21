@@ -100,6 +100,10 @@ jobs:
           WALLET_BACKFILL_FAIL_LIMIT: ${{ vars.WALLET_BACKFILL_FAIL_LIMIT }}
           BANKROLL: ${{ vars.BANKROLL }}
           PAPER_BANKROLL_USD: ${{ vars.PAPER_BANKROLL_USD }}
+          AUTOBUY_MODE: ${{ vars.AUTOBUY_MODE }}
+          AUTOBUY_KILL: ${{ vars.AUTOBUY_KILL }}
+          AUTOBUY_MAX_TRADE_USD: ${{ vars.AUTOBUY_MAX_TRADE_USD }}
+          AUTOBUY_DAILY_USD_CAP: ${{ vars.AUTOBUY_DAILY_USD_CAP }}
           SIZE_TRENCH_PCT: ${{ vars.SIZE_TRENCH_PCT }}
           SIZE_NEAR_GRADUATION_PCT: ${{ vars.SIZE_NEAR_GRADUATION_PCT }}
           SIZE_POST_GRADUATION_PCT: ${{ vars.SIZE_POST_GRADUATION_PCT }}
@@ -235,6 +239,16 @@ jobs:
                   raise SystemExit("QUIET_HOURS must be HH:MM-HH:MM")
               return raw
 
+          def usd_amount(name, default):
+              raw = os.environ.get(name, "").strip() or default
+              try:
+                  value = float(raw)
+              except ValueError:
+                  raise SystemExit(f"{name} must be a positive number")
+              if value != value or value <= 0:
+                  raise SystemExit(f"{name} must be a positive number")
+              return raw
+
           def paper_bankroll():
               raw = os.environ.get("PAPER_BANKROLL_USD", "").strip() or "1000"
               try:
@@ -347,6 +361,10 @@ jobs:
               line("MARKET_POLL_MINUTES", market_poll()),
               line("THRESHOLDS_PATH", "/app/config/thresholds.yaml"),
               line("PAPER_BANKROLL_USD", paper_bankroll()),
+              line("AUTOBUY_MODE", pick("AUTOBUY_MODE", "off", {"off", "dry_run", "live"})),
+              line("AUTOBUY_KILL", pick("AUTOBUY_KILL", "off", {"off", "on"})),
+              line("AUTOBUY_MAX_TRADE_USD", usd_amount("AUTOBUY_MAX_TRADE_USD", "25")),
+              line("AUTOBUY_DAILY_USD_CAP", usd_amount("AUTOBUY_DAILY_USD_CAP", "100")),
           ] + ([line("BANKROLL", bankroll)] if (bankroll := optional_bankroll()) else [])
             + ([line("TELEGRAM_TEST_CHAT_ID", test_chat)] if (test_chat := optional_chat("TELEGRAM_TEST_CHAT_ID")) else [])
           ) + "\n"

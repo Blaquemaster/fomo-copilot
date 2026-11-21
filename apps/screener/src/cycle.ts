@@ -1,4 +1,8 @@
 import {
+  admitAutobuy,
+  autobuyLimits,
+  noopSigner,
+  resolveAutobuyMode,
   mihaoObservation,
   SOL_MINT,
   etDay,
@@ -542,6 +546,76 @@ export async function runPhaseCCycle(input: {
   });
   await input.store.markSellWarned(result.sellWarnings);
   await input.store.markScaled(result.scaled, input.now);
+  let autobuyMode: "off" | "dry_run" = "off";
+  try {
+    autobuyMode = resolveAutobuyMode({
+      mode: input.env.AUTOBUY_MODE,
+      liveConfirmed: input.env.AUTOBUY_LIVE_CONFIRMED === "yes",
+      signer: noopSigner(),
+      killed: input.env.AUTOBUY_KILL === "on",
+    }).mode;
+  } catch (error) {
+    input.warn(error instanceof Error ? error.message : "live autobuy refused");
+  }
+  if (autobuyMode === "dry_run") {
+    const limits = autobuyLimits({
+      maxConcurrent: config.maxConcurrent,
+      dailyLossCutoffPct: config.dailyLossCutoffPct,
+      maxTradeUsd: input.env.AUTOBUY_MAX_TRADE_USD,
+      dailyUsdCap: input.env.AUTOBUY_DAILY_USD_CAP,
+      killed: false,
+    });
+    const paused = (await input.store.isPaused(day.day)) || result.pauseReason !== null;
+    let openCount = positions.filter((position) => position.arm !== "random_pass").length;
+    let spent = await input.store.autobuySpentSince(day.start);
+    const intents = [];
+    for (const entry of result.entries) {
+      const decision = admitAutobuy({
+        arm: entry.arm,
+        sizeUsd: entry.amount,
+        sizePct: entry.sizePct,
+        bankroll: config.bankroll,
+        openCount,
+        dailySpentUsd: spent,
+        dailyLossPct: paused ? limits.dailyLossCutoffPct : 0,
+        paused,
+        limits,
+      });
+      intents.push({
+        kind: "entry" as const,
+        mint: entry.mint,
+        arm: entry.arm,
+        stage: entry.stage,
+        sizeUsd: entry.amount,
+        quotePrice: null,
+        expectedOut: null,
+        slippageBps: null,
+        reason: decision.ok ? "dry_run" : decision.reason,
+        simulated: "skipped" as const,
+      });
+      if (decision.ok && entry.amount !== null) {
+        openCount += 1;
+        spent += entry.amount;
+      }
+    }
+    for (const close of result.closes) {
+      const position = positions.find((item) => item.id === close.id);
+      if (!position || position.arm === "random_pass" || close.reason === "unpriced") continue;
+      intents.push({
+        kind: "exit" as const,
+        mint: position.mint,
+        arm: position.arm,
+        stage: position.stage,
+        sizeUsd: position.entrySizeUsd ?? null,
+        quotePrice: close.quote,
+        expectedOut: null,
+        slippageBps: close.impactPct === null ? null : Math.round(close.impactPct * 100),
+        reason: close.reason,
+        simulated: "skipped" as const,
+      });
+    }
+    await input.store.saveAutobuyIntents(intents, input.now);
+  }
   await input.store.saveMintCache(
     coins
       .filter(
@@ -585,6 +659,10 @@ export async function runPhaseCCycle(input: {
     const pending = await input.store.pendingTiers();
     const tradable = await input.store.tradableCounts();
     const shadow = await input.store.scoreShadow();
+    const autobuy =
+      autobuyMode === "dry_run"
+        ? { ...(await input.store.autobuyReview()), paperAlerts: result.paper.alerts }
+        : undefined;
     if (result.paper.status === "go" || result.paper.status === "no_go") {
       await input.store.markPaperClosed();
     }
@@ -594,6 +672,7 @@ export async function runPhaseCCycle(input: {
       xChanges: config.xEnabled ? [] : ["X mention source is off"],
       promotionsWaiting: pending,
       paper: result.paper,
+      autobuy,
       tradable,
       walletScore: shadow
         ? {

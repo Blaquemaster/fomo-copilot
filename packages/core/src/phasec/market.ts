@@ -30,7 +30,9 @@ export function quoteUrlAllowed(url: string): boolean {
   ) {
     return false;
   }
-  if (parsed.hostname === "api.jup.ag") return path === "/swap/v1/quote";
+  if (parsed.hostname === "api.jup.ag") {
+    return path === "/swap/v1/quote" || path === "/swap/v1/swap";
+  }
   if (lower === "/swap" || lower.endsWith("/swap")) return false;
   if (!ALLOWED_HOSTS.has(parsed.hostname)) return false;
   if (parsed.hostname === "api.dexscreener.com") return lower.startsWith("/latest/dex/tokens/");

@@ -575,6 +575,21 @@ create table if not exists phasec_market_snapshot (
 alter table phasec_market_snapshot add column if not exists volume_24h double precision;
 alter table phasec_mint_cache add column if not exists exit_impact_pct double precision;
 alter table phasec_mint_cache add column if not exists exit_impact_at timestamptz;
+
+create table if not exists autobuy_intent (
+  id bigserial primary key,
+  kind text not null,
+  mint text not null,
+  arm text not null,
+  stage text not null,
+  size_usd double precision,
+  quote_price double precision,
+  expected_out text,
+  slippage_bps integer,
+  reason text not null,
+  simulated text not null,
+  created_at timestamptz not null
+);
 `;
 
 export function createPool(

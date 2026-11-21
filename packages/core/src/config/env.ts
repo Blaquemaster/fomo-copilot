@@ -134,6 +134,13 @@ export const envSchema = z.object({
   FOMO_FEE_SCHEDULE: z.enum(["solana_lowest_fee", "solana_other"]).optional(),
   WALLET_SCORE_CUTOFF: z.string().datetime().optional(),
   SECOND_WAVE_MIN_CHANGE_PCT: z.coerce.number().min(0).max(10_000).optional(),
+  /** off, dry_run, or live. Default off. Live cannot start in this build. */
+  AUTOBUY_MODE: z.enum(["off", "dry_run", "live"]).optional(),
+  /** Must be the exact word yes, and a signer must exist. Neither is configured here. */
+  AUTOBUY_LIVE_CONFIRMED: z.literal("yes").optional(),
+  AUTOBUY_KILL: z.enum(["off", "on"]).optional(),
+  AUTOBUY_MAX_TRADE_USD: z.coerce.number().positive().max(1_000_000_000).optional(),
+  AUTOBUY_DAILY_USD_CAP: z.coerce.number().positive().max(1_000_000_000).optional(),
 });
 
 export type Env = z.infer<typeof envSchema>;
