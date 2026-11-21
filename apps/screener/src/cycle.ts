@@ -37,6 +37,8 @@ import {
 } from "./accounts.js";
 import { collectJupiterBids, fetchSolPriceUsd, type JupiterRequest } from "./jupiter.js";
 
+const ENRICH_PER_PASS = 8;
+
 function readEntriesStart(body: string): Date | null {
   try {
     const parsed = JSON.parse(body) as { entriesStartAt?: string };
@@ -191,7 +193,7 @@ export async function runPhaseCCycle(input: {
             coin.bondingCurve &&
             stageForCoin(coin, input.now) !== null,
         )
-        .slice(0, 8)
+        .slice(0, ENRICH_PER_PASS)
         .map((coin) => ({
           mint: coin.mint,
           bondingCurve: coin.bondingCurve ?? "",
@@ -395,7 +397,7 @@ export async function runPhaseCCycle(input: {
         coin.sniperBundlePct === null
       );
     })
-    .slice(0, 8);
+    .slice(0, ENRICH_PER_PASS);
   let spent = 0;
   if (enrich.length > 0) {
     const loaded = await loadMintAuthorities({
@@ -448,10 +450,9 @@ export async function runPhaseCCycle(input: {
     }
   }
   if (spent > 0) {
-    const newMints = await input.store.recentCandidates(1);
-    const projection = screenCreditProjection(newMints);
+    const projection = screenCreditProjection(ENRICH_PER_PASS);
     input.warn(
-      `screen credits this pass ${spent.toString()}; projection ${projection.perDay.toString()}/day ${projection.perMonth.toString()}/month from ${newMints.toString()} new mints`,
+      `screen credits this pass ${spent.toString()}; projection ${projection.perDay.toString()}/day ${projection.perMonth.toString()}/month at ${ENRICH_PER_PASS.toString()} enrichments per pass`,
     );
     await input.store.recordScreenCredits(spent, input.now);
   }
