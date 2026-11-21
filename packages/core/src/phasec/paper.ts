@@ -25,6 +25,13 @@ export interface PaperEvaluation {
   alerts: number;
   /** Bankroll profit as a fraction. Positive means the bankroll grew. */
   bankrollPnl: number | null;
+  /** Strategy pnl after dropping the single best trade. */
+  leaveOneOutPnl: number | null;
+  /** Median net of strategy-arm trades. */
+  medianNet: number | null;
+  /** Control-arm bankroll pnl. Not used for go or no-go. */
+  controlPnl: number | null;
+  controlAlerts: number;
   maxDrawdownPct: number;
   weeks: WeekSplit[];
   powerSampleSize: number;
@@ -125,6 +132,20 @@ export function weeklySplits(returns: readonly ResolvedReturn[]): WeekSplit[] {
   return weeks;
 }
 
+function withoutBest(rows: readonly ResolvedReturn[]): ResolvedReturn[] {
+  if (rows.length === 0) return [];
+  let best = 0;
+  let bestValue = -Infinity;
+  rows.forEach((row, index) => {
+    const value = (row.sizePct / 100) * row.net;
+    if (value > bestValue) {
+      bestValue = value;
+      best = index;
+    }
+  });
+  return rows.filter((_row, index) => index !== best);
+}
+
 export function evaluatePaper(input: {
   registeredAt: Date;
   now: Date;
@@ -135,12 +156,26 @@ export function evaluatePaper(input: {
   returns: readonly ResolvedReturn[];
 }): PaperEvaluation {
   const ordered = [...input.returns].sort((left, right) => left.at.getTime() - right.at.getTime());
-  const curve = bankrollCurve(ordered);
+  const strategy = ordered.filter((row) => row.arm !== "random_pass");
+  const control = ordered.filter((row) => row.arm === "random_pass");
+  const curve = bankrollCurve(strategy);
+  const trimmed = withoutBest(strategy);
+  const leaveOneOut = trimmed.length === 0 ? null : bankrollCurve(trimmed).pnl;
+  const nets = [...strategy.map((row) => row.net)].sort((left, right) => left - right);
+  const medianNet = strategy.length === 0 ? null : quantile(nets, 0.5);
+  const controlCurve = bankrollCurve(control);
   const windowEnd = input.registeredAt.getTime() + input.windowDays * 24 * 60 * 60 * 1000;
   let status: PaperEvaluation["status"];
-  if (ordered.length < input.minAlerts) {
+  const profitable =
+    curve.pnl > 0 &&
+    leaveOneOut !== null &&
+    leaveOneOut > 0 &&
+    medianNet !== null &&
+    medianNet > 0 &&
+    curve.maxDrawdownPct < input.maxDrawdownPct;
+  if (strategy.length < input.minAlerts) {
     status = input.now.getTime() < windowEnd ? "collecting" : "extend";
-  } else if (curve.pnl > 0 && curve.maxDrawdownPct < input.maxDrawdownPct) {
+  } else if (profitable) {
     status = "go";
   } else {
     status = "no_go";
@@ -148,8 +183,12 @@ export function evaluatePaper(input: {
   const needed = powerSampleSize();
   return {
     status,
-    alerts: ordered.length,
-    bankrollPnl: ordered.length === 0 ? null : curve.pnl,
+    alerts: strategy.length,
+    bankrollPnl: strategy.length === 0 ? null : curve.pnl,
+    leaveOneOutPnl: leaveOneOut,
+    medianNet,
+    controlPnl: control.length === 0 ? null : controlCurve.pnl,
+    controlAlerts: control.length,
     maxDrawdownPct: curve.maxDrawdownPct,
     weeks: weeklySplits(ordered),
     powerSampleSize: needed,

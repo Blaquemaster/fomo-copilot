@@ -6,9 +6,11 @@ import {
   etWeekStart,
   formatWeeklyReview,
   inQuietHours,
+  lookupTradableInFomo,
   lamportsForUsd,
   jupiterRatePerMin,
   liquidityFromSellImpact,
+  modeledSellQuote,
   nextEtMidnight,
   quoteKey,
   parseLockedConfig,
@@ -74,14 +76,13 @@ export async function runPhaseCCycle(input: {
     const counts = await input.store.mentionCounts(coins.map((coin) => coin.mint));
     for (const coin of coins) coin.xMentions = counts.get(coin.mint) ?? 0;
   }
+  const solQuote = await fetchSolPriceUsd({
+    fetchImpl: input.fetchImpl,
+    apiKey: input.env.JUPITER_API_KEY ?? null,
+    nowMs: input.now.getTime(),
+  });
   const solPrice =
-    (await fetchSolPriceUsd({
-      fetchImpl: input.fetchImpl,
-      apiKey: input.env.JUPITER_API_KEY ?? null,
-      nowMs: input.now.getTime(),
-    })) ??
-    input.quotes.find((quote) => quote.mint === SOL_MINT)?.priceUsd ??
-    null;
+    solQuote.price ?? input.quotes.find((quote) => quote.mint === SOL_MINT)?.priceUsd ?? null;
   if (config.bankroll === null || solPrice === null) {
     const reason =
       config.bankroll === null ? "PAPER_BANKROLL_USD is not set" : "SOL/USD price is unavailable";
@@ -177,6 +178,7 @@ export async function runPhaseCCycle(input: {
     );
     await input.store.pruneSnapshots(new Date(input.now.getTime() - 8 * 24 * 60 * 60 * 1000));
   }
+  const curveReserves = new Map<string, { virtualSolLamports: bigint; virtualTokenRaw: bigint }>();
   if (solPrice !== null) {
     const curves = await loadCurveLiquidity({
       apiKey: input.env.HELIUS_API_KEY,
@@ -197,6 +199,7 @@ export async function runPhaseCCycle(input: {
     for (const row of curves.rows) {
       const coin = coins.find((item) => item.mint === row.mint);
       if (coin && coin.liquidityUsd === null) coin.liquidityUsd = row.liquidityUsd;
+      curveReserves.set(row.mint, row);
     }
   }
   const positions = await input.store.positions();
@@ -248,7 +251,7 @@ export async function runPhaseCCycle(input: {
         mint: position.mint,
         side: "sell",
         purpose: "exit",
-        amount: String(Number(position.entryOutAmount) * 2),
+        amount: (BigInt(position.entryOutAmount) * 2n).toString(),
         which: "2x",
         sizeUsd: size * 2,
         solPriceUsd: solPrice,
@@ -259,7 +262,7 @@ export async function runPhaseCCycle(input: {
           mint: position.mint,
           side: "sell",
           purpose: "scale",
-          amount: String(Math.round(Number(position.entryOutAmount) / 2)),
+          amount: (BigInt(position.entryOutAmount) / 2n).toString(),
           which: "1x",
           sizeUsd: size / 2,
           solPriceUsd: solPrice,
@@ -297,6 +300,7 @@ export async function runPhaseCCycle(input: {
     fetchImpl: input.fetchImpl,
     apiKey: input.env.JUPITER_API_KEY ?? null,
     nowMs: input.now.getTime(),
+    bucket: solQuote.bucket,
   });
   const screenSells: JupiterRequest[] = [];
   for (const coin of coins) {
@@ -322,12 +326,35 @@ export async function runPhaseCCycle(input: {
   });
   const freshExit = new Map<string, number>();
   for (const coin of coins) {
-    const bid = sold.bids[quoteKey(coin.mint, "screen", "1x")];
+    const key = quoteKey(coin.mint, "screen", "1x");
+    let bid = sold.bids[key];
+    const probe = quoted.bids[quoteKey(coin.mint, "probe", "1x")];
+    const reserves = curveReserves.get(coin.mint);
+    if (
+      coin.graduatedAt === null &&
+      reserves &&
+      probe?.ok &&
+      solPrice !== null &&
+      (!bid || (!bid.ok && bid.reason === "no_route"))
+    ) {
+      const modeled = modeledSellQuote({
+        virtualSolLamports: reserves.virtualSolLamports,
+        virtualTokenRaw: reserves.virtualTokenRaw,
+        amountInRaw: BigInt(probe.outAmount),
+        solPriceUsd: solPrice,
+        sizeUsd: probe.sizeUsd,
+      });
+      if (modeled.ok) {
+        sold.bids[key] = modeled;
+        bid = modeled;
+      }
+    }
     if (bid?.ok) {
       coin.exitQuoteImpactPct = bid.impactPct;
       freshExit.set(coin.mint, bid.impactPct);
+      if (bid.source === "curve_modeled") coin.quoteSource = "curve_modeled";
       if (coin.liquidityUsd === null) {
-        const derived = liquidityFromSellImpact(bid.sizeUsd, bid.impactPct);
+        const derived = bid.liquidityUsd ?? liquidityFromSellImpact(bid.sizeUsd, bid.impactPct);
         if (derived !== null) coin.liquidityUsd = derived;
       }
     }
@@ -431,7 +458,13 @@ export async function runPhaseCCycle(input: {
     entriesStartAt: entriesStart,
     expectedAlerts,
   });
-  if (result.protocolViolation) input.warn(`protocol violation: ${result.protocolViolation}`);
+  if (result.restart) {
+    await input.store.voidPaperWindow(input.now);
+    await input.store.clearProtocol();
+    input.warn("paper test restarted: config changed");
+  } else if (result.protocolViolation) {
+    input.warn(`protocol violation: ${result.protocolViolation}`);
+  }
   if (result.lock) {
     await input.store.saveProtocol(result.lock.fingerprint, result.lock.body, input.now);
   }
@@ -444,6 +477,8 @@ export async function runPhaseCCycle(input: {
       open.feeUsd,
       open.sizeUsd,
       open.outAmount,
+      open.fomoFeeUsd,
+      open.quoteSource,
       input.now,
     );
   }
@@ -457,12 +492,19 @@ export async function runPhaseCCycle(input: {
       impactPct: close.impactPct,
       feeUsd: close.feeUsd,
       failure: close.failure,
+      fomoFeeUsd: close.fomoFeeUsd,
+      quoteSource: close.quoteSource,
       at: input.now,
     });
   }
   const sentIds: string[] = [];
   for (const entry of result.entries) {
-    const id = await input.store.insertEntry({ ...entry, alertAt: input.now });
+    const listed = await lookupTradableInFomo(entry.mint);
+    const id = await input.store.insertEntry({
+      ...entry,
+      alertAt: input.now,
+      tradableInFomo: listed.tradableInFomo,
+    });
     if (!entry.held && id) sentIds.push(id);
   }
   for (const request of result.tierRequests)
@@ -500,7 +542,10 @@ export async function runPhaseCCycle(input: {
     input.warn(destination.reason);
     return;
   }
-  if (result.protocolViolation) await input.send(`protocol violation: ${result.protocolViolation}`);
+  if (result.restart) await input.send("paper test restarted: config changed");
+  else if (result.protocolViolation) {
+    await input.send(`protocol violation: ${result.protocolViolation}`);
+  }
   for (const text of result.immediate) await input.send(text);
   if (result.digest) await input.send(result.digest);
   await input.store.markDelivered([...sentIds, ...result.digestIds], input.now);

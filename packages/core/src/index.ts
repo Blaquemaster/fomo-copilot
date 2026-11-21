@@ -105,6 +105,7 @@ export {
   applyLossMaturity,
   chunkWallets,
   scoreProvenWallets,
+  walletLookback,
   shrunkHitRate,
   type ScoreOptions,
   walletBudgetOpen,
@@ -221,6 +222,7 @@ export { formatIngestStatus, formatSpotCheck } from "./ingest/statusText.js";
 export { IngestRepository, createPool, migrate } from "./db/ingest.js";
 export { PhaseCRepository } from "./db/phasec.js";
 export { phaseCConfigFromEnv, screenRulesFromThresholds } from "./phasec/config.js";
+export { lookupTradableInFomo } from "./phasec/fomoLookup.js";
 export { formatWeeklyReview, resolveAlertChat } from "./phasec/deliver.js";
 export {
   DEX_BATCH,
@@ -243,8 +245,11 @@ export {
   USDC_MINT,
   jupiterQuoteUrl,
   jupiterRatePerMin,
+  fomoFeeUsd,
   lamportsForUsd,
   liquidityFromSellImpact,
+  modeledSellQuote,
+  netFromDelayedMarks,
   parseJupiterQuote,
   quoteKey,
   type QuotePurpose,
@@ -260,7 +265,7 @@ export {
   type SecondWaveObservation,
 } from "./phasec/secondWave.js";
 export { runPhaseCPass, type PassCoin, type PassPosition } from "./phasec/pass.js";
-export { stageForCoin } from "./phasec/score.js";
+export { isFlapMint, stageForCoin } from "./phasec/score.js";
 export type { ScreenRules } from "./phasec/screen.js";
 export {
   assignExitTreatment,

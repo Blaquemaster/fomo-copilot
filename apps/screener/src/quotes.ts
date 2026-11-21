@@ -37,7 +37,8 @@ async function fetchQuote(
 ): Promise<unknown | null> {
   if (!quoteUrlAllowed(url)) return null;
   let attempt = 1;
-  while (attempt <= 4) {
+  const maxAttempts = host === "gecko" ? 2 : 4;
+  while (attempt <= maxAttempts) {
     const response = await fetchImpl(url);
     if (host === "dex") usage.dexRequests += 1;
     else usage.geckoRequests += 1;

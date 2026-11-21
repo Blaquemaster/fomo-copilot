@@ -21,6 +21,8 @@ import {
 
 import {
   curveLiquidityUsd,
+  parseLaunchLabCurve,
+  parseMeteoraCurve,
   parseMintAccount,
   parsePumpCurve,
   screenCreditProjection,
@@ -60,6 +62,7 @@ function config(): PhaseCConfig {
     marketPollMinutes: 10,
     xEnabled: false,
     destination: "test",
+    fomoFeeSchedule: "solana_lowest_fee",
   };
 }
 
@@ -278,6 +281,16 @@ describe("quoted paper path", () => {
     expect(
       curveLiquidityUsd(reserves ?? { virtualSolLamports: 0n, realSolLamports: 0n }, 100),
     ).toBe(3000);
+    const launch = new Uint8Array(64);
+    const meteora = new Uint8Array(260);
+    for (let index = 0; index < 8; index += 1) {
+      launch[37 + index] = Number((1_000_000_000n >> BigInt(8 * index)) & 0xffn);
+      launch[45 + index] = Number((2_000_000_000n >> BigInt(8 * index)) & 0xffn);
+      meteora[232 + index] = Number((4_000_000_000n >> BigInt(8 * index)) & 0xffn);
+      meteora[240 + index] = Number((8_000_000_000n >> BigInt(8 * index)) & 0xffn);
+    }
+    expect(parseLaunchLabCurve(launch)?.virtualSolLamports).toBe(2_000_000_000n);
+    expect(parseMeteoraCurve(meteora)?.virtualTokenRaw).toBe(8_000_000_000n);
     const nowWave = new Date("2026-11-19T16:30:00.000Z");
     expect(secondWaveSignal(mihaoObservation(nowWave), nowWave)).toBe("breakout");
     expect(quoteUrlAllowed("https://api.jup.ag/swap")).toBe(false);

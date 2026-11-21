@@ -1509,7 +1509,8 @@ async function prepareWalletSignals(input: {
   const maxWallets = input.env.WALLET_MAX_WALLETS ?? 300;
   trackedWalletSet.clear();
   const active = await input.repo.activeTrackedWallets();
-  if (active.length === 0) {
+  const paperOpen = await input.repo.paperTestOpen();
+  if (active.length === 0 && !paperOpen) {
     const buys = await input.repo.earlyBuys();
     const scored = scoreProvenWallets(
       applyLossMaturity(buys, new Date(), {
@@ -1518,7 +1519,8 @@ async function prepareWalletSignals(input: {
       }),
       maxWallets,
       {
-        minEntries: input.env.WALLET_MIN_ENTRIES ?? 5,
+        minEntries: input.env.WALLET_MIN_ENTRIES ?? 10,
+        holdOut: true,
         minLosses: input.env.WALLET_MIN_LOSSES ?? 1,
         minShrunkRate: input.env.WALLET_MIN_SHRUNK_RATE ?? 0.6,
         botMaxEntries: input.env.WALLET_BOT_MAX_ENTRIES ?? 80,

@@ -141,28 +141,45 @@ async function runWalletPass(input: {
     }),
     maxWallets,
     {
-      minEntries: input.env.WALLET_MIN_ENTRIES ?? 5,
+      minEntries: input.env.WALLET_MIN_ENTRIES ?? 10,
+      holdOut: true,
+      cutoff: input.env.WALLET_SCORE_CUTOFF ? new Date(input.env.WALLET_SCORE_CUTOFF) : null,
       minLosses: input.env.WALLET_MIN_LOSSES ?? 1,
       minShrunkRate: input.env.WALLET_MIN_SHRUNK_RATE ?? 0.6,
       botMaxEntries: input.env.WALLET_BOT_MAX_ENTRIES ?? 80,
     },
   );
   const active = await input.repo.activeTrackedWallets();
-  const storedVersion = await input.repo.activeScoringVersion();
-  const reset = storedVersion !== null && storedVersion !== SCORING_VERSION;
-  const refresh = nextTrackedSet({
-    ranked,
-    active,
-    maxWallets,
-    maxChurnPct: input.env.WALLET_CHURN_PCT ?? 20,
-    reset,
-  });
-  if (reset || refresh.upsert.length > 0 || refresh.replaced > 0) {
-    await input.repo.applyWalletRefresh(
-      { keep: refresh.keep, upsert: refresh.upsert, scoringVersion: SCORING_VERSION },
-      new Date(),
+  const paperOpen = await input.repo.paperTestOpen();
+  let kept = active.length;
+  let replaced = 0;
+  let added = 0;
+  if (paperOpen) {
+    input.logger.info(
+      { wallets: active.length },
+      "paper test is open; proven wallet list stays frozen",
     );
-    input.onWallets?.(refresh.keep);
+    input.onWallets?.(active);
+  } else {
+    const storedVersion = await input.repo.activeScoringVersion();
+    const reset = storedVersion !== null && storedVersion !== SCORING_VERSION;
+    const refresh = nextTrackedSet({
+      ranked,
+      active,
+      maxWallets,
+      maxChurnPct: input.env.WALLET_CHURN_PCT ?? 20,
+      reset,
+    });
+    if (reset || refresh.upsert.length > 0 || refresh.replaced > 0) {
+      await input.repo.applyWalletRefresh(
+        { keep: refresh.keep, upsert: refresh.upsert, scoringVersion: SCORING_VERSION },
+        new Date(),
+      );
+      input.onWallets?.(refresh.keep);
+    }
+    kept = refresh.keep.length;
+    replaced = refresh.replaced;
+    added = refresh.added;
   }
   await input.repo.markWalletJob(new Date());
   input.logger.info(
@@ -171,9 +188,9 @@ async function runWalletPass(input: {
       buyers: result.buyers,
       mintsDone: result.mintsDone,
       stopped: result.stopped,
-      wallets: refresh.keep.length,
-      replaced: refresh.replaced,
-      added: refresh.added,
+      wallets: kept,
+      replaced,
+      added,
     },
     "wallet backfill and refresh",
   );

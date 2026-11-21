@@ -13,10 +13,13 @@ import {
 } from "./protocol.js";
 import {
   FULL_LOSS,
+  fomoFeeUsd,
   quoteKey,
   quotedRoundTrip,
+  roundTripFomoFee,
   scaleOutRoundTrip,
   stageSizeUsd,
+  type QuoteSource,
   type SizeBid,
 } from "./quote.js";
 import {
@@ -28,9 +31,9 @@ import {
   sizeForStage,
   type TierWallet,
 } from "./risk.js";
-import { assignArm, scoreStrength, stageForCoin, type ScoreCoin } from "./score.js";
+import { assignArm, isFlapMint, scoreStrength, stageForCoin, type ScoreCoin } from "./score.js";
 import { screenCoin, type ScreenFacts, type ScreenRules } from "./screen.js";
-import { inQuietHours } from "./time.js";
+import { inQuietHours, nextEtMidnight } from "./time.js";
 
 export interface PassCoin extends ScoreCoin {
   transferFeeBps: number | null;
@@ -45,6 +48,7 @@ export interface PassCoin extends ScoreCoin {
   quoteError: boolean;
   bondingCurve?: string | null;
   createdSlot?: number | null;
+  quoteSource?: "jupiter" | "curve_modeled";
 }
 
 export interface PassPosition {
@@ -102,6 +106,8 @@ export interface PlannedEntry {
   treatment: string;
   text: string;
   held: boolean;
+  heldReason: "quiet" | "control" | null;
+  fingerprint: string;
   entryAfter: Date;
 }
 
@@ -112,6 +118,8 @@ export interface PlannedOpen {
   feeUsd: number;
   sizeUsd: number;
   outAmount: string;
+  fomoFeeUsd: number;
+  quoteSource: QuoteSource;
 }
 
 export interface PlannedClose {
@@ -123,6 +131,8 @@ export interface PlannedClose {
   impactPct: number | null;
   feeUsd: number | null;
   failure: string | null;
+  fomoFeeUsd: number;
+  quoteSource: QuoteSource | null;
   text: string;
 }
 
@@ -142,6 +152,7 @@ export interface PassResult {
   paper: PaperEvaluation;
   sellWarnings: string[];
   scaled: string[];
+  restart: boolean;
 }
 
 function sizeFor(config: PhaseCConfig, sizePct: number): number {
@@ -198,27 +209,24 @@ export function runPhaseCPass(input: PassInput): PassResult {
   const currentBody = protocolBody(input.config, input.rules);
   const currentFingerprint = protocolFingerprint(currentBody);
   const registering = input.locked === null;
-  const protocolViolation =
-    input.locked !== null && input.locked.fingerprint !== currentFingerprint
-      ? "config changed after registration"
+  const restart = input.locked !== null && input.locked.fingerprint !== currentFingerprint;
+  const protocolViolation = restart ? "config changed after registration" : null;
+  const config = restart ? input.config : (input.locked?.config ?? input.config);
+  const entriesStart = restart ? nextEtMidnight(input.now) : (input.entriesStartAt ?? null);
+  const lock =
+    registering || restart
+      ? {
+          fingerprint: currentFingerprint,
+          body: JSON.stringify({
+            config: input.config,
+            rules: input.rules,
+            entriesStartAt: entriesStart?.toISOString() ?? null,
+            expectedAlerts: input.expectedAlerts ?? null,
+          }),
+        }
       : null;
-  const config = input.locked?.config ?? input.config;
-  const lock = registering
-    ? {
-        fingerprint: currentFingerprint,
-        body: JSON.stringify({
-          config: input.config,
-          rules: input.rules,
-          entriesStartAt: input.entriesStartAt?.toISOString() ?? null,
-          expectedAlerts: input.expectedAlerts ?? null,
-        }),
-      }
-    : null;
-  const started =
-    input.entriesStartAt === null ||
-    input.entriesStartAt === undefined ||
-    input.now.getTime() >= input.entriesStartAt.getTime();
-  const allowEntries = !registering && protocolViolation === null && started;
+  const started = entriesStart === null || input.now.getTime() >= entriesStart.getTime();
+  const allowEntries = !registering && !restart && started;
   const quotes = new Map(input.quotes.map((quote) => [quote.mint, quote]));
   const coins = input.coins;
 
@@ -250,6 +258,8 @@ export function runPhaseCPass(input: PassInput): PassResult {
         feeUsd: one.feeUsd,
         sizeUsd: one.sizeUsd,
         outAmount: one.outAmount,
+        fomoFeeUsd: fomoFeeUsd(one.sizeUsd, config.fomoFeeSchedule),
+        quoteSource: one.source ?? "jupiter",
       });
       openIds.add(position.id);
       continue;
@@ -264,6 +274,8 @@ export function runPhaseCPass(input: PassInput): PassResult {
         impactPct: null,
         feeUsd: null,
         failure: one.ok ? "no_liquidity" : one.reason,
+        fomoFeeUsd: 0,
+        quoteSource: one.ok ? (one.source ?? "jupiter") : null,
         text: `exit dead ${position.mint} net ${FULL_LOSS.toFixed(4)} 1x and 2x`,
       });
       closedIds.add(position.id);
@@ -280,6 +292,8 @@ export function runPhaseCPass(input: PassInput): PassResult {
         impactPct: null,
         feeUsd: null,
         failure: one.ok ? "no_liquidity" : one.reason,
+        fomoFeeUsd: 0,
+        quoteSource: null,
         text: `unpriced ${position.mint} excluded`,
       });
       closedIds.add(position.id);
@@ -320,6 +334,8 @@ export function runPhaseCPass(input: PassInput): PassResult {
         impactPct: null,
         feeUsd: null,
         failure: exitOne.ok ? "no_liquidity" : exitOne.reason,
+        fomoFeeUsd: 0,
+        quoteSource: exitOne.ok ? (exitOne.source ?? "jupiter") : null,
         text: `exit dead ${position.mint} net ${FULL_LOSS.toFixed(4)} 1x and 2x`,
       });
       closedIds.add(position.id);
@@ -336,6 +352,8 @@ export function runPhaseCPass(input: PassInput): PassResult {
         impactPct: null,
         feeUsd: null,
         failure: exitOne.reason,
+        fomoFeeUsd: 0,
+        quoteSource: null,
         text: `unpriced ${position.mint} excluded`,
       });
       closedIds.add(position.id);
@@ -353,12 +371,12 @@ export function runPhaseCPass(input: PassInput): PassResult {
     if (!decision.exit || latest === null) continue;
     const net =
       treatment === "scale_out"
-        ? scaleOutRoundTrip(entry, exitOne)
-        : quotedRoundTrip(entry, exitOne);
+        ? scaleOutRoundTrip(entry, exitOne, config.fomoFeeSchedule)
+        : quotedRoundTrip(entry, exitOne, config.fomoFeeSchedule);
     const net2x =
       treatment === "scale_out"
-        ? scaleOutRoundTrip(entry, exitTwo)
-        : quotedRoundTrip(entry, exitTwo);
+        ? scaleOutRoundTrip(entry, exitTwo, config.fomoFeeSchedule)
+        : quotedRoundTrip(entry, exitTwo, config.fomoFeeSchedule);
     const text = `exit ${decision.reason} ${position.mint} ${treatment} net1x ${net.toFixed(4)} net2x ${net2x.toFixed(4)}`;
     closes.push({
       id: position.id,
@@ -369,6 +387,8 @@ export function runPhaseCPass(input: PassInput): PassResult {
       impactPct: exitOne.ok ? exitOne.impactPct : null,
       feeUsd: exitOne.ok ? exitOne.feeUsd : null,
       failure: null,
+      fomoFeeUsd: roundTripFomoFee(entry, exitOne, config.fomoFeeSchedule),
+      quoteSource: exitOne.ok ? (exitOne.source ?? "jupiter") : null,
       text,
     });
     closedIds.add(position.id);
@@ -387,9 +407,10 @@ export function runPhaseCPass(input: PassInput): PassResult {
 
   const lossPct = bankrollLossPct([
     ...input.closedToday,
-    ...closes.map((row) => {
+    ...closes.flatMap((row) => {
       const position = input.positions.find((item) => item.id === row.id);
-      return { sizePct: position?.sizePct ?? 0, netReturn: row.net };
+      if (position?.arm === "random_pass") return [];
+      return [{ sizePct: position?.sizePct ?? 0, netReturn: row.net }];
     }),
   ]);
   const pauseNow = !input.paused && shouldPauseDay(lossPct, config.dailyLossCutoffPct);
@@ -400,7 +421,9 @@ export function runPhaseCPass(input: PassInput): PassResult {
     );
   }
 
-  let liveCount = input.positions.filter((position) => !closedIds.has(position.id)).length;
+  let liveCount = input.positions.filter(
+    (position) => !closedIds.has(position.id) && position.arm !== "random_pass",
+  ).length;
   const busy = new Set(
     input.positions
       .filter((position) => !closedIds.has(position.id))
@@ -411,22 +434,27 @@ export function runPhaseCPass(input: PassInput): PassResult {
   let recent = input.recentEntryCount;
   if (allowEntries) {
     for (const coin of coins) {
+      if (isFlapMint(coin.mint)) continue;
       const stage = stageForCoin(coin, input.now);
       if (!stage || seen.has(`${coin.mint}:${stage}`)) continue;
       const screen = screenOf(coin, quotes.get(coin.mint)?.liquidityUsd ?? null, input.rules);
       if (screen.verdict !== "pass") continue;
-      const arm = assignArm(coin.mint, stage, coin.trackedBuyers);
+      const arm = assignArm(coin.mint, stage, coin.trackedBuyers, coin.xMentions);
       const strength = scoreStrength(stage, coin);
       const size = sizeForStage(stage, config.sizePct, config.bankroll);
       const treatment = assignExitTreatment(coin.mint);
-      const decision = entryDecision({
-        openCount: liveCount,
-        maxConcurrent: config.maxConcurrent,
-        mintBusy: busy.has(coin.mint),
-        exitPlan: exitPlanText(),
-        paused,
-      });
-      if (!decision.ok || recent >= config.maxPerHour) continue;
+      const control = arm === "random_pass";
+      const decision = control
+        ? { ok: true as const }
+        : entryDecision({
+            openCount: liveCount,
+            maxConcurrent: config.maxConcurrent,
+            mintBusy: busy.has(coin.mint),
+            exitPlan: exitPlanText(),
+            paused,
+          });
+      if (!decision.ok || (!control && recent >= config.maxPerHour)) continue;
+      if (busy.has(coin.mint)) continue;
       const text = formatEntry({
         stage,
         arm,
@@ -436,8 +464,10 @@ export function runPhaseCPass(input: PassInput): PassResult {
         strength,
         exitPlan: `${EXIT_PLAN}; treatment ${treatment}`,
         warnings: screen.warnings,
+        fingerprint: currentFingerprint,
+        quoteSource: coin.quoteSource ?? null,
       });
-      const held = quietHold({
+      const quiet = quietHold({
         now: input.now,
         quietHours: config.quietHours,
         kind: "entry",
@@ -447,6 +477,7 @@ export function runPhaseCPass(input: PassInput): PassResult {
         minStrength: config.quietPostGradMinStrength,
         minSizePct: config.quietPostGradMinSizePct,
       });
+      const held = control || quiet;
       entries.push({
         mint: coin.mint,
         stage,
@@ -458,13 +489,17 @@ export function runPhaseCPass(input: PassInput): PassResult {
         treatment,
         text,
         held,
+        heldReason: control ? "control" : quiet ? "quiet" : null,
+        fingerprint: currentFingerprint,
         entryAfter: new Date(input.now.getTime() + config.entryDelaySec * 1000),
       });
       if (!held) immediate.push(text);
       busy.add(coin.mint);
       seen.add(`${coin.mint}:${stage}`);
-      liveCount += 1;
-      recent += 1;
+      if (!control) {
+        liveCount += 1;
+        recent += 1;
+      }
     }
   }
 
@@ -524,12 +559,13 @@ export function runPhaseCPass(input: PassInput): PassResult {
     entries,
     opens,
     closes,
-    immediate,
+    immediate: immediate.filter((line) => !/0x[0-9a-f]/i.test(line)),
     digest,
     digestIds: digest === null ? [] : input.held.map((row) => row.id),
     tierRequests,
     paper,
     sellWarnings,
     scaled,
+    restart,
   };
 }

@@ -24,6 +24,9 @@ export interface PhaseCStore {
     exitPlan: string;
     text: string;
     held: boolean;
+    heldReason?: "quiet" | "control" | null;
+    fingerprint?: string | null;
+    tradableInFomo?: boolean | null;
     alertAt: Date;
     entryAfter: Date;
   }): Promise<string>;
@@ -35,6 +38,8 @@ export interface PhaseCStore {
     feeUsd: number,
     sizeUsd: number,
     outAmount: string,
+    fomoFeeUsd: number,
+    quoteSource: string,
     at: Date,
   ): Promise<void>;
   markSellWarned(ids: readonly string[]): Promise<void>;
@@ -77,6 +82,9 @@ export interface PhaseCStore {
     >
   >;
   recordScreenCredits(credits: number, at: Date): Promise<void>;
+  voidPaperWindow(at: Date): Promise<void>;
+  clearProtocol(): Promise<void>;
+  tradableCounts(): Promise<{ yes: number; no: number; unknown: number }>;
   closePosition(input: {
     id: string;
     quote: number;
@@ -86,6 +94,8 @@ export interface PhaseCStore {
     impactPct: number | null;
     feeUsd: number | null;
     failure: string | null;
+    fomoFeeUsd?: number;
+    quoteSource?: string | null;
     at: Date;
   }): Promise<void>;
   wallets(): Promise<TierWallet[]>;

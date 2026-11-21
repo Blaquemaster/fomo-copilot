@@ -1,5 +1,7 @@
 /** Quote-only bids. Costs come from the quote, not from a fixed fee or slippage constant. */
 
+export type QuoteSource = "jupiter" | "curve_modeled";
+
 export interface SizeBidOk {
   ok: true;
   execPriceUsd: number;
@@ -10,6 +12,7 @@ export interface SizeBidOk {
   liquidityUsd: number | null;
   inAmount: string;
   outAmount: string;
+  source?: QuoteSource;
 }
 
 export interface SizeBidFail {
@@ -128,30 +131,138 @@ export function stageSizeUsd(bankroll: number | null, sizePct: number): number |
   return (bankroll * sizePct) / 100;
 }
 
+export type FomoFeeSchedule = "solana_lowest_fee" | "solana_other";
+
+/**
+ * FOMO's published Solana schedule. Lowest-fee route: 0.10 under $5,
+ * 2% from $5 through $47.50, $0.95 from there through $190, 0.50% above that.
+ * The brackets meet at the boundaries. Other routes are 0.50% with a $0.95 minimum.
+ */
+export function fomoFeeUsd(
+  notionalUsd: number,
+  schedule: FomoFeeSchedule = "solana_lowest_fee",
+): number {
+  if (!(notionalUsd > 0)) return 0;
+  if (schedule === "solana_other") return Math.max(0.95, notionalUsd * 0.005);
+  if (notionalUsd < 5) return 0.1;
+  if (notionalUsd <= 47.5) return notionalUsd * 0.02;
+  if (notionalUsd <= 190) return 0.95;
+  return notionalUsd * 0.005;
+}
+
+/** Jupiter fee stays in the quote. FOMO's fee is extra, on the entry notional and the exit proceeds. */
+export function roundTripFomoFee(
+  entry: SizeBid,
+  exit: SizeBid,
+  schedule: FomoFeeSchedule = "solana_lowest_fee",
+): number {
+  if (!entry.ok || !exit.ok || !(entry.execPriceUsd > 0) || !(entry.sizeUsd > 0)) return 0;
+  const tokens = (entry.sizeUsd - entry.feeUsd) / entry.execPriceUsd;
+  if (!(tokens > 0) || !(exit.execPriceUsd > 0)) return 0;
+  const proceeds = tokens * exit.execPriceUsd;
+  return fomoFeeUsd(entry.sizeUsd, schedule) + fomoFeeUsd(proceeds, schedule);
+}
+
 /** Round trip at one size. A missing or empty exit is a full loss of that bid. */
-export function quotedRoundTrip(entry: SizeBid, exit: SizeBid): number {
+export function quotedRoundTrip(
+  entry: SizeBid,
+  exit: SizeBid,
+  schedule: FomoFeeSchedule = "solana_lowest_fee",
+): number {
   if (!entry.ok || !(entry.execPriceUsd > 0) || !(entry.sizeUsd > 0)) return FULL_LOSS;
   if (!exit.ok || exit.liquidityUsd === 0 || !(exit.execPriceUsd > 0)) return FULL_LOSS;
   const tokens = (entry.sizeUsd - entry.feeUsd) / entry.execPriceUsd;
   if (!(tokens > 0)) return FULL_LOSS;
-  const proceeds = tokens * exit.execPriceUsd - exit.feeUsd;
-  return proceeds / entry.sizeUsd - 1;
+  const proceeds =
+    tokens * exit.execPriceUsd - exit.feeUsd - fomoFeeUsd(tokens * exit.execPriceUsd, schedule);
+  const entryFee = fomoFeeUsd(entry.sizeUsd, schedule);
+  return (proceeds - entryFee) / entry.sizeUsd - 1;
 }
 
 /**
  * Scale-out sells half at the +50% trigger when the quote has reached it.
  * The other half uses the exit quote. A dead exit loses the unsold half.
  */
-export function scaleOutRoundTrip(entry: SizeBid, exit: SizeBid): number {
+export function scaleOutRoundTrip(
+  entry: SizeBid,
+  exit: SizeBid,
+  schedule: FomoFeeSchedule = "solana_lowest_fee",
+): number {
   if (!entry.ok || !(entry.execPriceUsd > 0)) return FULL_LOSS;
   const triggered = exit.ok && exit.execPriceUsd >= entry.execPriceUsd * 1.5;
-  if (!triggered) return quotedRoundTrip(entry, exit);
+  if (!triggered) return quotedRoundTrip(entry, exit, schedule);
   const half = entry.sizeUsd / 2;
   const triggerPrice = entry.execPriceUsd * 1.5;
   const feeRate = entry.sizeUsd > 0 ? entry.feeUsd / entry.sizeUsd : 0;
-  const scaled = half * (triggerPrice / entry.execPriceUsd) - half * feeRate;
-  if (!exit.ok || exit.liquidityUsd === 0) return (scaled - entry.sizeUsd) / entry.sizeUsd;
+  const scaledGross = half * (triggerPrice / entry.execPriceUsd) - half * feeRate;
+  const scaled = scaledGross - fomoFeeUsd(scaledGross, schedule);
+  const entryFee = fomoFeeUsd(entry.sizeUsd, schedule);
+  if (!exit.ok || exit.liquidityUsd === 0)
+    return (scaled - entry.sizeUsd - entryFee) / entry.sizeUsd;
   const restTokens = half / entry.execPriceUsd;
-  const rest = restTokens * exit.execPriceUsd - exit.feeUsd / 2;
-  return (scaled + rest - entry.sizeUsd) / entry.sizeUsd;
+  const restGross = restTokens * exit.execPriceUsd - exit.feeUsd / 2;
+  const rest = restGross - fomoFeeUsd(Math.max(0, restGross), schedule);
+  return (scaled + rest - entry.sizeUsd - entryFee) / entry.sizeUsd;
+}
+
+/**
+ * Constant-product sell of a token amount against virtual reserves.
+ * Used only when Jupiter has no route and the coin is still on a curve.
+ */
+export function modeledSellQuote(input: {
+  virtualSolLamports: bigint;
+  virtualTokenRaw: bigint;
+  amountInRaw: bigint;
+  solPriceUsd: number;
+  sizeUsd: number;
+}): SizeBid {
+  if (
+    !(input.solPriceUsd > 0) ||
+    !(input.sizeUsd > 0) ||
+    input.virtualSolLamports <= 0n ||
+    input.virtualTokenRaw <= 0n ||
+    input.amountInRaw <= 0n
+  ) {
+    return { ok: false, reason: "no_liquidity" };
+  }
+  const solIn = input.virtualSolLamports;
+  const tokenIn = input.virtualTokenRaw;
+  const amount = input.amountInRaw;
+  const k = solIn * tokenIn;
+  const newToken = tokenIn + amount;
+  if (newToken <= 0n) return { ok: false, reason: "no_liquidity" };
+  const newSol = k / newToken;
+  const solOut = solIn - newSol;
+  if (solOut <= 0n) return { ok: false, reason: "no_liquidity" };
+  const execSolPerToken = Number(solOut) / Number(amount);
+  const spotSolPerToken = Number(solIn) / Number(tokenIn);
+  const execPriceUsd = execSolPerToken * input.solPriceUsd;
+  const midPriceUsd = spotSolPerToken * input.solPriceUsd;
+  if (!(execPriceUsd > 0) || !(midPriceUsd > 0)) return { ok: false, reason: "no_liquidity" };
+  const impactPct = ((midPriceUsd - execPriceUsd) / midPriceUsd) * 100;
+  return {
+    ok: true,
+    execPriceUsd,
+    midPriceUsd,
+    impactPct,
+    feeUsd: 0,
+    sizeUsd: input.sizeUsd,
+    liquidityUsd: (Number(solIn) / 1_000_000_000) * input.solPriceUsd,
+    inAmount: amount.toString(),
+    outAmount: solOut.toString(),
+    source: "curve_modeled",
+  };
+}
+
+/** Follower result from a delayed mark to an exit mark. The wallet's own fill is not the entry. */
+export function netFromDelayedMarks(
+  delayedMarkUsd: number,
+  exitMarkUsd: number,
+  schedule: FomoFeeSchedule = "solana_lowest_fee",
+): number | null {
+  if (!(delayedMarkUsd > 0) || !(exitMarkUsd > 0)) return null;
+  const notional = 100;
+  const grossExit = notional * (exitMarkUsd / delayedMarkUsd);
+  const proceeds = grossExit - fomoFeeUsd(grossExit, schedule) - fomoFeeUsd(notional, schedule);
+  return proceeds / notional - 1;
 }

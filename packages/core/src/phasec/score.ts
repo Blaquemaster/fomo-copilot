@@ -46,12 +46,26 @@ export function scoreStrength(stage: Stage, coin: ScoreCoin): number {
   return Math.min(1, Math.round(score * 100) / 100);
 }
 
-/** Pre-registered. The hash is the control and the second-wave split. X does not choose the arm. */
-export function assignArm(mint: string, stage: Stage, trackedBuyers: number): PaperArm {
+/**
+ * Control is a same-stage coin with no wallet buy and no X boost.
+ * It is not mixed into the strategy arms. X does not choose a strategy arm.
+ */
+export function assignArm(
+  mint: string,
+  stage: Stage,
+  trackedBuyers: number,
+  xMentions: number | null = null,
+): PaperArm {
   if (stage === "second_wave") {
     return mintBucket(mint, 2) === 0 ? "second_wave_a" : "second_wave_b";
   }
-  if (mintBucket(mint, 5) === 0) return "random_pass";
+  const noWallet = trackedBuyers < 1;
+  const noX = xMentions === null || xMentions < 2;
+  if (noWallet && noX && mintBucket(mint, 5) === 0) return "random_pass";
   if (trackedBuyers >= 1) return "wallets_x_screen";
   return "screen_only";
+}
+
+export function isFlapMint(mint: string): boolean {
+  return mint.toLowerCase().startsWith("0x");
 }

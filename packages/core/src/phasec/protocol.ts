@@ -1,3 +1,5 @@
+import { PROVEN_WALLET_RULE, SCORING_VERSION } from "../ingest/wallets.js";
+
 /** Frozen at the first screener pass. A later config change does not retune a running test. */
 
 export const ET = "America/New_York";
@@ -60,6 +62,7 @@ export interface PhaseCConfig {
   marketPollMinutes: number;
   xEnabled: boolean;
   destination: "test" | "admin";
+  fomoFeeSchedule: "solana_lowest_fee" | "solana_other";
 }
 
 export function defaultSizePct(): Record<Stage, number> {
@@ -94,8 +97,12 @@ export function protocolBody(config: PhaseCConfig, rules?: unknown): string {
     marketPollMinutes: config.marketPollMinutes,
     weights: SCORE_WEIGHTS,
     exitTreatments: EXIT_TREATMENTS,
-    outcome: "bankroll_pnl_at_1h_after_quoted_costs",
-    goRule: "positive bankroll pnl, min alerts, max drawdown under the locked percent",
+    fomoFeeSchedule: config.fomoFeeSchedule,
+    scoringVersion: SCORING_VERSION,
+    walletMinEntries: PROVEN_WALLET_RULE.minEntries,
+    outcome: "bankroll_pnl_at_1h_after_quoted_costs_and_fomo_fee",
+    goRule:
+      "strategy arms only: positive bankroll pnl after quoted costs and FOMO fees, min alerts, drawdown under the locked percent, still profitable without the best trade, median net above zero",
   });
 }
 

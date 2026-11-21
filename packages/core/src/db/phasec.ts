@@ -56,6 +56,8 @@ export class PhaseCRepository implements PhaseCStore {
          select c.mint, c.first_seen_at, c.graduated_at, c.curve_completed_at
          from candidates c
          where c.source <> 'audit'
+           and c.mint !~* '^0x'
+           and c.pool_type <> 'flap'
          order by c.first_seen_at desc
          limit $1
        )
@@ -225,7 +227,7 @@ export class PhaseCRepository implements PhaseCStore {
 
   async recentEntryCount(since: Date): Promise<number> {
     const result = await this.pool.query<{ count: string }>(
-      "select count(*)::text as count from phasec_alert where kind = 'entry' and created_at >= $1",
+      "select count(*)::text as count from phasec_alert where kind = 'entry' and created_at >= $1 and coalesce(held_reason, '') <> 'control' and restarted_at is null",
       [since.toISOString()],
     );
     return Number(result.rows[0]?.count ?? 0);
@@ -247,6 +249,9 @@ export class PhaseCRepository implements PhaseCStore {
     exitPlan: string;
     text: string;
     held: boolean;
+    heldReason?: "quiet" | "control" | null;
+    fingerprint?: string | null;
+    tradableInFomo?: boolean | null;
     alertAt: Date;
     entryAfter: Date;
   }): Promise<string> {
@@ -255,18 +260,21 @@ export class PhaseCRepository implements PhaseCStore {
       await client.query("begin");
       const inserted = await client.query<{ id: string }>(
         `insert into phasec_alert
-          (mint, stage, arm, kind, created_at, delivered_at, held_reason, size_pct, strength, body)
-         values ($1, $2, $3, 'entry', $4, null, $5, $6, $7, $8)
+          (mint, stage, arm, kind, created_at, delivered_at, held_reason, size_pct, strength, body,
+           fingerprint, tradable_in_fomo)
+         values ($1, $2, $3, 'entry', $4, null, $5, $6, $7, $8, $9, $10)
          returning id`,
         [
           input.mint,
           input.stage,
           input.arm,
           input.alertAt.toISOString(),
-          input.held ? "quiet" : null,
+          input.heldReason ?? (input.held ? "quiet" : null),
           input.sizePct,
           input.strength,
           input.text,
+          input.fingerprint ?? null,
+          input.tradableInFomo ?? null,
         ],
       );
       await client.query(
@@ -308,14 +316,17 @@ export class PhaseCRepository implements PhaseCStore {
     feeUsd: number,
     sizeUsd: number,
     outAmount: string,
+    fomoFeeUsd: number,
+    quoteSource: string,
     at: Date,
   ): Promise<void> {
     await this.pool.query(
       `update phasec_position
-       set status = 'open', opened_at = $7, entry_quote = $2, entry_impact_pct = $3,
-           entry_fee_usd = $4, entry_size_usd = $5, entry_out_amount = $6
+       set status = 'open', opened_at = $9, entry_quote = $2, entry_impact_pct = $3,
+           entry_fee_usd = $4, entry_size_usd = $5, entry_out_amount = $6,
+           fomo_fee_usd = $7, quote_source = $8
        where id = $1 and status = 'pending'`,
-      [id, quote, impactPct, feeUsd, sizeUsd, outAmount, at.toISOString()],
+      [id, quote, impactPct, feeUsd, sizeUsd, outAmount, fomoFeeUsd, quoteSource, at.toISOString()],
     );
   }
 
@@ -397,6 +408,8 @@ export class PhaseCRepository implements PhaseCStore {
       `select mint, first_seen_at, graduated_at
        from candidates
        where source <> 'audit'
+         and mint !~* '^0x'
+         and pool_type <> 'flap'
          and graduated_at is not null
          and graduated_at <= now() - interval '24 hours'
          and graduated_at >= now() - interval '30 days'
@@ -533,6 +546,8 @@ export class PhaseCRepository implements PhaseCStore {
     impactPct: number | null;
     feeUsd: number | null;
     failure: string | null;
+    fomoFeeUsd?: number;
+    quoteSource?: string | null;
     at: Date;
   }): Promise<void> {
     await this.pool.query(
@@ -541,7 +556,9 @@ export class PhaseCRepository implements PhaseCStore {
            exit_quote = $2,
            net_return = case when $5 = 'unpriced' then null else $3 end,
            net_return_2x = case when $5 = 'unpriced' then null else $4 end,
-           exit_reason = $5, exit_impact_pct = $6, exit_fee_usd = $7, quote_failure = $8, closed_at = $9
+           exit_reason = $5, exit_impact_pct = $6, exit_fee_usd = $7, quote_failure = $8, closed_at = $9,
+           fomo_fee_usd = coalesce(fomo_fee_usd, 0) + coalesce($10, 0),
+           quote_source = coalesce($11, quote_source)
        where id = $1 and status in ('open', 'pending')`,
       [
         input.id,
@@ -553,8 +570,43 @@ export class PhaseCRepository implements PhaseCStore {
         input.feeUsd,
         input.failure,
         input.at.toISOString(),
+        input.fomoFeeUsd ?? 0,
+        input.quoteSource ?? null,
       ],
     );
+  }
+
+  async voidPaperWindow(at: Date): Promise<void> {
+    await this.pool.query(
+      `update phasec_position
+       set status = case when status in ('pending', 'open') then 'voided' else status end,
+           restarted_at = $1
+       where restarted_at is null`,
+      [at.toISOString()],
+    );
+    await this.pool.query("update phasec_alert set restarted_at = $1 where restarted_at is null", [
+      at.toISOString(),
+    ]);
+  }
+
+  async clearProtocol(): Promise<void> {
+    await this.pool.query("delete from phasec_protocol where id = 1");
+  }
+
+  async tradableCounts(): Promise<{ yes: number; no: number; unknown: number }> {
+    const result = await this.pool.query<{ tradable_in_fomo: boolean | null; count: string }>(
+      `select tradable_in_fomo, count(*)::text as count from phasec_alert
+       where kind = 'entry' and restarted_at is null
+       group by tradable_in_fomo`,
+    );
+    const counts = { yes: 0, no: 0, unknown: 0 };
+    for (const row of result.rows) {
+      const count = Number(row.count);
+      if (row.tradable_in_fomo === true) counts.yes += count;
+      else if (row.tradable_in_fomo === false) counts.no += count;
+      else counts.unknown += count;
+    }
+    return counts;
   }
 
   async wallets(): Promise<TierWallet[]> {
@@ -641,6 +693,7 @@ export class PhaseCRepository implements PhaseCStore {
     }>(
       `select closed_at, arm, net_return, size_pct from phasec_position
        where status = 'closed' and net_return is not null and closed_at is not null
+         and restarted_at is null
        order by closed_at`,
     );
     return result.rows.map((row) => ({

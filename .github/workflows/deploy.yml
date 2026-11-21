@@ -318,7 +318,7 @@ jobs:
               line("WALLET_REFRESH_HOURS", bounded("WALLET_REFRESH_HOURS", "4", 168)),
               line("WALLET_LOSS_AGE_MINUTES", bounded("WALLET_LOSS_AGE_MINUTES", "120", 10080)),
               line("WALLET_LOSS_AGE_METEORA_MINUTES", bounded("WALLET_LOSS_AGE_METEORA_MINUTES", "60", 10080)),
-              line("WALLET_MIN_ENTRIES", bounded("WALLET_MIN_ENTRIES", "5", 1000)),
+              line("WALLET_MIN_ENTRIES", bounded("WALLET_MIN_ENTRIES", "10", 1000)),
               line("WALLET_MIN_LOSSES", loss_floor()),
               line("WALLET_MIN_SHRUNK_RATE", shrunk_rate()),
               line("WALLET_BOT_MAX_ENTRIES", bounded("WALLET_BOT_MAX_ENTRIES", "80", 100000)),

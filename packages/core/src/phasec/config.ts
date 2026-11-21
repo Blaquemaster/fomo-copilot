@@ -43,5 +43,6 @@ export function phaseCConfigFromEnv(env: Env, thresholds: Thresholds): PhaseCCon
     marketPollMinutes: env.MARKET_POLL_MINUTES ?? 10,
     xEnabled: env.X_MENTION_SOURCE === "fixture",
     destination: env.ALERT_DESTINATION ?? "test",
+    fomoFeeSchedule: env.FOMO_FEE_SCHEDULE ?? "solana_lowest_fee",
   };
 }

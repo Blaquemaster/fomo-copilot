@@ -62,6 +62,8 @@ export function formatEntry(input: {
   strength: number;
   exitPlan: string;
   warnings: readonly string[];
+  fingerprint?: string;
+  quoteSource?: string | null;
 }): string {
   return [
     `${input.stage} ${input.arm}`,
@@ -70,7 +72,11 @@ export function formatEntry(input: {
     `strength ${input.strength.toFixed(2)}`,
     `exit plan: ${input.exitPlan}`,
     input.warnings.length === 0 ? "screen: pass" : `screen: ${input.warnings.join("; ")}`,
-  ].join("\n");
+    input.fingerprint ? `config ${input.fingerprint}` : "",
+    input.quoteSource === "curve_modeled" ? "quote curve_modeled" : "",
+  ]
+    .filter((line) => line !== "")
+    .join("\n");
 }
 
 export function formatDigest(lines: readonly string[]): string {
@@ -83,12 +89,30 @@ export function formatWeeklyReview(input: {
   xChanges: readonly string[];
   promotionsWaiting: readonly string[];
   paper: PaperEvaluation;
+  tradable?: { yes: number; no: number; unknown: number };
+  walletScore?: {
+    scoringVersion: number;
+    lookbackStart: string | null;
+    lookbackEnd: string | null;
+    entryCount: number;
+    cutoff: string | null;
+  };
 }): string {
   const lines = [
     `Weekly review ${input.week}`,
     `paper ${input.paper.status} alerts ${input.paper.alerts.toString()} bankroll pnl ${
       input.paper.bankrollPnl === null ? "n/a" : input.paper.bankrollPnl.toFixed(4)
+    } leave-one-out ${
+      input.paper.leaveOneOutPnl === null ? "n/a" : input.paper.leaveOneOutPnl.toFixed(4)
+    } median ${input.paper.medianNet === null ? "n/a" : input.paper.medianNet.toFixed(4)} control pnl ${
+      input.paper.controlPnl === null ? "n/a" : input.paper.controlPnl.toFixed(4)
     } max drawdown ${input.paper.maxDrawdownPct.toFixed(2)}%`,
+    input.tradable
+      ? `tradable in fomo: yes ${input.tradable.yes.toString()} no ${input.tradable.no.toString()} unknown ${input.tradable.unknown.toString()}`
+      : "tradable in fomo: unknown",
+    input.walletScore
+      ? `wallet score v${input.walletScore.scoringVersion.toString()} lookback ${input.walletScore.lookbackStart ?? "none"} to ${input.walletScore.lookbackEnd ?? "none"} entries ${input.walletScore.entryCount.toString()} cutoff ${input.walletScore.cutoff ?? "none"}`
+      : "wallet score: not recorded",
     input.walletChanges.length === 0
       ? "wallet list: no change"
       : `wallet list: ${input.walletChanges.join(", ")}`,

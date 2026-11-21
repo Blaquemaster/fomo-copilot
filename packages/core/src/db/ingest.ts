@@ -338,6 +338,12 @@ create table if not exists wallet_early_buy (
 );
 
 create index if not exists wallet_early_buy_mint_idx on wallet_early_buy (mint);
+alter table wallet_early_buy add column if not exists delayed_mark_usd double precision;
+alter table wallet_early_buy add column if not exists delayed_mark_at timestamptz;
+alter table wallet_early_buy add column if not exists delayed_mark_source text;
+alter table wallet_early_buy add column if not exists exit_mark_usd double precision;
+alter table wallet_early_buy add column if not exists bought_at timestamptz;
+alter table wallet_early_buy add column if not exists funder text;
 
 create table if not exists wallet_backfill_mint (
   mint text primary key,
@@ -514,6 +520,14 @@ create table if not exists phasec_wallet_snapshot (
 alter table phasec_position add column if not exists entry_out_amount text;
 alter table phasec_position add column if not exists sell_warned boolean not null default false;
 alter table phasec_position add column if not exists scaled_at timestamptz;
+alter table phasec_position add column if not exists fomo_fee_usd double precision;
+alter table phasec_position add column if not exists quote_source text;
+alter table phasec_position add column if not exists restarted_at timestamptz;
+alter table phasec_alert add column if not exists fingerprint text;
+alter table phasec_alert add column if not exists tradable_in_fomo boolean;
+alter table phasec_alert add column if not exists minutes_from_alert_to_listed double precision;
+alter table phasec_alert add column if not exists restarted_at timestamptz;
+create index if not exists wallet_fill_mint_side_idx on wallet_fill (mint, side);
 
 create table if not exists phasec_mint_cache (
   mint text primary key,
@@ -1571,6 +1585,11 @@ export class IngestRepository {
     if (version === null || version === undefined) return null;
     const parsed = Number(version);
     return Number.isFinite(parsed) ? parsed : null;
+  }
+
+  async paperTestOpen(): Promise<boolean> {
+    const result = await this.pool.query("select 1 from phasec_protocol where id = 1");
+    return (result.rowCount ?? 0) > 0;
   }
 
   async activeTrackedWallets(): Promise<string[]> {

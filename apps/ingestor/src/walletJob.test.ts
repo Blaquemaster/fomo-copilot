@@ -92,4 +92,39 @@ describe("early-buyer history retry", () => {
     expect(sleeps).toEqual([60_000]);
     expect(logged.some((entry) => entry.code === -32015)).toBe(true);
   });
+
+  it("does not churn the wallet list while a paper protocol row exists", async () => {
+    const controller = new AbortController();
+    const applyWalletRefresh = vi.fn(async () => undefined);
+    await runWalletMaintenance({
+      env,
+      logger: {
+        info() {},
+        error() {},
+        debug() {},
+        fatal() {},
+        trace() {},
+        warn() {},
+      } as never,
+      repo: {
+        walletJobFinishedAt: async () => null,
+        featureMonthMicros: async () => 0n,
+        nextBackfillMints: async () => [],
+        saveEarlyBuyers: async () => 0,
+        saveBackfillCheckpoint: async () => undefined,
+        recordFeatureSpend: async () => undefined,
+        earlyBuys: async () => [],
+        activeTrackedWallets: async () => ["kept-wallet"],
+        paperTestOpen: async () => true,
+        applyWalletRefresh,
+        markWalletJob: async () => undefined,
+      } as unknown as IngestRepository,
+      signal: controller.signal,
+      fetchPage: async () => ({ raw: [], paginationToken: null, credits: 0 }),
+      sleep: async () => {
+        controller.abort();
+      },
+    });
+    expect(applyWalletRefresh).not.toHaveBeenCalled();
+  });
 });

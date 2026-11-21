@@ -23,11 +23,14 @@ import {
   type PhaseCConfig,
 } from "./protocol.js";
 import { entryDecision, planTierPromotions } from "./risk.js";
-import { assignArm, scoreStrength } from "./score.js";
+import { lookupTradableInFomo } from "./fomoLookup.js";
+import { assignArm, isFlapMint, scoreStrength } from "./score.js";
 import {
+  fomoFeeUsd,
   jupiterQuoteUrl,
   jupiterRatePerMin,
   liquidityFromSellImpact,
+  modeledSellQuote,
   parseJupiterQuote,
   quoteKey,
   quotedRoundTrip,
@@ -73,6 +76,7 @@ function config(overrides: Partial<PhaseCConfig> = {}): PhaseCConfig {
     marketPollMinutes: 10,
     xEnabled: false,
     destination: "test",
+    fomoFeeSchedule: "solana_lowest_fee",
     ...overrides,
   };
 }
@@ -409,9 +413,10 @@ describe("phase C", () => {
         locked: { fingerprint: protocolFingerprint(protocolBody(first, rules)), config: first },
       }),
     );
-    expect(locked.retuneBlocked).toBe(true);
-    expect(locked.config.paperMinAlerts).toBe(100);
-    expect(locked.lock).toBeNull();
+    expect(locked.restart).toBe(true);
+    expect(locked.entries).toEqual([]);
+    expect(locked.lock?.fingerprint).toBe(protocolFingerprint(protocolBody(changed, rules)));
+    expect(locked.config.paperMinAlerts).toBe(50);
   });
 
   it("reads the mihao fixture as a second wave and refuses swap or execute urls", () => {
@@ -493,6 +498,10 @@ describe("phase C", () => {
         status: "collecting",
         alerts: 1,
         bankrollPnl: 0.01,
+        leaveOneOutPnl: null,
+        medianNet: 0.01,
+        controlPnl: null,
+        controlAlerts: 0,
         maxDrawdownPct: 0,
         weeks: [],
         powerSampleSize: 385,
@@ -564,5 +573,181 @@ describe("phase C", () => {
     expect(powerSampleSize()).toBe(385);
     const bucket = takeTokens({ tokens: 1, refilledAt: 0 }, 0, 10, 3);
     expect(bucket.granted).toBe(1);
+    expect(fomoFeeUsd(4)).toBe(0.1);
+    expect(fomoFeeUsd(10)).toBeCloseTo(0.2);
+    expect(fomoFeeUsd(100)).toBe(0.95);
+    expect(fomoFeeUsd(200)).toBeCloseTo(1);
+    expect(fomoFeeUsd(100, "solana_other")).toBe(0.95);
+    const route = quotedRoundTrip(bid, { ok: false, reason: "no_route" });
+    expect(route).toBe(-1);
+  });
+
+  it("keeps the control arm off telegram and out of the go decision", () => {
+    const strategy = Array.from({ length: 100 }, (_unused, index) => ({
+      at: new Date(Date.UTC(2026, 10, 2, 0, index)),
+      arm: "screen_only" as const,
+      net: index === 0 ? 5 : -0.02,
+      sizePct: 2,
+    }));
+    const outlier = evaluatePaper({
+      registeredAt: new Date("2026-11-01T00:00:00.000Z"),
+      now: new Date("2026-11-03T00:00:00.000Z"),
+      windowDays: 7,
+      minAlerts: 100,
+      maxDrawdownPct: 15,
+      returns: strategy,
+    });
+    expect(outlier.bankrollPnl).toBeGreaterThan(0);
+    expect(outlier.status).toBe("no_go");
+    const mixed = evaluatePaper({
+      registeredAt: new Date("2026-11-01T00:00:00.000Z"),
+      now: new Date("2026-11-03T00:00:00.000Z"),
+      windowDays: 7,
+      minAlerts: 100,
+      maxDrawdownPct: 15,
+      returns: [
+        ...Array.from({ length: 100 }, (_unused, index) => ({
+          at: new Date(Date.UTC(2026, 10, 2, 1, index)),
+          arm: "wallets_x_screen" as const,
+          net: 0.02,
+          sizePct: 1,
+        })),
+        {
+          at: new Date("2026-11-02T00:00:00.000Z"),
+          arm: "random_pass" as const,
+          net: -1,
+          sizePct: 50,
+        },
+      ],
+    });
+    expect(mixed.status).toBe("go");
+    expect(mixed.controlAlerts).toBe(1);
+    expect(mixed.controlPnl).not.toBeNull();
+    const controlMint = mintFor("trench", 0, "random_pass", "Ctrl");
+    const alerted = runPhaseCPass(
+      pass({
+        coins: [coin(controlMint)],
+        entriesStartAt: new Date("2026-11-19T00:00:00.000Z"),
+      }),
+    );
+    expect(alerted.entries[0]?.arm).toBe("random_pass");
+    expect(alerted.entries[0]?.heldReason).toBe("control");
+    expect(alerted.entries[0]?.text).toContain("config ");
+    expect(alerted.immediate.some((line) => line.includes(controlMint))).toBe(false);
+    const flap = runPhaseCPass(
+      pass({
+        coins: [coin("0xabc")],
+        entriesStartAt: new Date("2026-11-19T00:00:00.000Z"),
+      }),
+    );
+    expect(flap.entries).toEqual([]);
+    expect(flap.immediate.join("\n")).not.toMatch(/0x/i);
+    expect(isFlapMint("0xabc")).toBe(true);
+  });
+
+  it("labels a modeled curve sell when Jupiter has no route", () => {
+    const modeled = modeledSellQuote({
+      virtualSolLamports: 30_000_000_000n,
+      virtualTokenRaw: 1_000_000_000_000n,
+      amountInRaw: 10_000_000_000n,
+      solPriceUsd: 150,
+      sizeUsd: 5,
+    });
+    expect(modeled.ok).toBe(true);
+    if (modeled.ok) expect(modeled.source).toBe("curve_modeled");
+    expect(lookupTradableInFomo("mint")).resolves.toEqual({
+      tradableInFomo: null,
+      minutesFromAlertToListed: null,
+    });
+    const screened = screenCoin(
+      {
+        mintAuthorityActive: false,
+        freezeAuthorityActive: false,
+        transferFeeBps: 0,
+        exitQuoteImpactPct: 1,
+        top10HoldersPct: 10,
+        sniperBundlePct: 1,
+        liquidityUsd: 20_000,
+        uniqueMakers1h: 80,
+        creatorSells: 0,
+        quoteError: false,
+      },
+      rules,
+    );
+    expect(screened.verdict).toBe("pass");
+  });
+
+  it("waits until entryAfter and uses the entry bid rather than the screen quote", () => {
+    const mint = "Delay111111111111111111111111111111111111";
+    const alertAt = new Date("2026-11-19T16:30:00.000Z");
+    const entryAfter = new Date(alertAt.getTime() + 90_000);
+    const position = {
+      id: "p-delay",
+      mint,
+      stage: "trench" as const,
+      arm: "screen_only" as const,
+      status: "pending" as const,
+      alertAt,
+      entryAfter,
+      openedAt: null,
+      entryQuote: null,
+      sizePct: 0.5,
+      exitPlan: "stop",
+      screenFailed: false,
+    };
+    const screenKey = `${mint}|screen|1x`;
+    const entryKey = `${mint}|entry|1x`;
+    const early = runPhaseCPass(
+      pass({
+        now: alertAt,
+        positions: [position],
+        bids: {
+          [entryKey]: {
+            ok: true,
+            execPriceUsd: 2,
+            midPriceUsd: 2,
+            impactPct: 1,
+            feeUsd: 0,
+            sizeUsd: 50,
+            liquidityUsd: 1,
+            inAmount: "1",
+            outAmount: "2",
+          },
+        },
+      }),
+    );
+    expect(early.opens).toEqual([]);
+    const opened = runPhaseCPass(
+      pass({
+        now: entryAfter,
+        positions: [position],
+        bids: {
+          [screenKey]: {
+            ok: true,
+            execPriceUsd: 9,
+            midPriceUsd: 9,
+            impactPct: 1,
+            feeUsd: 0,
+            sizeUsd: 50,
+            liquidityUsd: 1,
+            inAmount: "1",
+            outAmount: "9",
+          },
+          [entryKey]: {
+            ok: true,
+            execPriceUsd: 2,
+            midPriceUsd: 2,
+            impactPct: 1,
+            feeUsd: 0,
+            sizeUsd: 50,
+            liquidityUsd: 1,
+            inAmount: "1",
+            outAmount: "2",
+          },
+        },
+      }),
+    );
+    expect(opened.opens[0]?.quote).toBe(2);
+    expect(opened.opens[0]?.fomoFeeUsd).toBe(fomoFeeUsd(50));
   });
 });

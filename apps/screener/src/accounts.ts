@@ -51,14 +51,72 @@ export function screenCreditProjection(newMintsPerDay: number): {
 }
 
 export function parsePumpCurve(data: Uint8Array): {
+  virtualTokenRaw: bigint;
   virtualSolLamports: bigint;
+  realTokenRaw: bigint;
   realSolLamports: bigint;
 } | null {
   if (data.length < 40) return null;
   return {
+    virtualTokenRaw: readU64(data, 8),
     virtualSolLamports: readU64(data, 16),
+    realTokenRaw: readU64(data, 24),
     realSolLamports: readU64(data, 32),
   };
+}
+
+/** Raydium LaunchLab PoolState: 8 disc + epoch u64 + 5 u8, then supply, total_base_sell, virtual_base, virtual_quote. */
+export const LAUNCHLAB_VIRTUAL_BASE_OFFSET = 37;
+export const LAUNCHLAB_VIRTUAL_QUOTE_OFFSET = 45;
+
+export function parseLaunchLabCurve(data: Uint8Array): {
+  virtualTokenRaw: bigint;
+  virtualSolLamports: bigint;
+} | null {
+  if (data.length < LAUNCHLAB_VIRTUAL_QUOTE_OFFSET + 8) return null;
+  return {
+    virtualTokenRaw: readU64(data, LAUNCHLAB_VIRTUAL_BASE_OFFSET),
+    virtualSolLamports: readU64(data, LAUNCHLAB_VIRTUAL_QUOTE_OFFSET),
+  };
+}
+
+/**
+ * Meteora DBC virtual pool. quote_reserve then base_reserve sit after the
+ * volatility tracker and five pubkeys. The offsets are the layout we model against.
+ */
+export const METEORA_QUOTE_RESERVE_OFFSET = 232;
+export const METEORA_BASE_RESERVE_OFFSET = 240;
+
+export function parseMeteoraCurve(data: Uint8Array): {
+  virtualTokenRaw: bigint;
+  virtualSolLamports: bigint;
+} | null {
+  if (data.length < METEORA_BASE_RESERVE_OFFSET + 8) return null;
+  return {
+    virtualSolLamports: readU64(data, METEORA_QUOTE_RESERVE_OFFSET),
+    virtualTokenRaw: readU64(data, METEORA_BASE_RESERVE_OFFSET),
+  };
+}
+
+export function parseVenueCurve(data: Uint8Array): {
+  venue: "pump" | "launchlab" | "meteora";
+  virtualTokenRaw: bigint;
+  virtualSolLamports: bigint;
+} | null {
+  if (data.length >= METEORA_BASE_RESERVE_OFFSET + 8) {
+    const meteora = parseMeteoraCurve(data);
+    if (meteora && meteora.virtualSolLamports > 0n && meteora.virtualTokenRaw > 0n) {
+      return { venue: "meteora", ...meteora };
+    }
+    const launch = parseLaunchLabCurve(data);
+    if (launch && launch.virtualSolLamports > 0n && launch.virtualTokenRaw > 0n) {
+      return { venue: "launchlab", ...launch };
+    }
+  }
+  const pump = parsePumpCurve(data);
+  if (!pump || pump.virtualSolLamports <= 0n) return null;
+  const token = pump.virtualTokenRaw > 0n ? pump.virtualTokenRaw : 1n;
+  return { venue: "pump", virtualSolLamports: pump.virtualSolLamports, virtualTokenRaw: token };
 }
 
 /** Virtual SOL is the reserve the curve quotes against. Real SOL is the cash in the account. */
@@ -181,7 +239,16 @@ export async function loadCurveLiquidity(input: {
   coins: readonly { mint: string; bondingCurve: string }[];
   solPriceUsd: number;
   fetchImpl?: typeof fetch;
-}): Promise<{ rows: Array<{ mint: string; liquidityUsd: number }>; credits: number }> {
+}): Promise<{
+  rows: Array<{
+    mint: string;
+    liquidityUsd: number;
+    virtualSolLamports: bigint;
+    virtualTokenRaw: bigint;
+    venue: "pump" | "launchlab" | "meteora";
+  }>;
+  credits: number;
+}> {
   const fetchImpl = input.fetchImpl ?? fetch;
   const rows = [];
   let credits = 0;
@@ -207,11 +274,14 @@ export async function loadCurveLiquidity(input: {
       };
       const encoded = body.result?.value?.data?.[0];
       if (!encoded) continue;
-      const parsed = parsePumpCurve(Buffer.from(encoded, "base64"));
+      const parsed = parseVenueCurve(Buffer.from(encoded, "base64"));
       if (!parsed) continue;
-      const liquidityUsd = curveLiquidityUsd(parsed, input.solPriceUsd);
+      const liquidityUsd = curveLiquidityUsd(
+        { virtualSolLamports: parsed.virtualSolLamports, realSolLamports: 0n },
+        input.solPriceUsd,
+      );
       if (liquidityUsd === null) continue;
-      rows.push({ mint: coin.mint, liquidityUsd });
+      rows.push({ mint: coin.mint, liquidityUsd, ...parsed });
     } catch {
       // Missing reserves stay unknown until the next pass.
     }
