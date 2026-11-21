@@ -120,7 +120,6 @@ describe("early-buyer history retry", () => {
         markWalletJob: async () => undefined,
       } as unknown as IngestRepository,
       signal: controller.signal,
-      fetchPage: async () => ({ raw: [], paginationToken: null, credits: 0 }),
       sleep: async () => {
         controller.abort();
       },
