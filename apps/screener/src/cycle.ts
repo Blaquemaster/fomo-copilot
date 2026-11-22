@@ -1,5 +1,6 @@
 import {
   admitAutobuy,
+  DEFAULT_WALLET_SIGNAL,
   autobuyLimits,
   noopSigner,
   resolveAutobuyMode,
@@ -86,7 +87,10 @@ export async function runPhaseCCycle(input: {
   const stored = await input.store.protocol();
   const day = etDayRange(input.now);
   const rules = screenRulesFromThresholds(input.thresholds);
-  const coins = await input.store.coins(200);
+  const coins = await input.store.coins(200, {
+    maxMintsPerDay: rules.walletMaxMintsPerDay ?? DEFAULT_WALLET_SIGNAL.maxMintsPerDay,
+    freshMinutes: rules.walletBuyFreshMinutes ?? DEFAULT_WALLET_SIGNAL.freshMinutes,
+  });
   if (config.xEnabled) {
     const counts = await input.store.mentionCounts(coins.map((coin) => coin.mint));
     for (const coin of coins) coin.xMentions = counts.get(coin.mint) ?? 0;

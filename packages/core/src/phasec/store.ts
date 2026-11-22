@@ -3,10 +3,19 @@ import type { ResolvedReturn } from "./paper.js";
 import type { Stage } from "./protocol.js";
 import type { TierWallet } from "./risk.js";
 
+export interface WalletSignalRules {
+  /** A tracked wallet that touched more distinct mints than this in a day is a flip bot. */
+  maxMintsPerDay: number;
+  /** A tracked buy counts only if the wallet is still a net buyer and bought this recently. */
+  freshMinutes: number;
+}
+
+export const DEFAULT_WALLET_SIGNAL: WalletSignalRules = { maxMintsPerDay: 40, freshMinutes: 60 };
+
 export interface PhaseCStore {
   protocol(): Promise<{ fingerprint: string; body: string; registeredAt: Date } | null>;
   saveProtocol(fingerprint: string, body: string, at: Date): Promise<void>;
-  coins(limit: number): Promise<PassCoin[]>;
+  coins(limit: number, signal?: WalletSignalRules): Promise<PassCoin[]>;
   mentionCounts(mints: readonly string[]): Promise<Map<string, number>>;
   positions(): Promise<PassPosition[]>;
   closedBetween(start: Date, end: Date): Promise<Array<{ sizePct: number; netReturn: number }>>;

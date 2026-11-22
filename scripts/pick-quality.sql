@@ -10,9 +10,29 @@ with proto as (
 win as (
   select greatest(now() - make_interval(hours => :hours), (select entries_start from proto)) as since
 ),
+tip as (select coalesce(max(slot), 0) as slot from wallet_fill),
+rate as (
+  select case
+    when extract(epoch from max(first_seen_at) - min(first_seen_at)) >= 600
+      and max(first_seen_slot) > min(first_seen_slot)
+    then (max(first_seen_slot) - min(first_seen_slot))::float
+      / extract(epoch from max(first_seen_at) - min(first_seen_at))
+    else 4.65 end as per_sec
+  from candidates where source = 'stream' and first_seen_at > now() - interval '6 hours'
+),
+selective as (
+  select f.wallet from wallet_fill f, tip, rate
+  where f.slot > tip.slot - (rate.per_sec * 86400)::bigint
+  group by f.wallet having count(distinct f.mint) <= 40
+),
 entries as (
   select a.id, a.mint, a.stage, a.arm, a.strength, a.body, a.created_at,
          coalesce(w.tracked_buyers, 0) as buyers,
+         (select count(*) from (
+            select f.wallet from wallet_fill f join selective s on s.wallet = f.wallet
+            where f.mint = a.mint group by f.wallet
+            having count(*) filter (where f.side in ('buy', 'swap'))
+              > count(*) filter (where f.side = 'sell')) h) as selective_holders,
          case when c.top10_method = 'wallets_v2' then c.top10_pct end as top10,
          c.sniper_pct
   from phasec_alert a
@@ -42,6 +62,10 @@ select line from (
   union all
   select 10, 'ALERT no wallet support: trench ' || arm || ' ' || mint || ' strength ' || strength
   from entries where stage = 'trench' and arm <> 'random_pass' and buyers < 1
+  union all
+  select 14, case when created_at > now() - interval '75 minutes' then 'ALERT' else 'INFO' end
+    || ' no selective tracked wallet still holds (flip bots or already sold): ' || arm || ' ' || mint
+  from entries where arm = 'wallets_x_screen' and selective_holders < 1
   union all
   select 11, 'ALERT top 10 holders ' || round(top10::numeric, 1) || '% ' || arm || ' ' || mint
   from entries where top10 > 50

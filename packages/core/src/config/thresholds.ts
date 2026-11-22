@@ -47,8 +47,14 @@ export const thresholdsSchema = z.strictObject({
     entries: z
       .strictObject({
         trench_min_tracked_buyers: z.number().int().nonnegative().max(1_000).default(1),
+        wallet_max_mints_per_day: z.number().int().positive().max(1_000_000).default(40),
+        wallet_buy_fresh_minutes: z.number().positive().max(10_080).default(60),
       })
-      .default({ trench_min_tracked_buyers: 1 }),
+      .default({
+        trench_min_tracked_buyers: 1,
+        wallet_max_mints_per_day: 40,
+        wallet_buy_fresh_minutes: 60,
+      }),
   }),
   alerts: z.strictObject({
     max_per_hour: z.number().int().positive().max(60),

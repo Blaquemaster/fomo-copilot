@@ -27,7 +27,11 @@ describe("loadThresholds", () => {
       sniper_bundle_pct_above: 60,
       required_source_error: "WATCH",
     });
-    expect(thresholds.screen.entries).toEqual({ trench_min_tracked_buyers: 1 });
+    expect(thresholds.screen.entries).toEqual({
+      trench_min_tracked_buyers: 1,
+      wallet_max_mints_per_day: 40,
+      wallet_buy_fresh_minutes: 60,
+    });
     expect(thresholds.screen.soft).toEqual({
       top10_holders_pct_warn: 35,
       sniper_bundle_pct_warn: 30,

@@ -576,6 +576,7 @@ alter table phasec_market_snapshot add column if not exists volume_24h double pr
 alter table phasec_mint_cache add column if not exists exit_impact_pct double precision;
 alter table phasec_mint_cache add column if not exists exit_impact_at timestamptz;
 alter table phasec_mint_cache add column if not exists top10_method text;
+create index if not exists wallet_fill_slot_idx on wallet_fill (slot);
 
 create table if not exists autobuy_intent (
   id bigserial primary key,

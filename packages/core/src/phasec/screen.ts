@@ -9,6 +9,8 @@ export interface ScreenRules {
   sniperFailAbove?: number;
   /** Strategy trench entries need this many tracked buyers. Controls are exempt. */
   trenchMinTrackedBuyers?: number;
+  walletMaxMintsPerDay?: number;
+  walletBuyFreshMinutes?: number;
   top10Warn: number;
   sniperWarn: number;
   minLiquidityUsd: number;

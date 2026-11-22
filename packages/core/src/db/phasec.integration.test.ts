@@ -156,3 +156,70 @@ describe.skipIf(!databaseUrl)("phasec positions against postgres", () => {
     }
   }, 30_000);
 });
+
+const TIP = 900_000_000;
+
+describe.skipIf(!databaseUrl)("phasec live wallet signal against postgres", () => {
+  it("counts only selective wallets that still hold and bought recently", async () => {
+    const pool = createPool(databaseUrl ?? "");
+    try {
+      await migrate(pool);
+      await pool.query("delete from wallet_fill where slot > $1", [TIP - 1_000_000]);
+      await pool.query(
+        "delete from candidates where source = 'stream' and first_seen_at > now() - interval '7 hours'",
+      );
+      const repo = new PhaseCRepository(pool);
+      const mints = {
+        bot: "SignalBotOnly11111111111111111111111111pump",
+        fresh: "SignalFresh111111111111111111111111111pump",
+        sold: "SignalSold1111111111111111111111111111pump",
+        stale: "SignalStale111111111111111111111111111pump",
+      };
+      let index = 0;
+      for (const mint of Object.values(mints)) {
+        index += 1;
+        await pool.query(
+          `insert into candidates
+             (mint, pool, pool_type, first_seen_slot, first_seen_at, source_signature)
+           values ($1, $2, 'pump', $3, now() - interval '30 minutes', $4)
+           on conflict (pool) do update set first_seen_at = now() - interval '30 minutes'`,
+          [mint, `pool-${mint}`, TIP - 5_000, `sig-create-${index.toString()}`],
+        );
+      }
+      const fill = async (wallet: string, mint: string, side: string, slot: number) => {
+        index += 1;
+        await pool.query(
+          `insert into wallet_fill (signature, event_index, slot, mint, wallet, side, venue)
+           values ($1, 0, $2, $3, $4, $5, 'pump')`,
+          [`sig-${index.toString()}`, slot, mint, wallet, side],
+        );
+      };
+      // A flip bot that touched 41 mints today, including the bot-only coin.
+      await fill("BotWallet", mints.bot, "buy", TIP - 100);
+      for (let other = 0; other < 40; other += 1) {
+        await fill("BotWallet", `BotOther${other.toString()}`, "buy", TIP - 200);
+      }
+      await fill("FreshWallet", mints.fresh, "buy", TIP - 100);
+      await fill("SoldWallet", mints.sold, "buy", TIP - 300);
+      await fill("SoldWallet", mints.sold, "sell", TIP - 200);
+      // Bought about two hours ago: still held but no longer a fresh signal.
+      await fill("StaleWallet", mints.stale, "buy", TIP - 18_000);
+      await fill("TipWallet", "TipMint", "buy", TIP);
+
+      const coins = await repo.coins(200, { maxMintsPerDay: 40, freshMinutes: 60 });
+      const buyers = new Map(coins.map((coin) => [coin.mint, coin.trackedBuyers]));
+      expect(buyers.get(mints.fresh)).toBe(1);
+      expect(buyers.get(mints.bot)).toBe(0);
+      expect(buyers.get(mints.sold)).toBe(0);
+      expect(buyers.get(mints.stale)).toBe(0);
+
+      const loose = await repo.coins(200, { maxMintsPerDay: 1_000, freshMinutes: 180 });
+      const looseBuyers = new Map(loose.map((coin) => [coin.mint, coin.trackedBuyers]));
+      expect(looseBuyers.get(mints.bot)).toBe(1);
+      expect(looseBuyers.get(mints.stale)).toBe(1);
+      expect(looseBuyers.get(mints.sold)).toBe(0);
+    } finally {
+      await pool.end();
+    }
+  });
+});

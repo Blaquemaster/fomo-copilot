@@ -31,6 +31,11 @@ screen:
     # Trench strategy entries need at least this many tracked-wallet buyers. A no-wallet
     # trench coin is a random new launch; random_pass already measures that baseline.
     trench_min_tracked_buyers: 1
+    # A tracked wallet counts as a buyer only if it touched at most this many distinct mints
+    # in the last day (flip bots buy thousands), is still a net buyer of the coin, and bought
+    # within the fresh window.
+    wallet_max_mints_per_day: 40
+    wallet_buy_fresh_minutes: 60
 alerts:
   max_per_hour: 6
   quiet_hours: set-by-me

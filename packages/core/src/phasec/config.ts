@@ -12,6 +12,8 @@ export function screenRulesFromThresholds(thresholds: Thresholds): ScreenRules {
     top10FailAbove: thresholds.screen.hard_fail.top10_holders_pct_above,
     sniperFailAbove: thresholds.screen.hard_fail.sniper_bundle_pct_above,
     trenchMinTrackedBuyers: thresholds.screen.entries.trench_min_tracked_buyers,
+    walletMaxMintsPerDay: thresholds.screen.entries.wallet_max_mints_per_day,
+    walletBuyFreshMinutes: thresholds.screen.entries.wallet_buy_fresh_minutes,
     top10Warn: thresholds.screen.soft.top10_holders_pct_warn,
     sniperWarn: thresholds.screen.soft.sniper_bundle_pct_warn,
     minLiquidityUsd: thresholds.screen.soft.min_liquidity_usd,
