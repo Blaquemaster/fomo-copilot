@@ -23,8 +23,11 @@ describe("loadThresholds", () => {
       freeze_authority_active: true,
       transfer_fee_bps_above: 300,
       exit_quote_impact_pct_above: 5,
+      top10_holders_pct_above: 50,
+      sniper_bundle_pct_above: 60,
       required_source_error: "WATCH",
     });
+    expect(thresholds.screen.entries).toEqual({ trench_min_tracked_buyers: 1 });
     expect(thresholds.screen.soft).toEqual({
       top10_holders_pct_warn: 35,
       sniper_bundle_pct_warn: 30,

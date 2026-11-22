@@ -42,3 +42,117 @@ describe.skipIf(!databaseUrl)("phasec mint cache against postgres", () => {
     }
   }, 30_000);
 });
+
+describe.skipIf(!databaseUrl)("phasec positions against postgres", () => {
+  it("closes priced and unpriced positions without a parameter type error", async () => {
+    const pool = createPool(databaseUrl ?? "");
+    try {
+      await migrate(pool);
+      const repo = new PhaseCRepository(pool);
+      const at = new Date("2026-11-22T17:00:00.000Z");
+      const ids: string[] = [];
+      for (const mint of [
+        "ClosePriced1111111111111111111111111111111",
+        "CloseUnpriced11111111111111111111111111111",
+      ]) {
+        await repo.insertEntry({
+          mint,
+          stage: "trench",
+          arm: "wallets_x_screen",
+          sizePct: 0.5,
+          strength: 0.55,
+          exitPlan: "plan",
+          text: "entry",
+          held: false,
+          alertAt: at,
+          entryAfter: at,
+        });
+        const row = await pool.query<{ id: string }>(
+          "select id from phasec_position where mint = $1 order by id desc limit 1",
+          [mint],
+        );
+        const id = String(row.rows[0]?.id);
+        ids.push(id);
+        await repo.openPosition(id, 1e-12, 1.2, 0, 5, "5000", 0.1, "jupiter", at);
+      }
+      const later = new Date("2026-11-22T18:05:00.000Z");
+      await repo.closePosition({
+        id: ids[0] ?? "",
+        quote: 2e-12,
+        net: 0.8,
+        net2x: 0.7,
+        reason: "horizon",
+        impactPct: 1.1,
+        feeUsd: 0,
+        failure: null,
+        fomoFeeUsd: 0.1,
+        quoteSource: "curve_modeled",
+        at: later,
+      });
+      await repo.closePosition({
+        id: ids[1] ?? "",
+        quote: 0,
+        net: 0,
+        net2x: 0,
+        reason: "unpriced",
+        impactPct: null,
+        feeUsd: null,
+        failure: "no_quote",
+        quoteSource: null,
+        at: later,
+      });
+      const rows = await pool.query<{
+        status: string;
+        net_return: number | null;
+        exit_reason: string;
+      }>(
+        "select status, net_return, exit_reason from phasec_position where id = any($1::bigint[]) order by id",
+        [ids],
+      );
+      expect(rows.rows.map((row) => row.status)).toEqual(["closed", "unpriced"]);
+      expect(Number(rows.rows[0]?.net_return)).toBeCloseTo(0.8);
+      expect(rows.rows[1]?.net_return).toBeNull();
+      const resolved = await repo.resolvedReturns();
+      expect(resolved.some((row) => Math.abs(row.net - 0.8) < 1e-9)).toBe(true);
+    } finally {
+      await pool.end();
+    }
+  }, 30_000);
+
+  it("ignores top 10 values cached before the wallet-only method", async () => {
+    const pool = createPool(databaseUrl ?? "");
+    try {
+      await migrate(pool);
+      const repo = new PhaseCRepository(pool);
+      const mint = "TopTenLegacy111111111111111111111111111111";
+      await pool.query(
+        `insert into phasec_mint_cache (mint, top10_pct, fetched_at) values ($1, 100, now())
+         on conflict (mint) do update set top10_pct = 100, top10_method = null`,
+        [mint],
+      );
+      const fresh = {
+        mintAuthorityActive: false,
+        freezeAuthorityActive: false,
+        sniperPct: null,
+        curveLiquidityUsd: null,
+        exitImpactPct: null,
+      };
+      await repo.saveMintCache([{ mint, ...fresh, top10Pct: null }], new Date());
+      let stored = await pool.query<{ top10_pct: number | null; top10_method: string | null }>(
+        "select top10_pct, top10_method from phasec_mint_cache where mint = $1",
+        [mint],
+      );
+      expect(stored.rows[0]?.top10_pct).toBeNull();
+      await repo.saveMintCache([{ mint, ...fresh, top10Pct: 12.5 }], new Date());
+      await repo.saveMintCache([{ mint, ...fresh, top10Pct: null }], new Date());
+      stored = await pool.query(
+        "select top10_pct, top10_method from phasec_mint_cache where mint = $1",
+        [mint],
+      );
+      expect(Number(stored.rows[0]?.top10_pct)).toBe(12.5);
+      expect(stored.rows[0]?.top10_method).toBe("wallets_v2");
+    } finally {
+      await pool.end();
+    }
+  }, 30_000);
+});

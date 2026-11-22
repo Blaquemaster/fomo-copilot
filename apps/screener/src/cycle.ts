@@ -62,6 +62,15 @@ function addressDiff(previous: readonly string[], next: readonly string[]): stri
   return lines.sort();
 }
 
+/** Most tracked buyers first, then newest. Stable for ties. */
+export function byWalletPriority(
+  left: { trackedBuyers: number; createdAt: Date },
+  right: { trackedBuyers: number; createdAt: Date },
+): number {
+  if (left.trackedBuyers !== right.trackedBuyers) return right.trackedBuyers - left.trackedBuyers;
+  return right.createdAt.getTime() - left.createdAt.getTime();
+}
+
 export async function runPhaseCCycle(input: {
   now: Date;
   env: Env;
@@ -184,6 +193,9 @@ export async function runPhaseCCycle(input: {
     );
     await input.store.pruneSnapshots(new Date(input.now.getTime() - 8 * 24 * 60 * 60 * 1000));
   }
+  // Wallet-backed coins first, so the per-pass enrichment and probe budget goes to coins that
+  // can become strategy entries instead of whichever coins happen to be newest.
+  coins.sort(byWalletPriority);
   const curveReserves = new Map<string, { virtualSolLamports: bigint; virtualTokenRaw: bigint }>();
   if (solPrice !== null) {
     const curves = await loadCurveLiquidity({
@@ -422,6 +434,9 @@ export async function runPhaseCCycle(input: {
       apiKey: input.env.HELIUS_API_KEY,
       mints: enrich.filter((coin) => coin.top10HoldersPct === null).map((coin) => coin.mint),
       supplies: new Map(loaded.rows.map((row) => [row.mint, row.supply])),
+      curves: new Map(
+        enrich.flatMap((coin) => (coin.bondingCurve ? [[coin.mint, coin.bondingCurve]] : [])),
+      ),
       nowMs: input.now.getTime(),
       fetchImpl: input.fetchImpl,
     });

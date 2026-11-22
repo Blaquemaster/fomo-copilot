@@ -269,7 +269,7 @@ describe("quoted paper path", () => {
     expect(parseMintAccount(mintBytes)?.freezeAuthorityActive).toBe(true);
     expect(parseMintAccount(mintBytes)?.mintAuthorityActive).toBe(false);
     expect(topHolderPct([10, 5], 100)).toBe(15);
-    expect(screenCreditProjection(10).perMonth).toBe(10 * 4 * 30);
+    expect(screenCreditProjection(10).perMonth).toBe(10 * 6 * 30);
     const curve = new Uint8Array(49);
     const virtual = 30_000_000_000n;
     const real = 5_000_000_000n;

@@ -34,6 +34,8 @@ export const thresholdsSchema = z.strictObject({
       freeze_authority_active: z.boolean(),
       transfer_fee_bps_above: bps,
       exit_quote_impact_pct_above: percent,
+      top10_holders_pct_above: percent.default(50),
+      sniper_bundle_pct_above: percent.default(60),
       required_source_error: z.literal("WATCH"),
     }),
     soft: z.strictObject({
@@ -42,6 +44,11 @@ export const thresholdsSchema = z.strictObject({
       min_liquidity_usd: z.number().nonnegative().max(1_000_000_000),
       min_unique_makers_1h: z.number().int().nonnegative().max(1_000_000),
     }),
+    entries: z
+      .strictObject({
+        trench_min_tracked_buyers: z.number().int().nonnegative().max(1_000).default(1),
+      })
+      .default({ trench_min_tracked_buyers: 1 }),
   }),
   alerts: z.strictObject({
     max_per_hour: z.number().int().positive().max(60),

@@ -10,6 +10,12 @@ function date(value: Date | string): Date {
   return value instanceof Date ? value : new Date(value);
 }
 
+/**
+ * Top 10 cached before this method counted the bonding curve and pool vaults as holders, so it
+ * read near 100% for every coin. Rows without this tag are ignored and re-fetched.
+ */
+export const TOP10_METHOD = "wallets_v2";
+
 export class PhaseCRepository implements PhaseCStore {
   constructor(private readonly pool: pg.Pool) {}
 
@@ -54,13 +60,28 @@ export class PhaseCRepository implements PhaseCStore {
       created_slot: string | null;
     }>(
       `with newest as (
-         select c.mint, c.first_seen_at, c.graduated_at, c.curve_completed_at, c.pool, c.pool_type
-         from candidates c
-         where c.source <> 'audit'
-           and c.mint !~* '^0x'
-           and c.pool_type <> 'flap'
-         order by c.first_seen_at desc
-         limit $1
+         (select c.mint, c.first_seen_at, c.graduated_at, c.curve_completed_at, c.pool, c.pool_type
+          from candidates c
+          where c.source <> 'audit'
+            and c.mint !~* '^0x'
+            and c.pool_type <> 'flap'
+          order by c.first_seen_at desc
+          limit $1)
+         union
+         -- Wallet-backed coins still inside a stage window. The newest $1 creates span only a
+         -- few minutes, so without this a coin tracked wallets bought fell out before it could
+         -- be screened.
+         (select c.mint, c.first_seen_at, c.graduated_at, c.curve_completed_at, c.pool, c.pool_type
+          from candidates c
+          join coin_wallet_signal w0 on w0.mint = c.mint
+          where c.source <> 'audit'
+            and c.mint !~* '^0x'
+            and c.pool_type <> 'flap'
+            and w0.tracked_buyers >= 1
+            and (c.first_seen_at > now() - interval '6 hours'
+              or c.graduated_at > now() - interval '30 minutes')
+          order by w0.tracked_buyers desc, c.first_seen_at desc
+          limit $1)
        )
        select n.mint, n.first_seen_at, n.graduated_at, n.curve_completed_at,
               coalesce(w.tracked_buyers, 0) as tracked_buyers,
@@ -68,7 +89,7 @@ export class PhaseCRepository implements PhaseCStore {
               coalesce(stats.creator_sells, 0) as creator_sells,
               coalesce(sells.tracked_sells, 0) as tracked_sells,
               case when coalesce(snipers.buys, 0) = 0 then cache.sniper_pct else snipers.sniper_pct end as sniper_pct,
-              cache.top10_pct,
+              case when cache.top10_method = '${TOP10_METHOD}' then cache.top10_pct end as top10_pct,
               cache.mint_authority_active,
               cache.freeze_authority_active,
               coalesce(snap.liquidity_usd, cache.curve_liquidity_usd) as liquidity_usd,
@@ -365,12 +386,19 @@ export class PhaseCRepository implements PhaseCStore {
       await this.pool.query(
         `insert into phasec_mint_cache
           (mint, mint_authority_active, freeze_authority_active, top10_pct, sniper_pct, curve_liquidity_usd,
-           exit_impact_pct, exit_impact_at, fetched_at)
-         values ($1,$2,$3,$4,$5,$6,$7, case when $7::double precision is null then null else $8::timestamptz end, $8::timestamptz)
+           exit_impact_pct, exit_impact_at, fetched_at, top10_method)
+         values ($1,$2,$3,$4::double precision,$5,$6,$7, case when $7::double precision is null then null else $8::timestamptz end, $8::timestamptz,
+           case when $4::double precision is null then null else '${TOP10_METHOD}' end)
          on conflict (mint) do update set
            mint_authority_active = coalesce(excluded.mint_authority_active, phasec_mint_cache.mint_authority_active),
            freeze_authority_active = coalesce(excluded.freeze_authority_active, phasec_mint_cache.freeze_authority_active),
-           top10_pct = coalesce(excluded.top10_pct, phasec_mint_cache.top10_pct),
+           top10_pct = case
+             when excluded.top10_pct is not null then excluded.top10_pct
+             when phasec_mint_cache.top10_method = '${TOP10_METHOD}' then phasec_mint_cache.top10_pct
+             else null end,
+           top10_method = case
+             when excluded.top10_pct is not null then excluded.top10_method
+             else phasec_mint_cache.top10_method end,
            sniper_pct = coalesce(excluded.sniper_pct, phasec_mint_cache.sniper_pct),
            curve_liquidity_usd = coalesce(excluded.curve_liquidity_usd, phasec_mint_cache.curve_liquidity_usd),
            exit_impact_pct = coalesce(excluded.exit_impact_pct, phasec_mint_cache.exit_impact_pct),
@@ -555,14 +583,15 @@ export class PhaseCRepository implements PhaseCStore {
   }): Promise<void> {
     await this.pool.query(
       `update phasec_position
-       set status = case when $5 = 'unpriced' then 'unpriced' else 'closed' end,
-           exit_quote = $2,
-           net_return = case when $5 = 'unpriced' then null else $3 end,
-           net_return_2x = case when $5 = 'unpriced' then null else $4 end,
-           exit_reason = $5, exit_impact_pct = $6, exit_fee_usd = $7, quote_failure = $8, closed_at = $9,
-           fomo_fee_usd = coalesce(fomo_fee_usd, 0) + coalesce($10, 0),
-           quote_source = coalesce($11, quote_source)
-       where id = $1 and status in ('open', 'pending')`,
+       set status = case when $5::text = 'unpriced' then 'unpriced' else 'closed' end,
+           exit_quote = $2::double precision,
+           net_return = case when $5::text = 'unpriced' then null else $3::double precision end,
+           net_return_2x = case when $5::text = 'unpriced' then null else $4::double precision end,
+           exit_reason = $5::text, exit_impact_pct = $6::double precision,
+           exit_fee_usd = $7::double precision, quote_failure = $8::text, closed_at = $9::timestamptz,
+           fomo_fee_usd = coalesce(fomo_fee_usd, 0) + coalesce($10::double precision, 0),
+           quote_source = coalesce($11::text, quote_source)
+       where id = $1::bigint and status in ('open', 'pending')`,
       [
         input.id,
         input.quote,
