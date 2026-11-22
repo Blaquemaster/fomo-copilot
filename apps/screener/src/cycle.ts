@@ -1,5 +1,6 @@
 import {
   admitAutobuy,
+  DEFAULT_WALLET_SIGNAL,
   autobuyLimits,
   noopSigner,
   resolveAutobuyMode,
@@ -41,7 +42,7 @@ import {
 } from "./accounts.js";
 import { collectJupiterBids, fetchSolPriceUsd, type JupiterRequest } from "./jupiter.js";
 
-const ENRICH_PER_PASS = 8;
+const ENRICH_PER_PASS = 16;
 
 function readEntriesStart(body: string): Date | null {
   try {
@@ -62,6 +63,15 @@ function addressDiff(previous: readonly string[], next: readonly string[]): stri
   return lines.sort();
 }
 
+/** Most tracked buyers first, then newest. Stable for ties. */
+export function byWalletPriority(
+  left: { trackedBuyers: number; createdAt: Date },
+  right: { trackedBuyers: number; createdAt: Date },
+): number {
+  if (left.trackedBuyers !== right.trackedBuyers) return right.trackedBuyers - left.trackedBuyers;
+  return right.createdAt.getTime() - left.createdAt.getTime();
+}
+
 export async function runPhaseCCycle(input: {
   now: Date;
   env: Env;
@@ -77,7 +87,10 @@ export async function runPhaseCCycle(input: {
   const stored = await input.store.protocol();
   const day = etDayRange(input.now);
   const rules = screenRulesFromThresholds(input.thresholds);
-  const coins = await input.store.coins(200);
+  const coins = await input.store.coins(200, {
+    maxMintsPerDay: rules.walletMaxMintsPerDay ?? DEFAULT_WALLET_SIGNAL.maxMintsPerDay,
+    freshMinutes: rules.walletBuyFreshMinutes ?? DEFAULT_WALLET_SIGNAL.freshMinutes,
+  });
   if (config.xEnabled) {
     const counts = await input.store.mentionCounts(coins.map((coin) => coin.mint));
     for (const coin of coins) coin.xMentions = counts.get(coin.mint) ?? 0;
@@ -184,6 +197,9 @@ export async function runPhaseCCycle(input: {
     );
     await input.store.pruneSnapshots(new Date(input.now.getTime() - 8 * 24 * 60 * 60 * 1000));
   }
+  // Wallet-backed coins first, so the per-pass enrichment and probe budget goes to coins that
+  // can become strategy entries instead of whichever coins happen to be newest.
+  coins.sort(byWalletPriority);
   const curveReserves = new Map<string, { virtualSolLamports: bigint; virtualTokenRaw: bigint }>();
   if (solPrice !== null) {
     const curves = await loadCurveLiquidity({
@@ -395,11 +411,29 @@ export async function runPhaseCCycle(input: {
         return false;
       }
       if (coin.mintAuthorityActive === true && rules.failMintAuthority) return false;
-      return (
-        coin.mintAuthorityActive === null ||
-        coin.top10HoldersPct === null ||
-        coin.sniperBundlePct === null
-      );
+      if (coin.freezeAuthorityActive === true && rules.failFreezeAuthority) return false;
+      if (
+        rules.top10FailAbove !== undefined &&
+        coin.top10HoldersPct !== null &&
+        coin.top10HoldersPct > rules.top10FailAbove
+      ) {
+        return false;
+      }
+      if (
+        rules.sniperFailAbove !== undefined &&
+        coin.sniperBundlePct !== null &&
+        coin.sniperBundlePct > rules.sniperFailAbove
+      ) {
+        return false;
+      }
+      // Only count a missing sniper value as work when it can be fetched. A coin with no
+      // create slot never gets one, and used to hold an enrichment slot on every pass.
+      const sniperFetchable =
+        coin.sniperBundlePct === null &&
+        Boolean(coin.bondingCurve) &&
+        coin.createdSlot !== null &&
+        coin.createdSlot !== undefined;
+      return coin.mintAuthorityActive === null || coin.top10HoldersPct === null || sniperFetchable;
     })
     .slice(0, ENRICH_PER_PASS);
   let spent = 0;
@@ -422,6 +456,9 @@ export async function runPhaseCCycle(input: {
       apiKey: input.env.HELIUS_API_KEY,
       mints: enrich.filter((coin) => coin.top10HoldersPct === null).map((coin) => coin.mint),
       supplies: new Map(loaded.rows.map((row) => [row.mint, row.supply])),
+      curves: new Map(
+        enrich.flatMap((coin) => (coin.bondingCurve ? [[coin.mint, coin.bondingCurve]] : [])),
+      ),
       nowMs: input.now.getTime(),
       fetchImpl: input.fetchImpl,
     });

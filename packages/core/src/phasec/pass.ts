@@ -441,6 +441,13 @@ export function runPhaseCPass(input: PassInput): PassResult {
       const screen = screenOf(coin, quotes.get(coin.mint)?.liquidityUsd ?? null, input.rules);
       if (screen.verdict !== "pass") continue;
       const arm = assignArm(coin.mint, stage, coin.trackedBuyers, coin.xMentions);
+      if (
+        stage === "trench" &&
+        arm !== "random_pass" &&
+        coin.trackedBuyers < (input.rules.trenchMinTrackedBuyers ?? 0)
+      ) {
+        continue;
+      }
       const strength = scoreStrength(stage, coin);
       const size = sizeForStage(stage, config.sizePct, config.bankroll);
       const treatment = assignExitTreatment(coin.mint);
@@ -528,7 +535,9 @@ export function runPhaseCPass(input: PassInput): PassResult {
   });
 
   const paper = evaluatePaper({
-    registeredAt: input.registeredAt ?? input.now,
+    // The window runs from the first allowed entry, not from registration, so a test that
+    // registers mid-day and starts at the next ET midnight still gets its full window.
+    registeredAt: input.entriesStartAt ?? input.registeredAt ?? input.now,
     now: input.now,
     windowDays: config.paperWindowDays,
     minAlerts: config.paperMinAlerts,

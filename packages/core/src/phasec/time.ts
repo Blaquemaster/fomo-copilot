@@ -56,11 +56,24 @@ export function nextEtMidnight(now: Date): Date {
   return etDayRange(now).end;
 }
 
+/** The instant of 00:00 ET on a calendar date. Two passes settle the offset across DST. */
+function etMidnight(year: number, month: number, day: number): Date {
+  const wall = Date.UTC(year, month - 1, day, 0);
+  let instant = wall - offsetMs(new Date(wall), ET);
+  instant = wall - offsetMs(new Date(instant), ET);
+  return new Date(instant);
+}
+
+/**
+ * The ET calendar day holding `now`, midnight to midnight.
+ * It used to anchor on 12:00 UTC of the ET date and subtract the offset, which gave ET noon,
+ * so the daily-loss day ran noon to noon and a restart's "next midnight" was the next noon.
+ */
 export function etDayRange(now: Date): { day: string; start: Date; end: Date } {
   const parts = zonedParts(now);
-  const startGuess = new Date(Date.UTC(parts.year, parts.month - 1, parts.day, 12));
-  const start = new Date(startGuess.getTime() - offsetMs(startGuess, ET));
-  const end = new Date(start.getTime() + 24 * 60 * 60 * 1000);
+  const start = etMidnight(parts.year, parts.month, parts.day);
+  const next = new Date(Date.UTC(parts.year, parts.month - 1, parts.day + 1));
+  const end = etMidnight(next.getUTCFullYear(), next.getUTCMonth() + 1, next.getUTCDate());
   return { day: etDay(now), start, end };
 }
 
