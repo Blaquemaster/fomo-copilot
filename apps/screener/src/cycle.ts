@@ -41,7 +41,7 @@ import {
 } from "./accounts.js";
 import { collectJupiterBids, fetchSolPriceUsd, type JupiterRequest } from "./jupiter.js";
 
-const ENRICH_PER_PASS = 8;
+const ENRICH_PER_PASS = 16;
 
 function readEntriesStart(body: string): Date | null {
   try {
@@ -407,11 +407,29 @@ export async function runPhaseCCycle(input: {
         return false;
       }
       if (coin.mintAuthorityActive === true && rules.failMintAuthority) return false;
-      return (
-        coin.mintAuthorityActive === null ||
-        coin.top10HoldersPct === null ||
-        coin.sniperBundlePct === null
-      );
+      if (coin.freezeAuthorityActive === true && rules.failFreezeAuthority) return false;
+      if (
+        rules.top10FailAbove !== undefined &&
+        coin.top10HoldersPct !== null &&
+        coin.top10HoldersPct > rules.top10FailAbove
+      ) {
+        return false;
+      }
+      if (
+        rules.sniperFailAbove !== undefined &&
+        coin.sniperBundlePct !== null &&
+        coin.sniperBundlePct > rules.sniperFailAbove
+      ) {
+        return false;
+      }
+      // Only count a missing sniper value as work when it can be fetched. A coin with no
+      // create slot never gets one, and used to hold an enrichment slot on every pass.
+      const sniperFetchable =
+        coin.sniperBundlePct === null &&
+        Boolean(coin.bondingCurve) &&
+        coin.createdSlot !== null &&
+        coin.createdSlot !== undefined;
+      return coin.mintAuthorityActive === null || coin.top10HoldersPct === null || sniperFetchable;
     })
     .slice(0, ENRICH_PER_PASS);
   let spent = 0;
