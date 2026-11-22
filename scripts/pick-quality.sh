@@ -1,17 +1,19 @@
 #!/usr/bin/env bash
 # Phase C pick-quality check. Read-only: a read-only psql session, screener logs, two .env keys.
-# Run on the server from anywhere:  bash /opt/fomo-copilot/scripts/pick-quality.sh [hours]
+# Run on the server:  bash /opt/fomo-copilot/scripts/pick-quality.sh [hours]
+# FOMO_DIR and PQ_SQL override the app directory and the query file (for running it over ssh).
 # Prints INFO/ALERT lines. Exits 1 when any ALERT is printed, 2 when the check itself failed.
 set -uo pipefail
 hours="${1:-6}"
 [[ "$hours" =~ ^[0-9]+$ ]] || { echo "usage: pick-quality.sh [hours]"; exit 2; }
-cd "$(dirname "$0")/.." || exit 2
+if [ -n "${FOMO_DIR:-}" ]; then cd "$FOMO_DIR" || exit 2; else cd "$(dirname "$0")/.." || exit 2; fi
+query="${PQ_SQL:-scripts/pick-quality.sql}"
 lines=""
 add() { lines+="$1"$'\n'; }
 
 sql="$(docker compose exec -T postgres sh -c \
   'PGOPTIONS="-c default_transaction_read_only=on" psql -X -q -t -A -U "$POSTGRES_USER" -d "$POSTGRES_DB" -v hours='"$hours"' -f -' \
-  < scripts/pick-quality.sql 2>&1)"
+  < "$query" 2>&1)"
 if [ $? -ne 0 ]; then
   echo "ALERT pick-quality query failed: ${sql}"
   exit 2
