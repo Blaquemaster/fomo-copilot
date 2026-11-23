@@ -579,6 +579,9 @@ alter table phasec_mint_cache add column if not exists exit_impact_pct double pr
 alter table phasec_mint_cache add column if not exists exit_impact_at timestamptz;
 alter table phasec_mint_cache add column if not exists top10_method text;
 create index if not exists wallet_fill_slot_idx on wallet_fill (slot);
+alter table candidates add column if not exists created_slot bigint;
+create index if not exists candidates_created_slot_idx on candidates (created_slot) where created_slot is not null;
+
 
 create table if not exists autobuy_intent (
   id bigserial primary key,
@@ -743,6 +746,83 @@ export async function migrate(pool: pg.Pool): Promise<void> {
       "insert into schema_migrations (id) values ($1) on conflict (id) do nothing",
       ["021_phase_c"],
     );
+    const sniperOrigins = await client.query("select 1 from schema_migrations where id = $1", [
+      "022_sniper_created_slot",
+    ]);
+    if (sniperOrigins.rowCount === 0) {
+      await client.query("set local statement_timeout = '60s'");
+      await client.query(`
+        insert into ingest_coin
+          (mint, venue, launchpad, platform_config, quote_mint, transfer_fee_bps, pool, creator,
+           created_slot, created_at, signature)
+        select distinct on (e.mint)
+          e.mint,
+          case e.event_kind
+            when 'launchlab_initialize' then 'launchlab'
+            when 'dbc_initialize' then 'meteora'
+            else 'pump'
+          end,
+          coalesce(e.payload->>'launchpad', 'unknown'),
+          e.payload->>'platformConfig',
+          e.payload->>'quoteMint',
+          nullif(e.payload->>'transferFeeBps', '')::integer,
+          case
+            when e.event_kind = 'dbc_initialize'
+              then coalesce(e.payload->>'virtualPool', e.pool)
+            else e.pool
+          end,
+          e.payload->>'creatorWallet',
+          e.slot,
+          e.received_at,
+          e.signature
+        from raw_events e
+        where e.event_kind in ('pump_create','pump_create_v2','launchlab_initialize','dbc_initialize')
+          and e.mint is not null and e.pool is not null
+          and e.received_at > now() - interval '7 days'
+        order by e.mint, e.slot asc
+        on conflict (mint) do update set
+          venue = excluded.venue,
+          pool = excluded.pool,
+          created_slot = excluded.created_slot,
+          created_at = excluded.created_at,
+          signature = excluded.signature
+        where excluded.created_slot < ingest_coin.created_slot
+      `);
+      await client.query(`
+        insert into pump_coin (mint, bonding_curve, creator, created_slot, created_at, signature)
+        select distinct on (e.mint)
+          e.mint,
+          e.pool,
+          e.payload->>'creatorWallet',
+          e.slot,
+          e.received_at,
+          e.signature
+        from raw_events e
+        where e.event_kind in ('pump_create','pump_create_v2')
+          and e.mint is not null and e.pool is not null
+          and e.received_at > now() - interval '7 days'
+        order by e.mint, e.slot asc
+        on conflict (mint) do update set
+          bonding_curve = excluded.bonding_curve,
+          created_slot = excluded.created_slot,
+          created_at = excluded.created_at,
+          signature = excluded.signature
+        where excluded.created_slot < pump_coin.created_slot
+      `);
+      await client.query(`
+        update candidates c
+        set created_slot = e.slot
+        from raw_events e
+        where c.created_slot is null
+          and e.pool = c.pool
+          and e.event_kind in ('pump_create','pump_create_v2','launchlab_initialize','dbc_initialize')
+          and e.received_at > now() - interval '7 days'
+      `);
+    }
+    await client.query(
+      "insert into schema_migrations (id) values ($1) on conflict (id) do nothing",
+      ["022_sniper_created_slot"],
+    );
     await client.query(
       `update ingest_recall_audit a
        set skipped = true,
@@ -856,8 +936,8 @@ export class IngestRepository {
       if (plan.candidate) {
         await client.query(
           `insert into candidates
-            (mint, pool, pool_type, creator_wallet, first_seen_slot, first_seen_at, source_signature, source)
-           values ($1,$2,$3,$4,$5,$6,$7,$8)
+            (mint, pool, pool_type, creator_wallet, first_seen_slot, first_seen_at, source_signature, source, created_slot)
+           values ($1,$2,$3,$4,$5,$6,$7,$8,$9)
            on conflict (pool) do nothing`,
           [
             plan.candidate.mint,
@@ -868,6 +948,7 @@ export class IngestRepository {
             new Date(plan.candidate.firstSeenAtMs).toISOString(),
             plan.candidate.sourceSignature,
             input.source,
+            plan.candidate.createdSlot ?? null,
           ],
         );
       }
@@ -919,8 +1000,8 @@ export class IngestRepository {
   async insertCandidate(candidate: CandidateDraft): Promise<void> {
     await this.pool.query(
       `insert into candidates
-        (mint, pool, pool_type, creator_wallet, first_seen_slot, first_seen_at, source_signature)
-       values ($1,$2,$3,$4,$5,$6,$7)
+        (mint, pool, pool_type, creator_wallet, first_seen_slot, first_seen_at, source_signature, created_slot)
+       values ($1,$2,$3,$4,$5,$6,$7,$8)
        on conflict (pool) do nothing`,
       [
         candidate.mint,
@@ -930,6 +1011,7 @@ export class IngestRepository {
         candidate.firstSeenSlot,
         new Date(candidate.firstSeenAtMs).toISOString(),
         candidate.sourceSignature,
+        candidate.createdSlot ?? null,
       ],
     );
   }
@@ -1363,7 +1445,21 @@ export class IngestRepository {
         (mint, venue, launchpad, platform_config, quote_mint, transfer_fee_bps, pool, creator,
          created_slot, created_at, signature)
        values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)
-       on conflict (mint) do nothing`,
+       on conflict (mint) do update set
+         venue = excluded.venue,
+         launchpad = case
+           when ingest_coin.launchpad in ('unknown', '') then excluded.launchpad
+           else ingest_coin.launchpad
+         end,
+         platform_config = coalesce(ingest_coin.platform_config, excluded.platform_config),
+         quote_mint = coalesce(ingest_coin.quote_mint, excluded.quote_mint),
+         transfer_fee_bps = coalesce(ingest_coin.transfer_fee_bps, excluded.transfer_fee_bps),
+         pool = excluded.pool,
+         creator = coalesce(ingest_coin.creator, excluded.creator),
+         created_slot = excluded.created_slot,
+         created_at = excluded.created_at,
+         signature = excluded.signature
+       where excluded.created_slot < ingest_coin.created_slot`,
       [
         input.mint,
         input.venue,
@@ -2525,7 +2621,13 @@ export class IngestRepository {
     await this.pool.query(
       `insert into pump_coin (mint, bonding_curve, creator, created_slot, created_at, signature)
        values ($1,$2,$3,$4,$5,$6)
-       on conflict (mint) do nothing`,
+       on conflict (mint) do update set
+         bonding_curve = excluded.bonding_curve,
+         creator = coalesce(pump_coin.creator, excluded.creator),
+         created_slot = excluded.created_slot,
+         created_at = excluded.created_at,
+         signature = excluded.signature
+       where excluded.created_slot < pump_coin.created_slot`,
       [
         input.mint,
         input.bondingCurve,

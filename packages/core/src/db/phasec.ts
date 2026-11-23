@@ -148,14 +148,27 @@ export class PhaseCRepository implements PhaseCStore {
               coalesce(snap.liquidity_usd, cache.curve_liquidity_usd) as liquidity_usd,
               case when cache.exit_impact_at > now() - interval '10 minutes'
                 then cache.exit_impact_pct else null end as exit_impact_pct,
-              coalesce(pc.bonding_curve, n.pool) as bonding_curve,
+              coalesce(origin.launch_pool, pc.bonding_curve, coin.pool) as bonding_curve,
               n.pool_type,
-              pc.created_slot
+              coalesce(origin.created_slot, pc.created_slot, coin.created_slot)::text as created_slot
        from newest n
        left join live_signal w on w.mint = n.mint
        left join ingest_coin coin on coin.mint = n.mint
        left join pump_coin_stats stats on stats.mint = n.mint
        left join pump_coin pc on pc.mint = n.mint
+       left join lateral (
+         select ev.slot as created_slot,
+           case when ev.event_kind = 'dbc_initialize'
+             then coalesce(ev.payload->>'virtualPool', ev.pool)
+             else ev.pool
+           end as launch_pool
+         from raw_events ev
+         where ev.mint = n.mint
+           and ev.event_kind in ('pump_create','pump_create_v2','launchlab_initialize','dbc_initialize')
+           and ev.pool is not null
+         order by ev.slot asc
+         limit 1
+       ) origin on true
        left join phasec_mint_cache cache on cache.mint = n.mint
        left join lateral (
          select count(*)::int as tracked_sells from wallet_fill f

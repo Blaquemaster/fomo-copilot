@@ -1,7 +1,7 @@
 import {
   admitAutobuy,
   DEFAULT_WALLET_SIGNAL,
-  sniperIsFetchable,
+  shouldFetchSniper,
   autobuyLimits,
   noopSigner,
   resolveAutobuyMode,
@@ -427,10 +427,10 @@ export async function runPhaseCCycle(input: {
       ) {
         return false;
       }
-      // Only count a missing sniper value as work when it can be fetched. A coin with no
-      // create slot never gets one, and used to hold an enrichment slot on every pass.
-      const sniperFetchable = coin.sniperBundlePct === null && sniperIsFetchable(coin);
-      return coin.mintAuthorityActive === null || coin.top10HoldersPct === null || sniperFetchable;
+      // Cheaper gates first. A missing sniper only takes a slot when the coin already
+      // passes those gates or has a wallet signal, and the origin is fetchable.
+      const sniperDue = shouldFetchSniper(coin, rules);
+      return coin.mintAuthorityActive === null || coin.top10HoldersPct === null || sniperDue;
     })
     .slice(0, ENRICH_PER_PASS);
   let spent = 0;
@@ -464,16 +464,11 @@ export async function runPhaseCCycle(input: {
       const coin = coins.find((item) => item.mint === row.mint);
       if (coin) coin.top10HoldersPct = row.top10Pct;
     }
+    // Re-check after cheaper facts land so a coin that just passed can be measured now.
     const snipers = await loadCreateSlotSnipers({
       apiKey: input.env.HELIUS_API_KEY,
       coins: enrich
-        .filter(
-          (coin) =>
-            coin.sniperBundlePct === null &&
-            coin.bondingCurve &&
-            coin.createdSlot !== null &&
-            coin.createdSlot !== undefined,
-        )
+        .filter((coin) => shouldFetchSniper(coin, rules))
         .map((coin) => ({
           mint: coin.mint,
           bondingCurve: coin.bondingCurve ?? "",

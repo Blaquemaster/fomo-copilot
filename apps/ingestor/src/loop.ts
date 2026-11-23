@@ -1965,7 +1965,11 @@ async function storeObservation(
     source,
   });
   if (!inserted) return false;
-  if (isPumpLifecycleKind(observation.kind) && observation.mint && observation.pool) {
+  if (
+    (observation.kind === "pump_create" || observation.kind === "pump_create_v2") &&
+    observation.mint &&
+    observation.pool
+  ) {
     await input.repo.rememberPumpCoin({
       mint: observation.mint,
       bondingCurve: observation.virtualPool ?? observation.pool,
@@ -1982,9 +1986,7 @@ async function storeObservation(
     (observation.kind === "pump_create" ||
       observation.kind === "pump_create_v2" ||
       observation.kind === "launchlab_initialize" ||
-      observation.kind === "launchlab_migrate" ||
-      observation.kind === "dbc_initialize" ||
-      observation.kind === "dbc_migration_damm_v2")
+      observation.kind === "dbc_initialize")
   ) {
     await input.repo.rememberCoin({
       mint: observation.mint,

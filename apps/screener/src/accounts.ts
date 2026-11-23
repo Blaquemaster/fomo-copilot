@@ -312,23 +312,27 @@ export async function loadTopHolders(input: {
   return { rows, credits };
 }
 
-/** Newest first, so one page this size covers a young coin back to its create slot. */
+/** Newest first. One page often covers a young coin; paginate when it does not. */
 export const SNIPER_SIGNATURE_LIMIT = 1000;
+/** Cap on getSignaturesForAddress pages per coin (1 credit each). */
+export const SNIPER_SIGNATURE_MAX_PAGES = 5;
 
 /**
- * Share of create-slot transactions that were not the create itself, or null when the page
- * did not reach the create slot. A limit of 20 newest signatures missed the create slot for
- * any coin with real trading, so only near-dead coins got a sniper value and could pass.
+ * Share of create-slot transactions that were not the create itself, or null when the
+ * signatures did not reach the create slot. A limit of 20 newest signatures missed the
+ * create slot for any coin with real trading, so only near-dead coins got a sniper value
+ * and could pass.
  */
 export function createSlotSniperPct(
   signatures: readonly { slot?: number }[],
   createdSlot: number,
   limit = SNIPER_SIGNATURE_LIMIT,
+  truncated = false,
 ): number | null {
   const slots = signatures.map((row) => row.slot ?? Number.NaN);
   const inSlot = slots.filter((slot) => slot === createdSlot).length;
   const oldest = slots.length === 0 ? Number.NaN : Math.min(...slots);
-  const reached = slots.length < limit || oldest <= createdSlot;
+  const reached = oldest <= createdSlot || (!truncated && slots.length < limit);
   if (!reached || inSlot < 1) return null;
   return inSlot === 1 ? 0 : ((inSlot - 1) / inSlot) * 100;
 }
@@ -337,21 +341,54 @@ export async function loadCreateSlotSnipers(input: {
   apiKey: string;
   coins: readonly { mint: string; bondingCurve: string; createdSlot: number }[];
   fetchImpl?: typeof fetch;
+  pageSize?: number;
+  maxPages?: number;
 }): Promise<{ rows: Array<{ mint: string; sniperPct: number }>; credits: number }> {
   const fetchImpl = input.fetchImpl ?? fetch;
+  const pageSize = input.pageSize ?? SNIPER_SIGNATURE_LIMIT;
+  const maxPages = input.maxPages ?? SNIPER_SIGNATURE_MAX_PAGES;
   const rows = [];
   let credits = 0;
   for (const coin of input.coins) {
     try {
-      const result = await rpc<Array<{ slot?: number }>>(
-        fetchImpl,
-        input.apiKey,
-        "getSignaturesForAddress",
-        [coin.bondingCurve, { limit: SNIPER_SIGNATURE_LIMIT }],
-      );
-      credits += rpcCredits("getSignaturesForAddress");
-      if (!result) continue;
-      const sniperPct = createSlotSniperPct(result, coin.createdSlot);
+      const signatures: Array<{ signature?: string; slot?: number }> = [];
+      let before: string | undefined;
+      let truncated = false;
+      for (let page = 0; page < maxPages; page += 1) {
+        const params: [string, { limit: number; before?: string }] = [
+          coin.bondingCurve,
+          before ? { limit: pageSize, before } : { limit: pageSize },
+        ];
+        const result = await rpc<Array<{ signature?: string; slot?: number }>>(
+          fetchImpl,
+          input.apiKey,
+          "getSignaturesForAddress",
+          params,
+        );
+        credits += rpcCredits("getSignaturesForAddress");
+        if (!result || result.length === 0) {
+          truncated = false;
+          break;
+        }
+        signatures.push(...result);
+        const oldest = Math.min(...result.map((row) => row.slot ?? Number.POSITIVE_INFINITY));
+        if (oldest <= coin.createdSlot) {
+          truncated = false;
+          break;
+        }
+        if (result.length < pageSize) {
+          truncated = false;
+          break;
+        }
+        const last = result[result.length - 1]?.signature;
+        if (!last) {
+          truncated = true;
+          break;
+        }
+        before = last;
+        if (page === maxPages - 1) truncated = true;
+      }
+      const sniperPct = createSlotSniperPct(signatures, coin.createdSlot, pageSize, truncated);
       if (sniperPct === null) continue;
       rows.push({ mint: coin.mint, sniperPct });
     } catch {
