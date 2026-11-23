@@ -22,7 +22,7 @@ import {
   protocolFingerprint,
   type PhaseCConfig,
 } from "./protocol.js";
-import { entryDecision, planTierPromotions } from "./risk.js";
+import { entryDecision, planTierPromotions, sizeForArmStage } from "./risk.js";
 import { lookupTradableInFomo } from "./fomoLookup.js";
 import { assignArm, isFlapMint, scoreStrength } from "./score.js";
 import {
@@ -35,6 +35,7 @@ import {
   parseJupiterQuote,
   quoteKey,
   quotedRoundTrip,
+  roundTripCostPct,
 } from "./quote.js";
 import { screenCoin, type ScreenRules } from "./screen.js";
 import {
@@ -100,6 +101,7 @@ function coin(mint: string, overrides: Partial<PassCoin> = {}): PassCoin {
     uniqueMakers1h: 80,
     creatorSells: 0,
     quoteError: false,
+    roundTripCostPct: 1.5,
     ...overrides,
   };
 }
@@ -351,6 +353,90 @@ describe("phase C", () => {
     expect(
       planTierPromotions([{ address: "wallet", hitRate: 0.8, tier: "high" }], 0.75, new Set()),
     ).toEqual([]);
+  });
+
+  it("sizes screen_only at 0.5% every stage and keeps wallet-backed and control stage sizes", () => {
+    const sizes = defaultSizePct();
+    const screenPost = sizeForArmStage("post_graduation", "screen_only", sizes, 1000, {
+      trackedBuyers: 0,
+    });
+    expect(screenPost.pct).toBe(0.5);
+    expect(screenPost.amount).toBe(5);
+    const screenTrench = sizeForArmStage("trench", "screen_only", sizes, 1000, {
+      trackedBuyers: 0,
+    });
+    expect(screenTrench.pct).toBe(0.5);
+    const walletPost = sizeForArmStage("post_graduation", "wallets_x_screen", sizes, 1000, {
+      trackedBuyers: 2,
+    });
+    expect(walletPost.pct).toBe(2);
+    expect(walletPost.amount).toBe(20);
+    const controlPost = sizeForArmStage("post_graduation", "random_pass", sizes, 1000, {
+      trackedBuyers: 0,
+    });
+    expect(controlPost.pct).toBe(2);
+  });
+
+  it("hard-fails a coin when the quoted round-trip cost is above 3%", () => {
+    const failed = screenCoin(
+      {
+        mintAuthorityActive: false,
+        freezeAuthorityActive: false,
+        transferFeeBps: 0,
+        exitQuoteImpactPct: 1,
+        top10HoldersPct: 10,
+        sniperBundlePct: 5,
+        liquidityUsd: 20_000,
+        uniqueMakers1h: 80,
+        creatorSells: 0,
+        quoteError: false,
+        roundTripCostPct: 4.01,
+      },
+      { ...rules, maxRoundTripCostPct: 3 },
+    );
+    expect(failed.verdict).toBe("fail");
+    expect(failed.hard.some((item) => item.includes("round-trip cost 4.01%"))).toBe(true);
+    const mint = mintFor("post_graduation", 0, "screen_only", "CheapSize");
+    const result = runPhaseCPass(
+      pass({
+        now: new Date("2026-11-19T16:30:00.000Z"),
+        coins: [
+          coin(mint, {
+            trackedBuyers: 0,
+            graduatedAt: new Date("2026-11-19T16:10:00.000Z"),
+            createdAt: new Date("2026-11-19T15:00:00.000Z"),
+            roundTripCostPct: 1.5,
+          }),
+        ],
+      }),
+    );
+    const entry = result.entries.find((row) => row.mint === mint);
+    expect(entry?.arm).toBe("screen_only");
+    expect(entry?.sizePct).toBe(0.5);
+    const entryBid = {
+      ok: true as const,
+      execPriceUsd: 1,
+      midPriceUsd: 1,
+      impactPct: 0,
+      feeUsd: 0,
+      sizeUsd: 5,
+      liquidityUsd: 20_000,
+      inAmount: "1",
+      outAmount: "5",
+    };
+    const exitBid = {
+      ok: true as const,
+      execPriceUsd: 1,
+      midPriceUsd: 1,
+      impactPct: 0,
+      feeUsd: 0,
+      sizeUsd: 5,
+      liquidityUsd: 20_000,
+      inAmount: "5",
+      outAmount: "1",
+    };
+    // $5 notional, lowest-fee schedule: $0.10 + $0.10 FOMO fees = 4% with no impact.
+    expect(roundTripCostPct(entryBid, exitBid, "solana_lowest_fee")).toBeCloseTo(4, 8);
   });
 
   it("pre-registers the paper rule and extends until 100 measured alerts", () => {
@@ -672,6 +758,7 @@ describe("phase C", () => {
         uniqueMakers1h: 80,
         creatorSells: 0,
         quoteError: false,
+        roundTripCostPct: 1.5,
       },
       rules,
     );
@@ -725,7 +812,7 @@ describe("phase C", () => {
         rankedCount: 0,
       },
     });
-    expect(review).toContain("tradable in fomo: yes 0 no 0 unknown 3");
+    expect(review).not.toContain("tradable in fomo");
     expect(review).toContain("dry-run 0");
   });
 

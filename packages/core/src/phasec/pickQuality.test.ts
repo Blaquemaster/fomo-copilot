@@ -37,6 +37,7 @@ function facts(overrides: Partial<ScreenFacts> = {}): ScreenFacts {
     uniqueMakers1h: null,
     creatorSells: 0,
     quoteError: false,
+    roundTripCostPct: 1.5,
     ...overrides,
   };
 }
@@ -86,6 +87,7 @@ function coin(mint: string, overrides: Partial<PassCoin> = {}): PassCoin {
     uniqueMakers1h: null,
     creatorSells: 0,
     quoteError: false,
+    roundTripCostPct: 1.5,
     ...overrides,
   };
 }

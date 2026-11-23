@@ -109,9 +109,9 @@ export function formatWeeklyReview(input: {
     } median ${input.paper.medianNet === null ? "n/a" : input.paper.medianNet.toFixed(4)} control pnl ${
       input.paper.controlPnl === null ? "n/a" : input.paper.controlPnl.toFixed(4)
     } max drawdown ${input.paper.maxDrawdownPct.toFixed(2)}%`,
-    input.tradable
+    input.tradable && input.tradable.yes + input.tradable.no > 0
       ? `tradable in fomo: yes ${input.tradable.yes.toString()} no ${input.tradable.no.toString()} unknown ${input.tradable.unknown.toString()}`
-      : "tradable in fomo: unknown",
+      : null,
     input.walletScore
       ? `wallet score v${input.walletScore.scoringVersion.toString()} lookback ${input.walletScore.lookbackStart ?? "none"} to ${input.walletScore.lookbackEnd ?? "none"} entries ${input.walletScore.entryCount.toString()} cutoff ${input.walletScore.cutoff ?? "none"} dry-run ${input.walletScore.rankedCount?.toString() ?? "n/a"}`
       : "wallet score: not recorded",
@@ -127,7 +127,7 @@ export function formatWeeklyReview(input: {
     input.autobuy
       ? `autobuy dry-run intents ${input.autobuy.entries.toString()} exits ${input.autobuy.exits.toString()} paper alerts ${input.autobuy.paperAlerts.toString()}`
       : "",
-  ].filter((line) => line !== "");
+  ].filter((line): line is string => Boolean(line));
   for (const week of input.paper.weeks) {
     lines.push(
       `${week.week} ${week.arm} n=${week.n.toString()} mean=${week.mean.toFixed(4)} median=${week.median.toFixed(4)} p10=${week.p10.toFixed(4)} p90=${week.p90.toFixed(4)}`,

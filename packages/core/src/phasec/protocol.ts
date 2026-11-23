@@ -63,8 +63,13 @@ export interface PhaseCConfig {
   xEnabled: boolean;
   destination: "test" | "admin";
   fomoFeeSchedule: "solana_lowest_fee" | "solana_other";
+  /** Size for strategy entries with no tracked-wallet signal. Defaults to 0.5 at every stage. */
+  screenOnlySizePct?: number;
+  /** Hard-fail threshold for estimated round-trip cost, in percent. Defaults to 3. */
+  maxRoundTripCostPct?: number;
 }
 
+/** Wallet-backed arms keep these stage sizes. */
 export function defaultSizePct(): Record<Stage, number> {
   return {
     trench: 0.5,
@@ -73,6 +78,12 @@ export function defaultSizePct(): Record<Stage, number> {
     second_wave: 1,
   };
 }
+
+/** screen_only (no tracked-wallet signal) uses this size at every stage. */
+export const DEFAULT_SCREEN_ONLY_SIZE_PCT = 0.5;
+
+/** Hard fail when the quoted round-trip cost, same model as net_return, is above this percent. */
+export const DEFAULT_MAX_ROUND_TRIP_COST_PCT = 3;
 
 export function protocolBody(config: PhaseCConfig, rules?: unknown): string {
   return JSON.stringify({
@@ -98,6 +109,8 @@ export function protocolBody(config: PhaseCConfig, rules?: unknown): string {
     weights: SCORE_WEIGHTS,
     exitTreatments: EXIT_TREATMENTS,
     fomoFeeSchedule: config.fomoFeeSchedule,
+    screenOnlySizePct: config.screenOnlySizePct ?? DEFAULT_SCREEN_ONLY_SIZE_PCT,
+    maxRoundTripCostPct: config.maxRoundTripCostPct ?? DEFAULT_MAX_ROUND_TRIP_COST_PCT,
     scoringVersion: SCORING_VERSION,
     walletMinEntries: PROVEN_WALLET_RULE.minEntries,
     sniperUnmeasured: "watch_until_measured",
@@ -109,7 +122,12 @@ export function protocolBody(config: PhaseCConfig, rules?: unknown): string {
 
 export function parseLockedConfig(body: string): PhaseCConfig {
   const parsed = JSON.parse(body) as PhaseCConfig & { config?: PhaseCConfig };
-  return parsed.config ?? parsed;
+  const raw = parsed.config ?? parsed;
+  return {
+    ...raw,
+    screenOnlySizePct: raw.screenOnlySizePct ?? DEFAULT_SCREEN_ONLY_SIZE_PCT,
+    maxRoundTripCostPct: raw.maxRoundTripCostPct ?? DEFAULT_MAX_ROUND_TRIP_COST_PCT,
+  };
 }
 
 export function protocolFingerprint(body: string): string {

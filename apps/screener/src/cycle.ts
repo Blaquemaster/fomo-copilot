@@ -12,7 +12,7 @@ import {
   etWeekStart,
   formatWeeklyReview,
   inQuietHours,
-  lookupTradableInFomo,
+  assignArm,
   curveFallbackBid,
   lamportsForUsd,
   jupiterRatePerMin,
@@ -22,9 +22,11 @@ import {
   parseLockedConfig,
   phaseCConfigFromEnv,
   resolveAlertChat,
+  roundTripCostPct,
   runPhaseCPass,
   screenRulesFromThresholds,
   secondWaveSignal,
+  sizeForArmStage,
   stageForCoin,
   stageSizeUsd,
   type Env,
@@ -87,7 +89,10 @@ export async function runPhaseCCycle(input: {
   const config = phaseCConfigFromEnv(input.env, input.thresholds);
   const stored = await input.store.protocol();
   const day = etDayRange(input.now);
-  const rules = screenRulesFromThresholds(input.thresholds);
+  const rules = {
+    ...screenRulesFromThresholds(input.thresholds),
+    maxRoundTripCostPct: config.maxRoundTripCostPct ?? 3,
+  };
   const coins = await input.store.coins(200, {
     maxMintsPerDay: rules.walletMaxMintsPerDay ?? DEFAULT_WALLET_SIGNAL.maxMintsPerDay,
     freshMinutes: rules.walletBuyFreshMinutes ?? DEFAULT_WALLET_SIGNAL.freshMinutes,
@@ -304,10 +309,14 @@ export async function runPhaseCCycle(input: {
   for (const coin of coins) {
     if (probes >= probeRoom) break;
     if (coin.exitQuoteImpactPct !== null || solPrice === null) continue;
-    const size = stageSizeUsd(
-      config.bankroll,
-      config.sizePct[coin.graduatedAt ? "post_graduation" : "trench"],
-    );
+    const stage =
+      stageForCoin(coin, input.now) ?? (coin.graduatedAt ? "post_graduation" : "trench");
+    const arm = assignArm(coin.mint, stage, coin.trackedBuyers, coin.xMentions);
+    const sized = sizeForArmStage(stage, arm, config.sizePct, config.bankroll, {
+      trackedBuyers: coin.trackedBuyers,
+      screenOnlySizePct: config.screenOnlySizePct,
+    });
+    const size = sized.amount;
     const amount = size === null ? null : lamportsForUsd(size, solPrice);
     if (!amount || !size) continue;
     probes += 1;
@@ -396,6 +405,9 @@ export async function runPhaseCCycle(input: {
         bid = modeled;
       }
     }
+    if (probe?.ok && bid?.ok) {
+      coin.roundTripCostPct = roundTripCostPct(probe, bid, config.fomoFeeSchedule);
+    }
     if (bid?.ok) {
       coin.exitQuoteImpactPct = bid.impactPct;
       freshExit.set(coin.mint, bid.impactPct);
@@ -409,6 +421,13 @@ export async function runPhaseCCycle(input: {
   const enrich = coins
     .filter((coin) => {
       if (coin.exitQuoteImpactPct !== null && coin.exitQuoteImpactPct > rules.exitImpactPctAbove) {
+        return false;
+      }
+      if (
+        coin.roundTripCostPct !== null &&
+        coin.roundTripCostPct !== undefined &&
+        coin.roundTripCostPct > (rules.maxRoundTripCostPct ?? 3)
+      ) {
         return false;
       }
       if (coin.mintAuthorityActive === true && rules.failMintAuthority) return false;
@@ -502,8 +521,8 @@ export async function runPhaseCCycle(input: {
     quotes: [...input.quotes],
     bids: quoted.bids,
     positions,
-    closedToday: await input.store.closedBetween(day.start, day.end),
-    paused: await input.store.isPaused(day.day),
+    closedToday: await input.store.closedBetween(day.start, day.end, stored?.fingerprint ?? null),
+    paused: await input.store.isPaused(day.day, stored?.fingerprint ?? null),
     resolved: await input.store.resolvedReturns(),
     alerted: await input.store.alerted(),
     held: await input.store.held(),
@@ -526,7 +545,12 @@ export async function runPhaseCCycle(input: {
   if (result.lock) {
     await input.store.saveProtocol(result.lock.fingerprint, result.lock.body, input.now);
   }
-  if (result.pauseReason) await input.store.pause(etDay(input.now), result.pauseReason, input.now);
+  if (result.pauseReason) {
+    const fingerprint = result.lock?.fingerprint ?? stored?.fingerprint;
+    if (fingerprint) {
+      await input.store.pause(etDay(input.now), result.pauseReason, input.now, fingerprint);
+    }
+  }
   for (const open of result.opens) {
     await input.store.openPosition(
       open.id,
@@ -557,11 +581,9 @@ export async function runPhaseCCycle(input: {
   }
   const sentIds: string[] = [];
   for (const entry of result.entries) {
-    const listed = await lookupTradableInFomo(entry.mint);
     const id = await input.store.insertEntry({
       ...entry,
       alertAt: input.now,
-      tradableInFomo: listed.tradableInFomo,
     });
     if (!entry.held && id) sentIds.push(id);
   }
@@ -594,7 +616,11 @@ export async function runPhaseCCycle(input: {
       dailyUsdCap: input.env.AUTOBUY_DAILY_USD_CAP,
       killed: false,
     });
-    const paused = (await input.store.isPaused(day.day)) || result.pauseReason !== null;
+    const paused =
+      (await input.store.isPaused(
+        day.day,
+        result.lock?.fingerprint ?? stored?.fingerprint ?? null,
+      )) || result.pauseReason !== null;
     let openCount = positions.filter((position) => position.arm !== "random_pass").length;
     let spent = await input.store.autobuySpentSince(day.start);
     const intents = [];
@@ -702,7 +728,7 @@ export async function runPhaseCCycle(input: {
       promotionsWaiting: pending,
       paper: result.paper,
       autobuy,
-      tradable,
+      tradable: tradable.yes + tradable.no > 0 ? tradable : undefined,
       walletScore: shadow
         ? {
             scoringVersion: shadow.scoringVersion,

@@ -162,11 +162,40 @@ select line from (
   union all
   select 40, 'ALERT no strategy entries in the last 3 hours while the test is running'
   where (select entries_start from proto) < now() - interval '3 hours'
-    and extract(hour from now() at time zone 'America/New_York') between 10 and 22
     and not exists (
       select 1 from phasec_alert
       where kind = 'entry' and restarted_at is null and arm <> 'random_pass'
         and created_at > now() - interval '3 hours')
+  union all
+  select 40, 'ALERT no strategy entries in the last 6 hours while the test is running'
+  where (select entries_start from proto) < now() - interval '6 hours'
+    and not exists (
+      select 1 from phasec_alert
+      where kind = 'entry' and restarted_at is null and arm <> 'random_pass'
+        and created_at > now() - interval '6 hours')
+  union all
+  select 50, 'ALERT strategy close net_return <= -0.9 id=' || pos.id::text
+    || ' mint=' || pos.mint
+    || ' venue=' || coalesce(
+         (select ic.venue from ingest_coin ic where ic.mint = pos.mint),
+         (select c.pool_type from candidates c where c.mint = pos.mint
+          order by c.first_seen_at desc limit 1),
+         'unknown')
+    || ' stage=' || pos.stage
+    || ' size_pct=' || pos.size_pct::text
+    || ' net_return=' || pos.net_return::text
+    || ' closed_et=' || to_char(pos.closed_at at time zone 'America/New_York', 'YYYY-MM-DD HH24:MI:SS.MS')
+  from phasec_position pos
+  where pos.arm <> 'random_pass' and pos.status = 'closed'
+    and pos.net_return is not null and pos.net_return <= -0.9
+    and pos.closed_at >= (select since from win)
+  union all
+  select 51, 'ALERT phasec_pause day=' || p.day::text
+    || ' paused_et=' || to_char(p.paused_at at time zone 'America/New_York', 'YYYY-MM-DD HH24:MI:SS.MS')
+    || ' reason=' || p.reason
+  from phasec_pause p
+  where p.paused_at >= (select since from win)
+     or p.day >= ((select since from win) at time zone 'America/New_York')::date
   union all
   select 41, 'ALERT no strategy entries in the first 4 hours after the test restart'
   where (select entries_start from proto) <= now() - interval '4 hours'

@@ -180,6 +180,25 @@ export function quotedRoundTrip(
 }
 
 /**
+ * Estimated round-trip cost in percent, using the same model as net_return
+ * (entry and exit price impact, Jupiter/route fees, and FOMO fees).
+ * The paper net_return model does not include a separate priority or Jito
+ * fee; those are not added here. A contemporaneous entry+exit quote pair
+ * is a cost estimate (no assumed price move). Returns null when either
+ * side is missing, so the screen can WATCH instead of inventing a number.
+ */
+export function roundTripCostPct(
+  entry: SizeBid,
+  exit: SizeBid,
+  schedule: FomoFeeSchedule = "solana_lowest_fee",
+): number | null {
+  if (!entry.ok || !exit.ok) return null;
+  const net = quotedRoundTrip(entry, exit, schedule);
+  if (!Number.isFinite(net)) return null;
+  return -net * 100;
+}
+
+/**
  * Scale-out sells half at the +50% trigger when the quote has reached it.
  * The other half uses the exit quote. A dead exit loses the unsold half.
  */

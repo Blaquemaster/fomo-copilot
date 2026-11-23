@@ -1,4 +1,4 @@
-import { EXIT_PLAN, type Stage } from "./protocol.js";
+import { DEFAULT_SCREEN_ONLY_SIZE_PCT, EXIT_PLAN, type Stage } from "./protocol.js";
 
 export function sizeForStage(
   stage: Stage,
@@ -6,6 +6,27 @@ export function sizeForStage(
   bankroll: number | null,
 ): { pct: number; amount: number | null } {
   const pct = sizePct[stage];
+  const amount = bankroll === null ? null : (bankroll * pct) / 100;
+  return { pct, amount };
+}
+
+/**
+ * Wallet-backed arms keep the locked stage sizes (0.5/1/2).
+ * screen_only, and any other strategy arm with no tracked-wallet signal,
+ * uses the smallest size at every stage (default 0.5%).
+ * Controls keep the stage size, unchanged.
+ */
+export function sizeForArmStage(
+  stage: Stage,
+  arm: string,
+  sizePct: Record<Stage, number>,
+  bankroll: number | null,
+  input?: { trackedBuyers?: number; screenOnlySizePct?: number },
+): { pct: number; amount: number | null } {
+  const walletBacked = arm === "wallets_x_screen" || (input?.trackedBuyers ?? 0) >= 1;
+  const control = arm === "random_pass";
+  const screenOnlyPct = input?.screenOnlySizePct ?? DEFAULT_SCREEN_ONLY_SIZE_PCT;
+  const pct = control || walletBacked ? sizePct[stage] : screenOnlyPct;
   const amount = bankroll === null ? null : (bankroll * pct) / 100;
   return { pct, amount };
 }

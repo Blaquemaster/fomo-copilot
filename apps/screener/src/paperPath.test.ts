@@ -87,6 +87,7 @@ function readyCoin(mint: string): PassCoin {
     trackedSells: 0,
     quoteError: false,
     secondWave: null,
+    roundTripCostPct: 1.5,
   };
 }
 

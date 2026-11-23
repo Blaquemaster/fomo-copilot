@@ -283,12 +283,14 @@ export class PhaseCRepository implements PhaseCStore {
   async closedBetween(
     start: Date,
     end: Date,
+    fingerprint?: string | null,
   ): Promise<Array<{ sizePct: number; netReturn: number }>> {
     const result = await this.pool.query<{ size_pct: number; net_return: number }>(
       `select size_pct, net_return from phasec_position
        where status = 'closed' and closed_at >= $1 and closed_at < $2 and net_return is not null
-         and arm <> 'random_pass' and restarted_at is null`,
-      [start.toISOString(), end.toISOString()],
+         and arm <> 'random_pass' and restarted_at is null
+         and ($3::text is null or fingerprint = $3)`,
+      [start.toISOString(), end.toISOString(), fingerprint ?? null],
     );
     return result.rows.map((row) => ({
       sizePct: Number(row.size_pct),
@@ -296,16 +298,20 @@ export class PhaseCRepository implements PhaseCStore {
     }));
   }
 
-  async isPaused(day: string): Promise<boolean> {
-    const result = await this.pool.query("select 1 from phasec_pause where day = $1", [day]);
+  async isPaused(day: string, fingerprint?: string | null): Promise<boolean> {
+    if (!fingerprint) return false;
+    const result = await this.pool.query(
+      "select 1 from phasec_pause where day = $1 and fingerprint = $2",
+      [day, fingerprint],
+    );
     return result.rowCount !== null && result.rowCount > 0;
   }
 
-  async pause(day: string, reason: string, at: Date): Promise<void> {
+  async pause(day: string, reason: string, at: Date, fingerprint: string): Promise<void> {
     await this.pool.query(
-      `insert into phasec_pause (day, reason, paused_at) values ($1, $2, $3)
-       on conflict (day) do nothing`,
-      [day, reason, at.toISOString()],
+      `insert into phasec_pause (day, reason, paused_at, fingerprint) values ($1, $2, $3, $4)
+       on conflict (fingerprint, day) do nothing`,
+      [day, reason, at.toISOString(), fingerprint],
     );
   }
 
@@ -344,6 +350,7 @@ export class PhaseCRepository implements PhaseCStore {
     fingerprint?: string | null;
     tradableInFomo?: boolean | null;
     sniperUnmeasured?: boolean;
+    roundTripCostPct?: number | null;
     alertAt: Date;
     entryAfter: Date;
   }): Promise<string> {
@@ -353,8 +360,8 @@ export class PhaseCRepository implements PhaseCStore {
       const inserted = await client.query<{ id: string }>(
         `insert into phasec_alert
           (mint, stage, arm, kind, created_at, delivered_at, held_reason, size_pct, strength, body,
-           fingerprint, tradable_in_fomo, sniper_unmeasured)
-         values ($1, $2, $3, 'entry', $4, null, $5, $6, $7, $8, $9, $10, $11)
+           fingerprint, tradable_in_fomo, sniper_unmeasured, round_trip_cost_pct)
+         values ($1, $2, $3, 'entry', $4, null, $5, $6, $7, $8, $9, $10, $11, $12)
          returning id`,
         [
           input.mint,
@@ -368,13 +375,14 @@ export class PhaseCRepository implements PhaseCStore {
           input.fingerprint ?? null,
           input.tradableInFomo ?? null,
           input.sniperUnmeasured ?? false,
+          input.roundTripCostPct ?? null,
         ],
       );
       await client.query(
         `insert into phasec_position
           (mint, stage, arm, status, alert_at, entry_after, size_pct, exit_plan, screen_failed,
-           sniper_unmeasured)
-         values ($1, $2, $3, 'pending', $4, $5, $6, $7, false, $8)`,
+           sniper_unmeasured, fingerprint, round_trip_cost_pct)
+         values ($1, $2, $3, 'pending', $4, $5, $6, $7, false, $8, $9, $10)`,
         [
           input.mint,
           input.stage,
@@ -384,6 +392,8 @@ export class PhaseCRepository implements PhaseCStore {
           input.sizePct,
           input.exitPlan,
           input.sniperUnmeasured ?? false,
+          input.fingerprint ?? null,
+          input.roundTripCostPct ?? null,
         ],
       );
       await client.query("commit");

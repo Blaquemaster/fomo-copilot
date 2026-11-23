@@ -18,9 +18,13 @@ export interface PhaseCStore {
   coins(limit: number, signal?: WalletSignalRules): Promise<PassCoin[]>;
   mentionCounts(mints: readonly string[]): Promise<Map<string, number>>;
   positions(): Promise<PassPosition[]>;
-  closedBetween(start: Date, end: Date): Promise<Array<{ sizePct: number; netReturn: number }>>;
-  isPaused(day: string): Promise<boolean>;
-  pause(day: string, reason: string, at: Date): Promise<void>;
+  closedBetween(
+    start: Date,
+    end: Date,
+    fingerprint?: string | null,
+  ): Promise<Array<{ sizePct: number; netReturn: number }>>;
+  isPaused(day: string, fingerprint?: string | null): Promise<boolean>;
+  pause(day: string, reason: string, at: Date, fingerprint: string): Promise<void>;
   alerted(): Promise<Array<{ mint: string; stage: Stage }>>;
   recentEntryCount(since: Date): Promise<number>;
   held(): Promise<Array<{ id: string; text: string }>>;
@@ -37,6 +41,7 @@ export interface PhaseCStore {
     fingerprint?: string | null;
     tradableInFomo?: boolean | null;
     sniperUnmeasured?: boolean;
+    roundTripCostPct?: number | null;
     alertAt: Date;
     entryAfter: Date;
   }): Promise<string>;
