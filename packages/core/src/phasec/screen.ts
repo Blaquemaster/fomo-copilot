@@ -29,8 +29,8 @@ export interface ScreenFacts {
   creatorSells: number;
   quoteError: boolean;
   /**
-   * False when sniper cannot be fetched (no created_slot, or launchlab / dbc / meteora).
-   * Missing sniper is then unmeasured, not WATCH. Unset keeps the old WATCH behavior.
+   * True when a launch pool and create slot are known, so a sniper share can be fetched.
+   * Unset keeps the default: a null sniper value is WATCH (unmeasured).
    */
   sniperFetchable?: boolean;
 }
@@ -39,7 +39,7 @@ export interface ScreenResult {
   verdict: "pass" | "fail" | "watch";
   hard: string[];
   warnings: string[];
-  /** True when the coin may pass without a sniper value because it cannot be measured. */
+  /** True when the sniper share has not been measured yet. Kept on the entry record. */
   sniperUnmeasured: boolean;
 }
 
@@ -53,16 +53,14 @@ const REQUIRED: Array<[keyof ScreenFacts, string]> = [
 ];
 
 /**
- * Sniper is only fetchable for venues that store a create slot and a curve address.
- * LaunchLab, DBC, and Meteora never get a value from the create-slot signature scan.
+ * Sniper can be fetched once we know the original launch pool and its create slot,
+ * including LaunchLab, DBC, and graduated coins traced back to that origin.
  */
 export function sniperIsFetchable(coin: {
   createdSlot?: number | null;
   bondingCurve?: string | null;
   poolType?: string | null;
 }): boolean {
-  const venue = (coin.poolType ?? "").toLowerCase();
-  if (venue === "launchlab" || venue === "dbc" || venue === "meteora") return false;
   if (coin.createdSlot === null || coin.createdSlot === undefined) return false;
   return Boolean(coin.bondingCurve);
 }
@@ -70,7 +68,86 @@ export function sniperIsFetchable(coin: {
 export function isSniperUnmeasured(
   facts: Pick<ScreenFacts, "sniperBundlePct" | "sniperFetchable">,
 ): boolean {
-  return facts.sniperBundlePct === null && facts.sniperFetchable === false;
+  return facts.sniperBundlePct === null;
+}
+
+/** Known cheaper-gate hard fail: do not spend sniper credits on this coin. */
+export function failsCheaperGates(
+  coin: {
+    mintAuthorityActive?: boolean | null;
+    freezeAuthorityActive?: boolean | null;
+    top10HoldersPct?: number | null;
+    exitQuoteImpactPct?: number | null;
+    transferFeeBps?: number | null;
+  },
+  rules: ScreenRules,
+): boolean {
+  if (rules.failMintAuthority && coin.mintAuthorityActive === true) return true;
+  if (rules.failFreezeAuthority && coin.freezeAuthorityActive === true) return true;
+  if (
+    coin.transferFeeBps !== null &&
+    coin.transferFeeBps !== undefined &&
+    coin.transferFeeBps > rules.transferFeeBpsAbove
+  ) {
+    return true;
+  }
+  if (
+    coin.exitQuoteImpactPct !== null &&
+    coin.exitQuoteImpactPct !== undefined &&
+    coin.exitQuoteImpactPct > rules.exitImpactPctAbove
+  ) {
+    return true;
+  }
+  if (
+    rules.top10FailAbove !== undefined &&
+    coin.top10HoldersPct !== null &&
+    coin.top10HoldersPct !== undefined &&
+    coin.top10HoldersPct > rules.top10FailAbove
+  ) {
+    return true;
+  }
+  return false;
+}
+
+/**
+ * Spend sniper RPC only on coins that already pass cheaper gates, or that have a
+ * wallet signal (and do not already hard-fail a cheaper gate).
+ */
+export function shouldFetchSniper(
+  coin: {
+    sniperBundlePct?: number | null;
+    trackedBuyers?: number;
+    createdSlot?: number | null;
+    bondingCurve?: string | null;
+    poolType?: string | null;
+    mintAuthorityActive?: boolean | null;
+    freezeAuthorityActive?: boolean | null;
+    top10HoldersPct?: number | null;
+    exitQuoteImpactPct?: number | null;
+    transferFeeBps?: number | null;
+  },
+  rules: ScreenRules,
+): boolean {
+  if (coin.sniperBundlePct !== null && coin.sniperBundlePct !== undefined) return false;
+  if (!sniperIsFetchable(coin)) return false;
+  if (failsCheaperGates(coin, rules)) return false;
+  if ((coin.trackedBuyers ?? 0) >= 1) return true;
+  if (coin.mintAuthorityActive === null || coin.mintAuthorityActive === undefined) return false;
+  if (coin.freezeAuthorityActive === null || coin.freezeAuthorityActive === undefined) return false;
+  if (coin.top10HoldersPct === null || coin.top10HoldersPct === undefined) return false;
+  if (coin.exitQuoteImpactPct === null || coin.exitQuoteImpactPct === undefined) return false;
+  return true;
+}
+
+/** Strategy arms need a passing screen. Controls may enter while only snipers are still unmeasured. */
+export function allowsEntry(screen: ScreenResult, arm: string): boolean {
+  if (screen.verdict === "pass") return true;
+  if (screen.verdict === "fail") return false;
+  if (arm !== "random_pass") return false;
+  const blocking = screen.warnings.filter(
+    (warning) => warning.endsWith(" missing") || warning === "quote source error",
+  );
+  return blocking.length === 1 && blocking[0] === "snipers missing";
 }
 
 /** A missing required field is WATCH. A known hard failure is FAIL. */
@@ -104,7 +181,6 @@ export function screenCoin(facts: ScreenFacts, rules: ScreenRules): ScreenResult
   }
   const sniperUnmeasured = isSniperUnmeasured(facts);
   for (const [key, label] of REQUIRED) {
-    if (key === "sniperBundlePct" && sniperUnmeasured) continue;
     if (facts[key] === null) missing.push(label);
   }
   if (facts.top10HoldersPct !== null && facts.top10HoldersPct > rules.top10Warn) {

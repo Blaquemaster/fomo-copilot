@@ -32,7 +32,13 @@ import {
   type TierWallet,
 } from "./risk.js";
 import { assignArm, isFlapMint, scoreStrength, stageForCoin, type ScoreCoin } from "./score.js";
-import { screenCoin, sniperIsFetchable, type ScreenFacts, type ScreenRules } from "./screen.js";
+import {
+  allowsEntry,
+  screenCoin,
+  sniperIsFetchable,
+  type ScreenFacts,
+  type ScreenRules,
+} from "./screen.js";
 import { inQuietHours, nextEtMidnight } from "./time.js";
 
 export interface PassCoin extends ScoreCoin {
@@ -441,8 +447,9 @@ export function runPhaseCPass(input: PassInput): PassResult {
       const stage = stageForCoin(coin, input.now);
       if (!stage || seen.has(`${coin.mint}:${stage}`)) continue;
       const screen = screenOf(coin, quotes.get(coin.mint)?.liquidityUsd ?? null, input.rules);
-      if (screen.verdict !== "pass") continue;
+      if (screen.verdict === "fail") continue;
       const arm = assignArm(coin.mint, stage, coin.trackedBuyers, coin.xMentions);
+      if (!allowsEntry(screen, arm)) continue;
       if (
         stage === "trench" &&
         arm !== "random_pass" &&

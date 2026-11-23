@@ -8,7 +8,7 @@ import {
   type PhaseCConfig,
 } from "./protocol.js";
 import { assignArm } from "./score.js";
-import { screenCoin, type ScreenFacts, type ScreenRules } from "./screen.js";
+import { screenCoin, shouldFetchSniper, type ScreenFacts, type ScreenRules } from "./screen.js";
 import { etDayRange, nextEtMidnight } from "./time.js";
 
 const rules: ScreenRules = {
@@ -139,24 +139,25 @@ describe("pick quality screen", () => {
     );
   });
 
-  it("does not WATCH-block when sniper cannot be fetched, and tags the entry", () => {
+  it("WATCH-blocks an unmeasured sniper on every venue, and still fails a measured bundle", () => {
     const missing = facts({ sniperBundlePct: null });
     expect(screenCoin(missing, rules).verdict).toBe("watch");
-    expect(screenCoin(missing, rules).sniperUnmeasured).toBe(false);
+    expect(screenCoin(missing, rules).sniperUnmeasured).toBe(true);
     const unmeasured = facts({ sniperBundlePct: null, sniperFetchable: false });
-    const allowed = screenCoin(unmeasured, rules);
-    expect(allowed.verdict).toBe("pass");
-    expect(allowed.sniperUnmeasured).toBe(true);
-    expect(allowed.warnings).toContain("sniper unmeasured");
+    const blocked = screenCoin(unmeasured, rules);
+    expect(blocked.verdict).toBe("watch");
+    expect(blocked.sniperUnmeasured).toBe(true);
+    expect(blocked.warnings).toContain("sniper unmeasured");
+    expect(blocked.warnings).toContain("snipers missing");
     expect(
       screenCoin(facts({ sniperBundlePct: 87.5, sniperFetchable: false }), rules).verdict,
     ).toBe("fail");
     const pending = facts({ sniperBundlePct: null, sniperFetchable: true });
     expect(screenCoin(pending, rules).verdict).toBe("watch");
-    expect(screenCoin(pending, rules).sniperUnmeasured).toBe(false);
+    expect(screenCoin(pending, rules).sniperUnmeasured).toBe(true);
   });
 
-  it("enters a launchlab wallet pick that has no sniper value and marks it unmeasured", () => {
+  it("does not enter a launchlab wallet pick until sniper is measured", () => {
     const backed = mintFor(2, "wallets_x_screen", "LabSniper");
     const result = runPhaseCPass(
       pass({
@@ -165,16 +166,33 @@ describe("pick quality screen", () => {
             trackedBuyers: 2,
             sniperBundlePct: null,
             poolType: "launchlab",
-            createdSlot: null,
+            createdSlot: 100,
             bondingCurve: "LabCurve1111111111111111111111111111111",
           }),
         ],
       }),
     );
+    expect(result.entries).toHaveLength(0);
+  });
+
+  it("lets a control enter while sniper is unmeasured, and tags the record", () => {
+    const control = mintFor(0, "random_pass", "CtrlSniper");
+    const result = runPhaseCPass(
+      pass({
+        coins: [
+          coin(control, {
+            trackedBuyers: 0,
+            sniperBundlePct: null,
+            poolType: "dbc",
+            createdSlot: null,
+            bondingCurve: null,
+          }),
+        ],
+      }),
+    );
     expect(result.entries).toHaveLength(1);
-    expect(result.entries[0]?.arm).toBe("wallets_x_screen");
+    expect(result.entries[0]?.arm).toBe("random_pass");
     expect(result.entries[0]?.sniperUnmeasured).toBe(true);
-    expect(result.entries[0]?.text).toContain("sniper unmeasured");
   });
 
   it("keeps a fetchable but still-unknown sniper in WATCH", () => {
@@ -252,5 +270,40 @@ describe("ET day boundaries", () => {
     const spring = etDayRange(new Date("2026-03-08T15:00:00.000Z"));
     expect(spring.start.toISOString()).toBe("2026-03-08T05:00:00.000Z");
     expect(spring.end.toISOString()).toBe("2026-03-09T04:00:00.000Z");
+  });
+});
+
+describe("sniper fetch budget", () => {
+  const ready = {
+    trackedBuyers: 0,
+    createdSlot: 10,
+    bondingCurve: "Curve111111111111111111111111111111111",
+    mintAuthorityActive: false,
+    freezeAuthorityActive: false,
+    top10HoldersPct: 20,
+    exitQuoteImpactPct: 1,
+    sniperBundlePct: null,
+  };
+
+  it("fetches a coin that already passed cheaper gates", () => {
+    expect(shouldFetchSniper(ready, rules)).toBe(true);
+  });
+
+  it("fetches a wallet-signal coin even if cheaper facts are still missing", () => {
+    expect(
+      shouldFetchSniper(
+        { ...ready, trackedBuyers: 2, mintAuthorityActive: null, top10HoldersPct: null },
+        rules,
+      ),
+    ).toBe(true);
+  });
+
+  it("skips coins that failed a cheaper gate or have no origin", () => {
+    expect(shouldFetchSniper({ ...ready, top10HoldersPct: 80 }, rules)).toBe(false);
+    expect(shouldFetchSniper({ ...ready, bondingCurve: null, trackedBuyers: 3 }, rules)).toBe(
+      false,
+    );
+    expect(shouldFetchSniper({ ...ready, mintAuthorityActive: null }, rules)).toBe(false);
+    expect(shouldFetchSniper({ ...ready, sniperBundlePct: 5 }, rules)).toBe(false);
   });
 });

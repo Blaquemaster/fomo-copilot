@@ -9,6 +9,8 @@ export interface CandidateDraft {
   firstSeenSlot: number;
   firstSeenAtMs: number;
   sourceSignature: string;
+  /** Set on create events; null for graduation / later sightings. */
+  createdSlot?: number | null;
 }
 
 export interface CurveMark {
@@ -73,6 +75,8 @@ export function planCandidateWrites(input: {
         ...base,
         mint: input.observation.mint,
         pool: input.observation.pool,
+        createdSlot:
+          input.observation.kind === "pumpswap_create_pool" ? null : input.observation.slot,
         poolType:
           input.observation.kind === "pumpswap_create_pool"
             ? "pumpswap"

@@ -8,6 +8,7 @@ import {
   DBC_QUOTE_VAULT_OFFSET,
   SYSTEM_PROGRAM,
   createSlotSniperPct,
+  loadCreateSlotSnipers,
   loadTopHolders,
   parseDbcVaults,
   walletTopHolderPct,
@@ -176,6 +177,114 @@ describe("create-slot snipers", () => {
     const page = [{ slot: 130 }, { slot: 120 }, { slot: 100 }, { slot: 100 }, { slot: 100 }];
     expect(createSlotSniperPct(page, 100)).toBeCloseTo(66.67, 1);
     expect(createSlotSniperPct([{ slot: 101 }, { slot: 100 }], 100)).toBe(0);
+  });
+
+  it("stays unknown when pagination hits the cap before the create slot", () => {
+    const pages = Array.from({ length: 5000 }, (_row, index) => ({ slot: 10_000 - index }));
+    expect(createSlotSniperPct(pages, 100, 1000, true)).toBeNull();
+  });
+});
+
+const REAL = {
+  pump: {
+    mint: "pump-mint",
+    pool: "pump-curve",
+    signature:
+      "4zKozQVM5gcomgiXnMAP7uFLUftm47PSRDomWDDZf8VqJG3D9R8mJF9CQHvhR7jCZW6fKNNprpdnuvoGUmoXFuib",
+    slot: 470510493,
+  },
+  launchlab: {
+    mint: "lab-mint",
+    pool: "lab-pool-state",
+    signature:
+      "EFFtomNYquorwPfETGJEGKALaGxaefYGG9LLLGUP2J8G1Jqz3rQqyvpJ8pEDq84EjyCtugmB3HNx9khbzkJsLZb",
+    slot: 470821705,
+  },
+  dbc: {
+    mint: "9V1axz9mB2X45pUXCP9iYBVGsegU643eqvnJkuC2936x",
+    pool: "4M3t9sK7LxgNswQJsWVr9RArw3pkrGgt5hay4D84CPX4",
+    signature:
+      "4QpMmMWTjX4UtwBTV1JsE5J8yeFtBKsfhSLh98fcJeuVqwdcGNRNGGmTdkPAiV3uLeFaXkpxNw4SrxcJprhkM73h",
+    slot: 468993762,
+  },
+  graduated: {
+    mint: "8tihoKEgDJH7ToKHvFuXiwvTm1yaHXv26NxR7s6QhC7B",
+    pool: "F1BD8nH8agz2i9Yf3To8t4yNpxBBmRgfo2vyXabd9QUJ",
+    signature:
+      "4ZJje3fpvsMMFXw7FbBSaS4AqPSNM2FoXBnGu4f58R8hiC8Lx4EGTvWcW2X3FzVkQbVqaWVTqBDB4pSJFRV9hpUM",
+    slot: 472942916,
+  },
+} as const;
+
+function signatureFetch(pages: Map<string, Array<Array<{ signature: string; slot: number }>>>) {
+  return (async (_url: string, init?: { body?: string }) => {
+    const body = JSON.parse(init?.body ?? "{}") as {
+      method: string;
+      params: [string, { limit?: number; before?: string }];
+    };
+    if (body.method !== "getSignaturesForAddress") {
+      return new Response(JSON.stringify({ result: [] }), { status: 200 });
+    }
+    const [address, opts] = body.params;
+    const booked = pages.get(address) ?? [];
+    let page = booked[0] ?? [];
+    if (opts?.before) {
+      const previous = booked.findIndex((candidate) => candidate.at(-1)?.signature === opts.before);
+      page = previous >= 0 ? (booked[previous + 1] ?? []) : [];
+    }
+    return new Response(JSON.stringify({ result: page }), { status: 200 });
+  }) as unknown as typeof fetch;
+}
+
+describe("venue sniper scans from real transactions", () => {
+  it("measures pump, launchlab, dbc, and a graduated DBC origin pool", async () => {
+    const pages = new Map<string, Array<Array<{ signature: string; slot: number }>>>();
+    // Three create-slot signatures: create plus two snipers -> 66.67%.
+    for (const venue of Object.values(REAL)) {
+      pages.set(venue.pool, [
+        [
+          { signature: `${venue.signature}-s2`, slot: venue.slot },
+          { signature: `${venue.signature}-s1`, slot: venue.slot },
+          { signature: venue.signature, slot: venue.slot },
+        ],
+      ]);
+    }
+    const loaded = await loadCreateSlotSnipers({
+      apiKey: "test",
+      coins: Object.values(REAL).map((venue) => ({
+        mint: venue.mint,
+        bondingCurve: venue.pool,
+        createdSlot: venue.slot,
+      })),
+      fetchImpl: signatureFetch(pages),
+    });
+    expect(loaded.rows).toHaveLength(4);
+    expect(loaded.credits).toBe(4);
+    for (const row of loaded.rows) {
+      expect(row.sniperPct).toBeCloseTo(66.67, 1);
+    }
+  });
+
+  it("paginates past 1000 signatures until the real create slot", async () => {
+    const venue = REAL.launchlab;
+    const first = Array.from({ length: 1000 }, (_row, index) => ({
+      signature: `newer-${index.toString()}`,
+      slot: venue.slot + 1000 - index,
+    }));
+    const second = [
+      { signature: `${venue.signature}-s1`, slot: venue.slot },
+      { signature: venue.signature, slot: venue.slot },
+    ];
+    const pages = new Map([[venue.pool, [first, second]]]);
+    const loaded = await loadCreateSlotSnipers({
+      apiKey: "test",
+      coins: [{ mint: venue.mint, bondingCurve: venue.pool, createdSlot: venue.slot }],
+      fetchImpl: signatureFetch(pages),
+      pageSize: 1000,
+      maxPages: 5,
+    });
+    expect(loaded.credits).toBe(2);
+    expect(loaded.rows[0]?.sniperPct).toBe(50);
   });
 });
 

@@ -285,7 +285,19 @@ export {
 } from "./phasec/secondWave.js";
 export { runPhaseCPass, type PassCoin, type PassPosition } from "./phasec/pass.js";
 export { isFlapMint, stageForCoin } from "./phasec/score.js";
-export { sniperIsFetchable, type ScreenRules } from "./phasec/screen.js";
+export {
+  allowsEntry,
+  failsCheaperGates,
+  shouldFetchSniper,
+  sniperIsFetchable,
+  type ScreenRules,
+} from "./phasec/screen.js";
+export {
+  resolveLaunchOrigin,
+  SNIPER_CREATE_KINDS,
+  type LaunchCreateEvent,
+  type LaunchOrigin,
+} from "./ingest/sniperOrigin.js";
 export { DEFAULT_WALLET_SIGNAL, type WalletSignalRules } from "./phasec/store.js";
 export {
   assignExitTreatment,
