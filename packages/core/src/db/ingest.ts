@@ -547,6 +547,8 @@ alter table phasec_alert add column if not exists fingerprint text;
 alter table phasec_alert add column if not exists tradable_in_fomo boolean;
 alter table phasec_alert add column if not exists minutes_from_alert_to_listed double precision;
 alter table phasec_alert add column if not exists restarted_at timestamptz;
+alter table phasec_alert add column if not exists sniper_unmeasured boolean not null default false;
+alter table phasec_position add column if not exists sniper_unmeasured boolean not null default false;
 create index if not exists wallet_fill_mint_side_idx on wallet_fill (mint, side);
 
 create table if not exists phasec_mint_cache (

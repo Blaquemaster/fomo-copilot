@@ -1,6 +1,7 @@
 import {
   admitAutobuy,
   DEFAULT_WALLET_SIGNAL,
+  sniperIsFetchable,
   autobuyLimits,
   noopSigner,
   resolveAutobuyMode,
@@ -428,11 +429,7 @@ export async function runPhaseCCycle(input: {
       }
       // Only count a missing sniper value as work when it can be fetched. A coin with no
       // create slot never gets one, and used to hold an enrichment slot on every pass.
-      const sniperFetchable =
-        coin.sniperBundlePct === null &&
-        Boolean(coin.bondingCurve) &&
-        coin.createdSlot !== null &&
-        coin.createdSlot !== undefined;
+      const sniperFetchable = coin.sniperBundlePct === null && sniperIsFetchable(coin);
       return coin.mintAuthorityActive === null || coin.top10HoldersPct === null || sniperFetchable;
     })
     .slice(0, ENRICH_PER_PASS);

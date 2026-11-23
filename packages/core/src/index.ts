@@ -285,7 +285,7 @@ export {
 } from "./phasec/secondWave.js";
 export { runPhaseCPass, type PassCoin, type PassPosition } from "./phasec/pass.js";
 export { isFlapMint, stageForCoin } from "./phasec/score.js";
-export type { ScreenRules } from "./phasec/screen.js";
+export { sniperIsFetchable, type ScreenRules } from "./phasec/screen.js";
 export { DEFAULT_WALLET_SIGNAL, type WalletSignalRules } from "./phasec/store.js";
 export {
   assignExitTreatment,

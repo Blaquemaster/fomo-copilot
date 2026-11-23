@@ -100,6 +100,7 @@ export function protocolBody(config: PhaseCConfig, rules?: unknown): string {
     fomoFeeSchedule: config.fomoFeeSchedule,
     scoringVersion: SCORING_VERSION,
     walletMinEntries: PROVEN_WALLET_RULE.minEntries,
+    sniperUnmeasured: "allow_when_unfetchable",
     outcome: "bankroll_pnl_at_1h_after_quoted_costs_and_fomo_fee",
     goRule:
       "strategy arms only: positive bankroll pnl after quoted costs and FOMO fees, min alerts, drawdown under the locked percent, still profitable without the best trade, median net above zero",

@@ -150,7 +150,7 @@ describe.skipIf(!databaseUrl)("phasec positions against postgres", () => {
         [mint],
       );
       expect(Number(stored.rows[0]?.top10_pct)).toBe(12.5);
-      expect(stored.rows[0]?.top10_method).toBe("wallets_v2");
+      expect(stored.rows[0]?.top10_method).toBe("wallets_v3");
     } finally {
       await pool.end();
     }
@@ -222,4 +222,77 @@ describe.skipIf(!databaseUrl)("phasec live wallet signal against postgres", () =
       await pool.end();
     }
   });
+});
+
+describe.skipIf(!databaseUrl)("phasec closedBetween against postgres", () => {
+  it("excludes control and voided closes from the daily loss window", async () => {
+    const pool = createPool(databaseUrl ?? "");
+    try {
+      await migrate(pool);
+      const repo = new PhaseCRepository(pool);
+      const start = new Date("2026-11-23T05:00:00.000Z");
+      const mid = new Date("2026-11-23T10:00:00.000Z");
+      const end = new Date("2026-11-23T15:00:00.000Z");
+      const openAndClose = async (mint: string, arm: string, net: number, at: Date) => {
+        await repo.insertEntry({
+          mint,
+          stage: "trench",
+          arm,
+          sizePct: 0.5,
+          strength: 0.55,
+          exitPlan: "plan",
+          text: "entry",
+          held: arm === "random_pass",
+          heldReason: arm === "random_pass" ? "control" : null,
+          alertAt: at,
+          entryAfter: at,
+        });
+        const row = await pool.query<{ id: string }>(
+          "select id from phasec_position where mint = $1 order by id desc limit 1",
+          [mint],
+        );
+        const id = String(row.rows[0]?.id);
+        await repo.openPosition(id, 1e-12, 1, 0, 5, "5000", 0.1, "jupiter", at);
+        await repo.closePosition({
+          id,
+          quote: 1e-12,
+          net,
+          net2x: net,
+          reason: "horizon",
+          impactPct: 1,
+          feeUsd: 0,
+          failure: null,
+          fomoFeeUsd: 0.1,
+          quoteSource: "jupiter",
+          at,
+        });
+        return id;
+      };
+      const voidedId = await openAndClose(
+        "ClosedVoided11111111111111111111111111111",
+        "wallets_x_screen",
+        -0.5,
+        mid,
+      );
+      await repo.voidPaperWindow(mid);
+      await openAndClose("ClosedControl1111111111111111111111111111", "random_pass", -0.4, mid);
+      await openAndClose(
+        "ClosedStrategy111111111111111111111111111",
+        "wallets_x_screen",
+        -0.1,
+        mid,
+      );
+      const rows = await repo.closedBetween(start, end);
+      expect(rows).toHaveLength(1);
+      expect(rows[0]?.netReturn).toBeCloseTo(-0.1);
+      expect(rows[0]?.sizePct).toBeCloseTo(0.5);
+      const voided = await pool.query<{ restarted_at: Date | null }>(
+        "select restarted_at from phasec_position where id = $1",
+        [voidedId],
+      );
+      expect(voided.rows[0]?.restarted_at).not.toBeNull();
+    } finally {
+      await pool.end();
+    }
+  }, 30_000);
 });

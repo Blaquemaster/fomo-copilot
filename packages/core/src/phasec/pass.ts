@@ -32,7 +32,7 @@ import {
   type TierWallet,
 } from "./risk.js";
 import { assignArm, isFlapMint, scoreStrength, stageForCoin, type ScoreCoin } from "./score.js";
-import { screenCoin, type ScreenFacts, type ScreenRules } from "./screen.js";
+import { screenCoin, sniperIsFetchable, type ScreenFacts, type ScreenRules } from "./screen.js";
 import { inQuietHours, nextEtMidnight } from "./time.js";
 
 export interface PassCoin extends ScoreCoin {
@@ -109,6 +109,7 @@ export interface PlannedEntry {
   held: boolean;
   heldReason: "quiet" | "control" | null;
   fingerprint: string;
+  sniperUnmeasured: boolean;
   entryAfter: Date;
 }
 
@@ -202,6 +203,7 @@ function screenOf(coin: PassCoin, liquidity: number | null, rules: ScreenRules) 
     uniqueMakers1h: coin.uniqueMakers1h,
     creatorSells: coin.creatorSells,
     quoteError: coin.quoteError,
+    sniperFetchable: sniperIsFetchable(coin),
   };
   return screenCoin(facts, rules);
 }
@@ -499,6 +501,7 @@ export function runPhaseCPass(input: PassInput): PassResult {
         held,
         heldReason: control ? "control" : quiet ? "quiet" : null,
         fingerprint: currentFingerprint,
+        sniperUnmeasured: screen.sniperUnmeasured,
         entryAfter: new Date(input.now.getTime() + config.entryDelaySec * 1000),
       });
       if (!held) immediate.push(text);

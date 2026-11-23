@@ -1,4 +1,4 @@
-import { rpcCredits } from "@fomo/core";
+import { encodeBase58, rpcCredits } from "@fomo/core";
 
 function readU64(data: Uint8Array, offset: number): bigint {
   let value = 0n;
@@ -98,6 +98,22 @@ export function parseMeteoraCurve(data: Uint8Array): {
   return {
     virtualTokenRaw: readU64(data, METEORA_BASE_RESERVE_OFFSET),
     virtualSolLamports: readU64(data, METEORA_QUOTE_RESERVE_OFFSET),
+  };
+}
+
+/** Official Meteora DBC program. Inventory lives in base_vault, a token account. */
+export const DBC_PROGRAM = "dbcij3LWUppWqq96dh6gJWwBifmcGfLSB5D4DuSMaqN";
+/** VirtualPool: 8-byte disc + 64-byte VolatilityTracker + config + creator, then mint and vaults. */
+export const DBC_BASE_MINT_OFFSET = 136;
+export const DBC_BASE_VAULT_OFFSET = 168;
+export const DBC_QUOTE_VAULT_OFFSET = 200;
+
+/** Token accounts that hold DBC curve inventory. Their owners are often system wallets. */
+export function parseDbcVaults(data: Uint8Array): { baseVault: string; quoteVault: string } | null {
+  if (data.length < DBC_QUOTE_VAULT_OFFSET + 32) return null;
+  return {
+    baseVault: encodeBase58(data.subarray(DBC_BASE_VAULT_OFFSET, DBC_BASE_VAULT_OFFSET + 32)),
+    quoteVault: encodeBase58(data.subarray(DBC_QUOTE_VAULT_OFFSET, DBC_QUOTE_VAULT_OFFSET + 32)),
   };
 }
 
@@ -229,6 +245,27 @@ export async function loadTopHolders(input: {
           }
         })
         .filter((row) => row.address !== "" && row.amount > 0n);
+      const curve = input.curves?.get(mint);
+      if (curve && listed.length > 0) {
+        const poolInfo = await rpc<{
+          value?: Array<{ owner?: string; data?: [string, string] | string } | null>;
+        }>(fetchImpl, input.apiKey, "getMultipleAccounts", [[curve], { encoding: "base64" }]);
+        credits += rpcCredits("getMultipleAccounts");
+        const account = poolInfo?.value?.[0];
+        if (account?.owner === DBC_PROGRAM) {
+          const raw = account.data;
+          const b64 = Array.isArray(raw) ? raw[0] : raw;
+          if (typeof b64 === "string") {
+            const vaults = parseDbcVaults(Uint8Array.from(Buffer.from(b64, "base64")));
+            if (vaults) {
+              const skip = new Set([vaults.baseVault, vaults.quoteVault]);
+              for (let i = listed.length - 1; i >= 0; i -= 1) {
+                if (skip.has(listed[i]?.address ?? "")) listed.splice(i, 1);
+              }
+            }
+          }
+        }
+      }
       if (listed.length === 0) continue;
       const tokenInfo = await rpc<{
         value?: Array<{ data?: { parsed?: { info?: { owner?: string } } } } | null>;
@@ -253,7 +290,6 @@ export async function loadTopHolders(input: {
       const programOf = new Map(
         unique.map((owner, index) => [owner, ownerInfo.value?.[index]?.owner ?? null]),
       );
-      const curve = input.curves?.get(mint);
       const pct = walletTopHolderPct(
         listed.map((row, index) => {
           const owner = owners[index] ?? null;

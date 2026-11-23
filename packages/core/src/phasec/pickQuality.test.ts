@@ -139,6 +139,62 @@ describe("pick quality screen", () => {
     );
   });
 
+  it("does not WATCH-block when sniper cannot be fetched, and tags the entry", () => {
+    const missing = facts({ sniperBundlePct: null });
+    expect(screenCoin(missing, rules).verdict).toBe("watch");
+    expect(screenCoin(missing, rules).sniperUnmeasured).toBe(false);
+    const unmeasured = facts({ sniperBundlePct: null, sniperFetchable: false });
+    const allowed = screenCoin(unmeasured, rules);
+    expect(allowed.verdict).toBe("pass");
+    expect(allowed.sniperUnmeasured).toBe(true);
+    expect(allowed.warnings).toContain("sniper unmeasured");
+    expect(
+      screenCoin(facts({ sniperBundlePct: 87.5, sniperFetchable: false }), rules).verdict,
+    ).toBe("fail");
+    const pending = facts({ sniperBundlePct: null, sniperFetchable: true });
+    expect(screenCoin(pending, rules).verdict).toBe("watch");
+    expect(screenCoin(pending, rules).sniperUnmeasured).toBe(false);
+  });
+
+  it("enters a launchlab wallet pick that has no sniper value and marks it unmeasured", () => {
+    const backed = mintFor(2, "wallets_x_screen", "LabSniper");
+    const result = runPhaseCPass(
+      pass({
+        coins: [
+          coin(backed, {
+            trackedBuyers: 2,
+            sniperBundlePct: null,
+            poolType: "launchlab",
+            createdSlot: null,
+            bondingCurve: "LabCurve1111111111111111111111111111111",
+          }),
+        ],
+      }),
+    );
+    expect(result.entries).toHaveLength(1);
+    expect(result.entries[0]?.arm).toBe("wallets_x_screen");
+    expect(result.entries[0]?.sniperUnmeasured).toBe(true);
+    expect(result.entries[0]?.text).toContain("sniper unmeasured");
+  });
+
+  it("keeps a fetchable but still-unknown sniper in WATCH", () => {
+    const backed = mintFor(2, "wallets_x_screen", "PumpSniper");
+    const result = runPhaseCPass(
+      pass({
+        coins: [
+          coin(backed, {
+            trackedBuyers: 2,
+            sniperBundlePct: null,
+            poolType: "pump",
+            createdSlot: 100,
+            bondingCurve: "PumpCurve111111111111111111111111111111",
+          }),
+        ],
+      }),
+    );
+    expect(result.entries).toHaveLength(0);
+  });
+
   it("needs a tracked buyer for a trench strategy entry but keeps the control", () => {
     const noWallet = mintFor(0, "screen_only", "Bare");
     const control = mintFor(0, "random_pass", "Ctrl");
