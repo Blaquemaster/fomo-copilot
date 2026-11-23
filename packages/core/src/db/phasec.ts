@@ -18,7 +18,7 @@ function date(value: Date | string): Date {
  * Top 10 cached before this method counted the bonding curve and pool vaults as holders, so it
  * read near 100% for every coin. Rows without this tag are ignored and re-fetched.
  */
-export const TOP10_METHOD = "wallets_v2";
+export const TOP10_METHOD = "wallets_v3";
 
 /** Fallback slot rate when no recent creates exist. Measured about 4.65 a second in Nov 2026. */
 const DEFAULT_SLOTS_PER_SEC = 4.65;
@@ -273,7 +273,8 @@ export class PhaseCRepository implements PhaseCStore {
   ): Promise<Array<{ sizePct: number; netReturn: number }>> {
     const result = await this.pool.query<{ size_pct: number; net_return: number }>(
       `select size_pct, net_return from phasec_position
-       where status = 'closed' and closed_at >= $1 and closed_at < $2 and net_return is not null`,
+       where status = 'closed' and closed_at >= $1 and closed_at < $2 and net_return is not null
+         and arm <> 'random_pass' and restarted_at is null`,
       [start.toISOString(), end.toISOString()],
     );
     return result.rows.map((row) => ({
@@ -329,6 +330,7 @@ export class PhaseCRepository implements PhaseCStore {
     heldReason?: "quiet" | "control" | null;
     fingerprint?: string | null;
     tradableInFomo?: boolean | null;
+    sniperUnmeasured?: boolean;
     alertAt: Date;
     entryAfter: Date;
   }): Promise<string> {
@@ -338,8 +340,8 @@ export class PhaseCRepository implements PhaseCStore {
       const inserted = await client.query<{ id: string }>(
         `insert into phasec_alert
           (mint, stage, arm, kind, created_at, delivered_at, held_reason, size_pct, strength, body,
-           fingerprint, tradable_in_fomo)
-         values ($1, $2, $3, 'entry', $4, null, $5, $6, $7, $8, $9, $10)
+           fingerprint, tradable_in_fomo, sniper_unmeasured)
+         values ($1, $2, $3, 'entry', $4, null, $5, $6, $7, $8, $9, $10, $11)
          returning id`,
         [
           input.mint,
@@ -352,12 +354,14 @@ export class PhaseCRepository implements PhaseCStore {
           input.text,
           input.fingerprint ?? null,
           input.tradableInFomo ?? null,
+          input.sniperUnmeasured ?? false,
         ],
       );
       await client.query(
         `insert into phasec_position
-          (mint, stage, arm, status, alert_at, entry_after, size_pct, exit_plan, screen_failed)
-         values ($1, $2, $3, 'pending', $4, $5, $6, $7, false)`,
+          (mint, stage, arm, status, alert_at, entry_after, size_pct, exit_plan, screen_failed,
+           sniper_unmeasured)
+         values ($1, $2, $3, 'pending', $4, $5, $6, $7, false, $8)`,
         [
           input.mint,
           input.stage,
@@ -366,6 +370,7 @@ export class PhaseCRepository implements PhaseCStore {
           input.entryAfter.toISOString(),
           input.sizePct,
           input.exitPlan,
+          input.sniperUnmeasured ?? false,
         ],
       );
       await client.query("commit");

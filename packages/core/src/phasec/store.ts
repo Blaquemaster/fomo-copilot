@@ -36,6 +36,7 @@ export interface PhaseCStore {
     heldReason?: "quiet" | "control" | null;
     fingerprint?: string | null;
     tradableInFomo?: boolean | null;
+    sniperUnmeasured?: boolean;
     alertAt: Date;
     entryAfter: Date;
   }): Promise<string>;

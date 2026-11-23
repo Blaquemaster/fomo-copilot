@@ -28,12 +28,19 @@ export interface ScreenFacts {
   uniqueMakers1h: number | null;
   creatorSells: number;
   quoteError: boolean;
+  /**
+   * False when sniper cannot be fetched (no created_slot, or launchlab / dbc / meteora).
+   * Missing sniper is then unmeasured, not WATCH. Unset keeps the old WATCH behavior.
+   */
+  sniperFetchable?: boolean;
 }
 
 export interface ScreenResult {
   verdict: "pass" | "fail" | "watch";
   hard: string[];
   warnings: string[];
+  /** True when the coin may pass without a sniper value because it cannot be measured. */
+  sniperUnmeasured: boolean;
 }
 
 const REQUIRED: Array<[keyof ScreenFacts, string]> = [
@@ -44,6 +51,27 @@ const REQUIRED: Array<[keyof ScreenFacts, string]> = [
   ["sniperBundlePct", "snipers"],
   ["liquidityUsd", "liquidity"],
 ];
+
+/**
+ * Sniper is only fetchable for venues that store a create slot and a curve address.
+ * LaunchLab, DBC, and Meteora never get a value from the create-slot signature scan.
+ */
+export function sniperIsFetchable(coin: {
+  createdSlot?: number | null;
+  bondingCurve?: string | null;
+  poolType?: string | null;
+}): boolean {
+  const venue = (coin.poolType ?? "").toLowerCase();
+  if (venue === "launchlab" || venue === "dbc" || venue === "meteora") return false;
+  if (coin.createdSlot === null || coin.createdSlot === undefined) return false;
+  return Boolean(coin.bondingCurve);
+}
+
+export function isSniperUnmeasured(
+  facts: Pick<ScreenFacts, "sniperBundlePct" | "sniperFetchable">,
+): boolean {
+  return facts.sniperBundlePct === null && facts.sniperFetchable === false;
+}
 
 /** A missing required field is WATCH. A known hard failure is FAIL. */
 export function screenCoin(facts: ScreenFacts, rules: ScreenRules): ScreenResult {
@@ -74,7 +102,9 @@ export function screenCoin(facts: ScreenFacts, rules: ScreenRules): ScreenResult
   ) {
     hard.push(`sniper bundle ${facts.sniperBundlePct.toFixed(1)}%`);
   }
+  const sniperUnmeasured = isSniperUnmeasured(facts);
   for (const [key, label] of REQUIRED) {
+    if (key === "sniperBundlePct" && sniperUnmeasured) continue;
     if (facts[key] === null) missing.push(label);
   }
   if (facts.top10HoldersPct !== null && facts.top10HoldersPct > rules.top10Warn) {
@@ -83,6 +113,7 @@ export function screenCoin(facts: ScreenFacts, rules: ScreenRules): ScreenResult
   if (facts.sniperBundlePct !== null && facts.sniperBundlePct > rules.sniperWarn) {
     warnings.push(`sniper bundle ${facts.sniperBundlePct.toFixed(1)}%`);
   }
+  if (sniperUnmeasured) warnings.push("sniper unmeasured");
   if (facts.liquidityUsd !== null && facts.liquidityUsd < rules.minLiquidityUsd) {
     warnings.push(`liquidity $${facts.liquidityUsd.toFixed(0)}`);
   }
@@ -90,11 +121,12 @@ export function screenCoin(facts: ScreenFacts, rules: ScreenRules): ScreenResult
     warnings.push(`makers ${facts.uniqueMakers1h.toString()}`);
   }
   if (facts.creatorSells > 0) warnings.push(`creator sells ${facts.creatorSells.toString()}`);
-  if (hard.length > 0) return { verdict: "fail", hard, warnings };
+  if (hard.length > 0) return { verdict: "fail", hard, warnings, sniperUnmeasured };
   if (missing.length > 0 || facts.quoteError) {
     return {
       verdict: "watch",
       hard,
+      sniperUnmeasured,
       warnings: [
         ...warnings,
         ...missing.map((label) => `${label} missing`),
@@ -102,5 +134,5 @@ export function screenCoin(facts: ScreenFacts, rules: ScreenRules): ScreenResult
       ],
     };
   }
-  return { verdict: "pass", hard, warnings };
+  return { verdict: "pass", hard, warnings, sniperUnmeasured };
 }

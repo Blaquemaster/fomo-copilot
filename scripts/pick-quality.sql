@@ -27,13 +27,14 @@ selective as (
 ),
 entries as (
   select a.id, a.mint, a.stage, a.arm, a.strength, a.body, a.created_at,
+         a.sniper_unmeasured,
          coalesce(w.tracked_buyers, 0) as buyers,
          (select count(*) from (
             select f.wallet from wallet_fill f join selective s on s.wallet = f.wallet
             where f.mint = a.mint group by f.wallet
             having count(*) filter (where f.side in ('buy', 'swap'))
               > count(*) filter (where f.side = 'sell')) h) as selective_holders,
-         case when c.top10_method = 'wallets_v2' then c.top10_pct end as top10,
+         case when c.top10_method = 'wallets_v3' then c.top10_pct end as top10,
          c.sniper_pct
   from phasec_alert a
   left join coin_wallet_signal w on w.mint = a.mint
@@ -49,7 +50,8 @@ select line from (
     || ' | window since ' || to_char((select since from win) at time zone 'America/New_York', 'Mon DD HH24:MI') || ' ET' as line
   union all
   select 2, 'INFO entries ' || count(*) || ' (strategy ' || count(*) filter (where arm <> 'random_pass')
-    || ', control ' || count(*) filter (where arm = 'random_pass') || ')'
+    || ', control ' || count(*) filter (where arm = 'random_pass')
+    || ', sniper unmeasured ' || count(*) filter (where sniper_unmeasured) || ')'
   from entries
   union all
   select 3, 'INFO positions open ' || count(*) filter (where status = 'open')
