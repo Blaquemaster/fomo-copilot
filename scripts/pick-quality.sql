@@ -4,7 +4,8 @@
 with proto as (
   select registered_at,
          coalesce((body::json->>'entriesStartAt')::timestamptz, registered_at) as entries_start,
-         fingerprint
+         fingerprint,
+         coalesce((body::json->'config'->>'paperWindowDays')::int, 7) as window_days
   from phasec_protocol where id = 1
 ),
 win as (
@@ -43,6 +44,57 @@ entries as (
 ),
 pos as (
   select * from phasec_position where restarted_at is null
+),
+-- ET midnight of the current ET calendar day, for "closes today" and the daily pause.
+et_today as (
+  select ((now() at time zone 'America/New_York')::date)::timestamp
+           at time zone 'America/New_York' as start
+),
+-- Coins in the check window that a currently-selective tracked wallet still holds.
+-- Used to catch a whole venue dying on one screen gate (for example sniper unknown).
+signaled as (
+  select f.mint, max(c.pool_type) as pool_type
+  from wallet_fill f
+  join selective s on s.wallet = f.wallet
+  join candidates c on c.mint = f.mint
+  cross join win
+  cross join tip
+  cross join rate
+  where c.source = 'stream' and c.mint !~* '^0x' and coalesce(c.pool_type, '') <> 'flap'
+    and c.first_seen_at >= (select since from win)
+    and f.slot > tip.slot - (rate.per_sec * 86400)::bigint
+  group by f.mint, f.wallet
+  having count(*) filter (where f.side in ('buy', 'swap'))
+       > count(*) filter (where f.side = 'sell')
+),
+signaled_mints as (
+  select mint, max(pool_type) as pool_type from signaled group by mint
+),
+signaled_gated as (
+  select s.pool_type,
+    case
+      when cache.mint_authority_active is true then 'mint authority'
+      when cache.freeze_authority_active is true then 'freeze authority'
+      when cache.exit_impact_pct is not null and cache.exit_impact_pct > 5 then 'exit impact'
+      when cache.top10_method = 'wallets_v3' and cache.top10_pct is not null and cache.top10_pct > 50
+        then 'top 10 holders'
+      when cache.sniper_pct is not null and cache.sniper_pct > 60 then 'sniper bundle'
+      when cache.mint_authority_active is null then 'authority missing'
+      when cache.exit_impact_pct is null then 'exit impact missing'
+      when cache.top10_method is distinct from 'wallets_v3' or cache.top10_pct is null
+        then 'holders missing'
+      when cache.sniper_pct is null then 'sniper unknown'
+      when cache.curve_liquidity_usd is null then 'liquidity missing'
+      else 'pass'
+    end as gate
+  from signaled_mints s
+  left join phasec_mint_cache cache on cache.mint = s.mint
+),
+venue_block as (
+  select pool_type, gate, count(*) as n,
+         sum(count(*)) over (partition by pool_type) as venue_n
+  from signaled_gated
+  group by pool_type, gate
 )
 select line from (
   select 1 as o, 'INFO protocol ' || coalesce((select fingerprint from proto), 'none')
@@ -100,10 +152,46 @@ select line from (
   select 31, 'ALERT daily loss pause ' || day || ': ' || reason
   from phasec_pause where day = (now() at time zone 'America/New_York')::date
   union all
-  select 40, 'ALERT no entries in the last 3 hours while the test is running'
+  select 32, 'ALERT daily loss pause ' || p.day || ' with 0 strategy closes today: ' || p.reason
+  from phasec_pause p, et_today
+  where p.day = (now() at time zone 'America/New_York')::date
+    and not exists (
+      select 1 from phasec_position pos2
+      where pos2.status = 'closed' and pos2.arm <> 'random_pass' and pos2.restarted_at is null
+        and pos2.closed_at >= et_today.start)
+  union all
+  select 40, 'ALERT no strategy entries in the last 3 hours while the test is running'
   where (select entries_start from proto) < now() - interval '3 hours'
     and extract(hour from now() at time zone 'America/New_York') between 10 and 22
     and not exists (
-      select 1 from phasec_alert where kind = 'entry' and restarted_at is null
+      select 1 from phasec_alert
+      where kind = 'entry' and restarted_at is null and arm <> 'random_pass'
         and created_at > now() - interval '3 hours')
+  union all
+  select 41, 'ALERT no strategy entries in the first 4 hours after the test restart'
+  where (select entries_start from proto) <= now() - interval '4 hours'
+    and not exists (
+      select 1 from phasec_alert
+      where kind = 'entry' and restarted_at is null and arm <> 'random_pass'
+        and created_at < (select entries_start from proto) + interval '4 hours')
+  union all
+  select 42, 'ALERT ' || pool_type || ': all ' || venue_n::text
+    || ' wallet-signal coins blocked by ' || gate || ' (n=' || n::text || ')'
+  from venue_block
+  where venue_n >= 5 and n = venue_n and gate <> 'pass'
+  union all
+  select 43, 'ALERT strategy pace projects '
+    || round((count(*)::numeric / greatest(extract(epoch from now() - p.entries_start) / 3600, 0.01))
+             * (p.window_days * 24), 0)::text
+    || ' alerts by window end, below 100 (have '
+    || count(*)::text || ' in '
+    || round((extract(epoch from now() - p.entries_start) / 3600)::numeric, 1)::text
+    || 'h)'
+  from proto p
+  left join phasec_alert a
+    on a.kind = 'entry' and a.restarted_at is null and a.arm <> 'random_pass'
+  where p.entries_start <= now() - interval '12 hours'
+  group by p.entries_start, p.window_days
+  having (count(*)::numeric / greatest(extract(epoch from now() - p.entries_start) / 3600, 0.01))
+           * (p.window_days * 24) < 100
 ) checks order by o, line;
