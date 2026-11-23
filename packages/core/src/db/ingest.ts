@@ -549,6 +549,26 @@ alter table phasec_alert add column if not exists minutes_from_alert_to_listed d
 alter table phasec_alert add column if not exists restarted_at timestamptz;
 alter table phasec_alert add column if not exists sniper_unmeasured boolean not null default false;
 alter table phasec_position add column if not exists sniper_unmeasured boolean not null default false;
+alter table phasec_alert add column if not exists round_trip_cost_pct double precision;
+alter table phasec_position add column if not exists round_trip_cost_pct double precision;
+alter table phasec_alert add column if not exists would_skip_cost3 boolean;
+alter table phasec_position add column if not exists would_skip_cost3 boolean;
+create table if not exists phasec_cost_log (
+  id bigserial primary key,
+  logged_at timestamptz not null,
+  fingerprint text,
+  mint text not null,
+  stage text,
+  arm text,
+  round_trip_cost_pct double precision,
+  would_skip_cost3 boolean not null,
+  entry_impact_pct double precision,
+  exit_impact_pct double precision,
+  screen_verdict text
+);
+create index if not exists phasec_cost_log_at_idx on phasec_cost_log (logged_at);
+alter table phasec_position add column if not exists fingerprint text;
+alter table phasec_pause add column if not exists fingerprint text;
 create index if not exists wallet_fill_mint_side_idx on wallet_fill (mint, side);
 
 create table if not exists phasec_mint_cache (
@@ -612,9 +632,15 @@ export function createPool(
   });
 }
 
+/** Session-level advisory lock so only one service runs migrate() at a time. 'FOMO' as int4. */
+export const MIGRATE_ADVISORY_LOCK_KEY = 1179602255;
+
 export async function migrate(pool: pg.Pool): Promise<void> {
   const client = await pool.connect();
   try {
+    // No timeout on the lock wait. Other services block here until migrate finishes.
+    await client.query("set statement_timeout = 0");
+    await client.query("select pg_advisory_lock($1)", [MIGRATE_ADVISORY_LOCK_KEY]);
     await client.query("begin");
     await client.query(MIGRATION);
     await client.query(
@@ -746,82 +772,87 @@ export async function migrate(pool: pg.Pool): Promise<void> {
       "insert into schema_migrations (id) values ($1) on conflict (id) do nothing",
       ["021_phase_c"],
     );
-    const sniperOrigins = await client.query("select 1 from schema_migrations where id = $1", [
-      "022_sniper_created_slot",
-    ]);
-    if (sniperOrigins.rowCount === 0) {
-      await client.query("set local statement_timeout = '60s'");
-      await client.query(`
-        insert into ingest_coin
-          (mint, venue, launchpad, platform_config, quote_mint, transfer_fee_bps, pool, creator,
-           created_slot, created_at, signature)
-        select distinct on (e.mint)
-          e.mint,
-          case e.event_kind
-            when 'launchlab_initialize' then 'launchlab'
-            when 'dbc_initialize' then 'meteora'
-            else 'pump'
-          end,
-          coalesce(e.payload->>'launchpad', 'unknown'),
-          e.payload->>'platformConfig',
-          e.payload->>'quoteMint',
-          nullif(e.payload->>'transferFeeBps', '')::integer,
-          case
-            when e.event_kind = 'dbc_initialize'
-              then coalesce(e.payload->>'virtualPool', e.pool)
-            else e.pool
-          end,
-          e.payload->>'creatorWallet',
-          e.slot,
-          e.received_at,
-          e.signature
-        from raw_events e
-        where e.event_kind in ('pump_create','pump_create_v2','launchlab_initialize','dbc_initialize')
-          and e.mint is not null and e.pool is not null
-          and e.received_at > now() - interval '7 days'
-        order by e.mint, e.slot asc
-        on conflict (mint) do update set
-          venue = excluded.venue,
-          pool = excluded.pool,
-          created_slot = excluded.created_slot,
-          created_at = excluded.created_at,
-          signature = excluded.signature
-        where excluded.created_slot < ingest_coin.created_slot
-      `);
-      await client.query(`
-        insert into pump_coin (mint, bonding_curve, creator, created_slot, created_at, signature)
-        select distinct on (e.mint)
-          e.mint,
-          e.pool,
-          e.payload->>'creatorWallet',
-          e.slot,
-          e.received_at,
-          e.signature
-        from raw_events e
-        where e.event_kind in ('pump_create','pump_create_v2')
-          and e.mint is not null and e.pool is not null
-          and e.received_at > now() - interval '7 days'
-        order by e.mint, e.slot asc
-        on conflict (mint) do update set
-          bonding_curve = excluded.bonding_curve,
-          created_slot = excluded.created_slot,
-          created_at = excluded.created_at,
-          signature = excluded.signature
-        where excluded.created_slot < pump_coin.created_slot
-      `);
-      await client.query(`
-        update candidates c
-        set created_slot = e.slot
-        from raw_events e
-        where c.created_slot is null
-          and e.pool = c.pool
-          and e.event_kind in ('pump_create','pump_create_v2','launchlab_initialize','dbc_initialize')
-          and e.received_at > now() - interval '7 days'
-      `);
-    }
+    // 022 schema (candidates.created_slot + index) lives in MIGRATION above.
+    // The 7-day backfill runs after this transaction, in small batches. See
+    // backfillSniperCreatedSlot().
     await client.query(
       "insert into schema_migrations (id) values ($1) on conflict (id) do nothing",
       ["022_sniper_created_slot"],
+    );
+    const pauseFingerprint = await client.query("select 1 from schema_migrations where id = $1", [
+      "023_pause_fingerprint_and_round_trip_cost",
+    ]);
+    if (pauseFingerprint.rowCount === 0) {
+      await client.query(`
+        update phasec_pause p
+        set fingerprint = s.fingerprint
+        from (
+          select distinct on (p2.day) p2.day, a.fingerprint
+          from phasec_pause p2
+          join phasec_position pos
+            on pos.status = 'closed'
+           and pos.arm <> 'random_pass'
+           and pos.closed_at = p2.paused_at
+          join phasec_alert a
+            on a.mint = pos.mint
+           and a.stage = pos.stage
+           and a.kind = 'entry'
+           and a.created_at = pos.alert_at
+           and a.fingerprint is not null
+          where p2.fingerprint is null
+          order by p2.day, a.created_at
+        ) s
+        where p.day = s.day and p.fingerprint is null
+      `);
+      await client.query(`
+        update phasec_pause
+        set fingerprint = 'unknown'
+        where fingerprint is null
+      `);
+      await client.query(`
+        update phasec_position pos
+        set fingerprint = a.fingerprint
+        from phasec_alert a
+        where pos.fingerprint is null
+          and a.kind = 'entry'
+          and a.mint = pos.mint
+          and a.stage = pos.stage
+          and a.created_at = pos.alert_at
+          and a.fingerprint is not null
+      `);
+      await client.query("alter table phasec_pause alter column fingerprint set not null");
+      await client.query("alter table phasec_pause drop constraint if exists phasec_pause_pkey");
+      await client.query(
+        "alter table phasec_pause add constraint phasec_pause_pkey primary key (fingerprint, day)",
+      );
+      await client.query(
+        "alter table phasec_alert add column if not exists would_skip_cost3 boolean",
+      );
+      await client.query(
+        "alter table phasec_position add column if not exists would_skip_cost3 boolean",
+      );
+      await client.query(`
+        create table if not exists phasec_cost_log (
+          id bigserial primary key,
+          logged_at timestamptz not null,
+          fingerprint text,
+          mint text not null,
+          stage text,
+          arm text,
+          round_trip_cost_pct double precision,
+          would_skip_cost3 boolean not null,
+          entry_impact_pct double precision,
+          exit_impact_pct double precision,
+          screen_verdict text
+        )
+      `);
+      await client.query(
+        "create index if not exists phasec_cost_log_at_idx on phasec_cost_log (logged_at)",
+      );
+    }
+    await client.query(
+      "insert into schema_migrations (id) values ($1) on conflict (id) do nothing",
+      ["023_pause_fingerprint_and_round_trip_cost"],
     );
     await client.query(
       `update ingest_recall_audit a
@@ -838,12 +869,149 @@ export async function migrate(pool: pg.Pool): Promise<void> {
       [[...PUMP_PROGRAMS], [...LAUNCHLAB_PROGRAMS], [...METEORA_LAUNCH_PROGRAMS]],
     );
     await client.query("commit");
+    await backfillSniperCreatedSlotOnClient(client);
   } catch (error) {
-    await client.query("rollback");
+    try {
+      await client.query("rollback");
+    } catch {
+      // The transaction may already have been closed.
+    }
     throw error;
+  } finally {
+    try {
+      await client.query("select pg_advisory_unlock($1)", [MIGRATE_ADVISORY_LOCK_KEY]);
+    } catch {
+      // Unlock is best-effort; the session drop also releases it.
+    }
+    try {
+      await client.query("set statement_timeout = '10s'");
+    } catch {
+      // Connection may already be in a failed state.
+    }
+    client.release();
+  }
+}
+
+const BACKFILL_BATCH = "2 hours";
+const BACKFILL_STATEMENT_TIMEOUT = "45s";
+const CREATE_KINDS = "('pump_create','pump_create_v2','launchlab_initialize','dbc_initialize')";
+
+/**
+ * Idempotent 7-day created_slot backfill, in short batches under statement_timeout.
+ * Safe to run from migrate() after the schema transaction, or as a one-off.
+ */
+export async function backfillSniperCreatedSlot(pool: pg.Pool): Promise<void> {
+  const client = await pool.connect();
+  try {
+    await client.query("set statement_timeout = 0");
+    await client.query("select pg_advisory_lock($1)", [MIGRATE_ADVISORY_LOCK_KEY]);
+    try {
+      await backfillSniperCreatedSlotOnClient(client);
+    } finally {
+      await client.query("select pg_advisory_unlock($1)", [MIGRATE_ADVISORY_LOCK_KEY]);
+      await client.query("set statement_timeout = '10s'");
+    }
   } finally {
     client.release();
   }
+}
+
+async function backfillSniperCreatedSlotOnClient(client: pg.PoolClient): Promise<void> {
+  const done = await client.query("select 1 from schema_migrations where id = $1", [
+    "022_sniper_created_slot_backfill",
+  ]);
+  if (done.rowCount !== 0) return;
+  const bounds = await client.query<{ cutoff: Date; finish: Date }>(
+    "select now() - interval '7 days' as cutoff, now() as finish",
+  );
+  let start = bounds.rows[0]?.cutoff;
+  const finish = bounds.rows[0]?.finish;
+  if (!start || !finish) return;
+  while (start < finish) {
+    await client.query(`set statement_timeout = '${BACKFILL_STATEMENT_TIMEOUT}'`);
+    await client.query("begin");
+    try {
+      await client.query(
+        `
+        with creates as (
+          select e.mint, e.pool, e.event_kind, e.slot, e.received_at, e.signature, e.payload
+          from raw_events e
+          where e.event_kind in ${CREATE_KINDS}
+            and e.mint is not null and e.pool is not null
+            and e.received_at > $1
+            and e.received_at <= $1 + interval '${BACKFILL_BATCH}'
+            and e.received_at <= $2
+        )
+        , ingest_ins as (
+          insert into ingest_coin
+            (mint, venue, launchpad, platform_config, quote_mint, transfer_fee_bps, pool, creator,
+             created_slot, created_at, signature)
+          select distinct on (c.mint)
+            c.mint,
+            case c.event_kind
+              when 'launchlab_initialize' then 'launchlab'
+              when 'dbc_initialize' then 'meteora'
+              else 'pump'
+            end,
+            coalesce(c.payload->>'launchpad', 'unknown'),
+            c.payload->>'platformConfig',
+            c.payload->>'quoteMint',
+            nullif(c.payload->>'transferFeeBps', '')::integer,
+            case
+              when c.event_kind = 'dbc_initialize'
+                then coalesce(c.payload->>'virtualPool', c.pool)
+              else c.pool
+            end,
+            c.payload->>'creatorWallet',
+            c.slot,
+            c.received_at,
+            c.signature
+          from creates c
+          order by c.mint, c.slot asc
+          on conflict (mint) do update set
+            venue = excluded.venue,
+            pool = excluded.pool,
+            created_slot = excluded.created_slot,
+            created_at = excluded.created_at,
+            signature = excluded.signature
+          where excluded.created_slot < ingest_coin.created_slot
+        )
+        , pump_ins as (
+          insert into pump_coin (mint, bonding_curve, creator, created_slot, created_at, signature)
+          select distinct on (c.mint)
+            c.mint, c.pool, c.payload->>'creatorWallet', c.slot, c.received_at, c.signature
+          from creates c
+          where c.event_kind in ('pump_create','pump_create_v2')
+          order by c.mint, c.slot asc
+          on conflict (mint) do update set
+            bonding_curve = excluded.bonding_curve,
+            created_slot = excluded.created_slot,
+            created_at = excluded.created_at,
+            signature = excluded.signature
+          where excluded.created_slot < pump_coin.created_slot
+        )
+        update candidates cand
+        set created_slot = c.slot
+        from (
+          select distinct on (c.pool) c.pool, c.slot
+          from creates c
+          order by c.pool, c.slot asc
+        ) c
+        where cand.created_slot is null and cand.pool = c.pool
+        `,
+        [start.toISOString(), finish.toISOString()],
+      );
+      await client.query("commit");
+    } catch (error) {
+      await client.query("rollback");
+      throw error;
+    }
+    start = new Date(start.getTime() + 2 * 60 * 60 * 1000);
+  }
+  await client.query("set statement_timeout = 0");
+  await client.query("insert into schema_migrations (id) values ($1) on conflict (id) do nothing", [
+    "022_sniper_created_slot_backfill",
+  ]);
 }
 
 export class IngestRepository {

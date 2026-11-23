@@ -1,7 +1,14 @@
 import type { Env } from "../config/env.js";
 import type { Thresholds } from "../config/thresholds.js";
 import type { ScreenRules } from "./screen.js";
-import { defaultSizePct, type PhaseCConfig } from "./protocol.js";
+import {
+  COST_LIMIT_MODE,
+  DEFAULT_MAX_ENTRY_IMPACT_PCT,
+  DEFAULT_MAX_ROUND_TRIP_COST_PCT,
+  DEFAULT_SCREEN_ONLY_SIZE_PCT,
+  defaultSizePct,
+  type PhaseCConfig,
+} from "./protocol.js";
 
 export function screenRulesFromThresholds(thresholds: Thresholds): ScreenRules {
   return {
@@ -49,5 +56,9 @@ export function phaseCConfigFromEnv(env: Env, thresholds: Thresholds): PhaseCCon
     xEnabled: env.X_MENTION_SOURCE === "fixture",
     destination: env.ALERT_DESTINATION ?? "test",
     fomoFeeSchedule: env.FOMO_FEE_SCHEDULE ?? "solana_lowest_fee",
+    screenOnlySizePct: DEFAULT_SCREEN_ONLY_SIZE_PCT,
+    maxRoundTripCostPct: DEFAULT_MAX_ROUND_TRIP_COST_PCT,
+    maxEntryImpactPct: DEFAULT_MAX_ENTRY_IMPACT_PCT,
+    costLimitMode: COST_LIMIT_MODE,
   };
 }

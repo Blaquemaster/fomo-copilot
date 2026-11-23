@@ -225,7 +225,7 @@ export {
   type OverflowSpan,
 } from "./ingest/frameStats.js";
 export { formatIngestStatus, formatSpotCheck } from "./ingest/statusText.js";
-export { IngestRepository, createPool, migrate } from "./db/ingest.js";
+export { IngestRepository, backfillSniperCreatedSlot, createPool, migrate } from "./db/ingest.js";
 export { PhaseCRepository } from "./db/phasec.js";
 export { phaseCConfigFromEnv, screenRulesFromThresholds } from "./phasec/config.js";
 export {
@@ -240,7 +240,7 @@ export {
   type AutobuyMode,
   type Signer,
 } from "./autobuy/run.js";
-export { lookupTradableInFomo } from "./phasec/fomoLookup.js";
+export { FOMO_BUYABILITY_AVAILABLE, lookupTradableInFomo } from "./phasec/fomoLookup.js";
 export { formatWeeklyReview, resolveAlertChat } from "./phasec/deliver.js";
 export {
   DEX_BATCH,
@@ -273,6 +273,7 @@ export {
   quoteKey,
   type QuotePurpose,
   quotedRoundTrip,
+  roundTripCostPct,
   stageSizeUsd,
   type SizeBid,
 } from "./phasec/quote.js";
@@ -284,12 +285,13 @@ export {
   type SecondWaveObservation,
 } from "./phasec/secondWave.js";
 export { runPhaseCPass, type PassCoin, type PassPosition } from "./phasec/pass.js";
-export { isFlapMint, stageForCoin } from "./phasec/score.js";
+export { assignArm, isFlapMint, stageForCoin } from "./phasec/score.js";
 export {
   allowsEntry,
   failsCheaperGates,
   shouldFetchSniper,
   sniperIsFetchable,
+  wouldSkipCost3,
   type ScreenRules,
 } from "./phasec/screen.js";
 export {
@@ -301,7 +303,13 @@ export {
 export { DEFAULT_WALLET_SIGNAL, type WalletSignalRules } from "./phasec/store.js";
 export {
   assignExitTreatment,
+  COST_LIMIT_MODE,
+  DEFAULT_MAX_ENTRY_IMPACT_PCT,
+  DEFAULT_MAX_ROUND_TRIP_COST_PCT,
+  DEFAULT_SCREEN_ONLY_SIZE_PCT,
   defaultSizePct,
+  FOMO_FEE_ASSUMPTION,
+  FOMO_FEE_SOURCE_URL,
   parseLockedConfig,
   protocolBody,
   protocolFingerprint,
@@ -310,3 +318,4 @@ export {
 export { classifyJupiterHttp } from "./phasec/quote.js";
 export type { PhaseCStore } from "./phasec/store.js";
 export { etDay, etDayRange, etWeekStart, inQuietHours, nextEtMidnight } from "./phasec/time.js";
+export { sizeForArmStage, sizeForStage } from "./phasec/risk.js";

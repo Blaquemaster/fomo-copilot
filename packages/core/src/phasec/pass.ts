@@ -28,7 +28,7 @@ import {
   exitPlanText,
   planTierPromotions,
   shouldPauseDay,
-  sizeForStage,
+  sizeForArmStage,
   type TierWallet,
 } from "./risk.js";
 import { assignArm, isFlapMint, scoreStrength, stageForCoin, type ScoreCoin } from "./score.js";
@@ -36,6 +36,7 @@ import {
   allowsEntry,
   screenCoin,
   sniperIsFetchable,
+  wouldSkipCost3,
   type ScreenFacts,
   type ScreenRules,
 } from "./screen.js";
@@ -56,6 +57,8 @@ export interface PassCoin extends ScoreCoin {
   poolType?: string | null;
   createdSlot?: number | null;
   quoteSource?: "jupiter" | "curve_modeled";
+  roundTripCostPct?: number | null;
+  entryQuoteImpactPct?: number | null;
 }
 
 export interface PassPosition {
@@ -117,6 +120,8 @@ export interface PlannedEntry {
   fingerprint: string;
   sniperUnmeasured: boolean;
   entryAfter: Date;
+  roundTripCostPct?: number | null;
+  wouldSkipCost3?: boolean | null;
 }
 
 export interface PlannedOpen {
@@ -210,6 +215,8 @@ function screenOf(coin: PassCoin, liquidity: number | null, rules: ScreenRules) 
     creatorSells: coin.creatorSells,
     quoteError: coin.quoteError,
     sniperFetchable: sniperIsFetchable(coin),
+    entryQuoteImpactPct: coin.entryQuoteImpactPct ?? null,
+    roundTripCostPct: coin.roundTripCostPct ?? null,
   };
   return screenCoin(facts, rules);
 }
@@ -458,7 +465,10 @@ export function runPhaseCPass(input: PassInput): PassResult {
         continue;
       }
       const strength = scoreStrength(stage, coin);
-      const size = sizeForStage(stage, config.sizePct, config.bankroll);
+      const size = sizeForArmStage(stage, arm, config.sizePct, config.bankroll, {
+        trackedBuyers: coin.trackedBuyers,
+        screenOnlySizePct: config.screenOnlySizePct,
+      });
       const treatment = assignExitTreatment(coin.mint);
       const control = arm === "random_pass";
       const decision = control
@@ -510,6 +520,8 @@ export function runPhaseCPass(input: PassInput): PassResult {
         fingerprint: currentFingerprint,
         sniperUnmeasured: screen.sniperUnmeasured,
         entryAfter: new Date(input.now.getTime() + config.entryDelaySec * 1000),
+        roundTripCostPct: coin.roundTripCostPct ?? null,
+        wouldSkipCost3: wouldSkipCost3(coin.roundTripCostPct, config.maxRoundTripCostPct ?? 3),
       });
       if (!held) immediate.push(text);
       busy.add(coin.mint);

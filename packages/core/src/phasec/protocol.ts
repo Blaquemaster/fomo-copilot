@@ -63,8 +63,17 @@ export interface PhaseCConfig {
   xEnabled: boolean;
   destination: "test" | "admin";
   fomoFeeSchedule: "solana_lowest_fee" | "solana_other";
+  /** Size for strategy entries with no tracked-wallet signal. Defaults to 0.5 at every stage. */
+  screenOnlySizePct?: number;
+  /** Report-only threshold for estimated round-trip cost, in percent. Defaults to 3. */
+  maxRoundTripCostPct?: number;
+  /** Hard-fail threshold for the entry quote's price impact, in percent. Defaults to 10. */
+  maxEntryImpactPct?: number;
+  /** The 3% cost limit is recorded, never used as a screen filter. */
+  costLimitMode?: "report_only";
 }
 
+/** Wallet-backed arms keep these stage sizes. */
 export function defaultSizePct(): Record<Stage, number> {
   return {
     trench: 0.5,
@@ -73,6 +82,35 @@ export function defaultSizePct(): Record<Stage, number> {
     second_wave: 1,
   };
 }
+
+/** screen_only (no tracked-wallet signal) uses this size at every stage. */
+export const DEFAULT_SCREEN_ONLY_SIZE_PCT = 0.5;
+
+/** Report-only flag when the quoted round-trip cost, same model as net_return, is above this percent. */
+export const DEFAULT_MAX_ROUND_TRIP_COST_PCT = 3;
+
+/** Hard fail when the entry quote's price impact is above this percent. */
+export const DEFAULT_MAX_ENTRY_IMPACT_PCT = 10;
+
+/** The 3% round-trip cost limit is stored and logged, not used as a gate. */
+export const COST_LIMIT_MODE = "report_only" as const;
+
+/**
+ * Official FOMO help, checked 2026-11-23.
+ * https://help.fomo.family/en/articles/14436214-trading-fees-on-fomo
+ */
+export const FOMO_FEE_SOURCE_URL =
+  "https://help.fomo.family/en/articles/14436214-trading-fees-on-fomo";
+
+/**
+ * Paper assumption, labeled in the protocol body: use the published Solana
+ * lowest-fee route. Official help says the available route can change from
+ * trade to trade; other routes are 0.50% with a $0.95 minimum. The Terms say
+ * the confirmation-screen fee controls on a live trade; paper does not observe
+ * that screen.
+ */
+export const FOMO_FEE_ASSUMPTION =
+  "Published Solana lowest-fee route from official help (fee charged on each buy and each sell). Route availability can change per trade; other routes are 0.50% with a $0.95 minimum. Confirmation-screen fee would control on a live trade and is not observed in paper.";
 
 export function protocolBody(config: PhaseCConfig, rules?: unknown): string {
   return JSON.stringify({
@@ -98,6 +136,12 @@ export function protocolBody(config: PhaseCConfig, rules?: unknown): string {
     weights: SCORE_WEIGHTS,
     exitTreatments: EXIT_TREATMENTS,
     fomoFeeSchedule: config.fomoFeeSchedule,
+    fomoFeeSourceUrl: FOMO_FEE_SOURCE_URL,
+    fomoFeeAssumption: FOMO_FEE_ASSUMPTION,
+    screenOnlySizePct: config.screenOnlySizePct ?? DEFAULT_SCREEN_ONLY_SIZE_PCT,
+    maxRoundTripCostPct: config.maxRoundTripCostPct ?? DEFAULT_MAX_ROUND_TRIP_COST_PCT,
+    maxEntryImpactPct: config.maxEntryImpactPct ?? DEFAULT_MAX_ENTRY_IMPACT_PCT,
+    costLimitMode: COST_LIMIT_MODE,
     scoringVersion: SCORING_VERSION,
     walletMinEntries: PROVEN_WALLET_RULE.minEntries,
     sniperUnmeasured: "watch_until_measured",
@@ -109,7 +153,14 @@ export function protocolBody(config: PhaseCConfig, rules?: unknown): string {
 
 export function parseLockedConfig(body: string): PhaseCConfig {
   const parsed = JSON.parse(body) as PhaseCConfig & { config?: PhaseCConfig };
-  return parsed.config ?? parsed;
+  const raw = parsed.config ?? parsed;
+  return {
+    ...raw,
+    screenOnlySizePct: raw.screenOnlySizePct ?? DEFAULT_SCREEN_ONLY_SIZE_PCT,
+    maxRoundTripCostPct: raw.maxRoundTripCostPct ?? DEFAULT_MAX_ROUND_TRIP_COST_PCT,
+    maxEntryImpactPct: raw.maxEntryImpactPct ?? DEFAULT_MAX_ENTRY_IMPACT_PCT,
+    costLimitMode: COST_LIMIT_MODE,
+  };
 }
 
 export function protocolFingerprint(body: string): string {

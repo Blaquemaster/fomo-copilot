@@ -134,9 +134,18 @@ export function stageSizeUsd(bankroll: number | null, sizePct: number): number |
 export type FomoFeeSchedule = "solana_lowest_fee" | "solana_other";
 
 /**
- * FOMO's published Solana schedule. Lowest-fee route: 0.10 under $5,
- * 2% from $5 through $47.50, $0.95 from there through $190, 0.50% above that.
- * The brackets meet at the boundaries. Other routes are 0.50% with a $0.95 minimum.
+ * FOMO's published Solana schedule, taken from official help
+ * https://help.fomo.family/en/articles/14436214-trading-fees-on-fomo
+ * (checked 2026-11-23; also documented in docs/decisions.md, 2026-11-13).
+ * The fee is charged on each trade (each buy and each sell), and is tiered
+ * by size and route, not flat. Lowest-fee route: 0.10 USDC under $5, 2% from
+ * $5 through $47.50, $0.95 from $47.50 through $190, 0.50% above $190.
+ * The brackets meet at the boundaries. Other routes are 0.50% with a $0.95
+ * minimum. Official help says which route is available can change from trade
+ * to trade. On Solana, FOMO covers network gas, priority fees, and token rent,
+ * so those are not added again here. This function models one side; callers
+ * such as quotedRoundTrip and roundTripFomoFee charge both the entry notional
+ * and the exit proceeds.
  */
 export function fomoFeeUsd(
   notionalUsd: number,
@@ -177,6 +186,25 @@ export function quotedRoundTrip(
     tokens * exit.execPriceUsd - exit.feeUsd - fomoFeeUsd(tokens * exit.execPriceUsd, schedule);
   const entryFee = fomoFeeUsd(entry.sizeUsd, schedule);
   return (proceeds - entryFee) / entry.sizeUsd - 1;
+}
+
+/**
+ * Estimated round-trip cost in percent, using the same model as net_return
+ * (entry and exit price impact, Jupiter/route fees, and FOMO fees).
+ * The paper net_return model does not include a separate priority or Jito
+ * fee; those are not added here. A contemporaneous entry+exit quote pair
+ * is a cost estimate (no assumed price move). Returns null when either
+ * side is missing, so the screen can WATCH instead of inventing a number.
+ */
+export function roundTripCostPct(
+  entry: SizeBid,
+  exit: SizeBid,
+  schedule: FomoFeeSchedule = "solana_lowest_fee",
+): number | null {
+  if (!entry.ok || !exit.ok) return null;
+  const net = quotedRoundTrip(entry, exit, schedule);
+  if (!Number.isFinite(net)) return null;
+  return -net * 100;
 }
 
 /**

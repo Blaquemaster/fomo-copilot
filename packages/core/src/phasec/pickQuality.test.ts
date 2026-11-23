@@ -31,12 +31,14 @@ function facts(overrides: Partial<ScreenFacts> = {}): ScreenFacts {
     freezeAuthorityActive: false,
     transferFeeBps: 0,
     exitQuoteImpactPct: 1,
+    entryQuoteImpactPct: 1,
     top10HoldersPct: 20,
     sniperBundlePct: 0,
     liquidityUsd: 5_000,
     uniqueMakers1h: null,
     creatorSells: 0,
     quoteError: false,
+    roundTripCostPct: 1.5,
     ...overrides,
   };
 }
@@ -81,11 +83,13 @@ function coin(mint: string, overrides: Partial<PassCoin> = {}): PassCoin {
     mintAuthorityActive: false,
     freezeAuthorityActive: false,
     exitQuoteImpactPct: 1,
+    entryQuoteImpactPct: 1,
     top10HoldersPct: 20,
     sniperBundlePct: 0,
     uniqueMakers1h: null,
     creatorSells: 0,
     quoteError: false,
+    roundTripCostPct: 1.5,
     ...overrides,
   };
 }
@@ -282,6 +286,7 @@ describe("sniper fetch budget", () => {
     freezeAuthorityActive: false,
     top10HoldersPct: 20,
     exitQuoteImpactPct: 1,
+    entryQuoteImpactPct: 1,
     sniperBundlePct: null,
   };
 
