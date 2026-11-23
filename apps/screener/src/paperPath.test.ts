@@ -80,6 +80,7 @@ function readyCoin(mint: string): PassCoin {
     mintAuthorityActive: false,
     freezeAuthorityActive: false,
     exitQuoteImpactPct: 1,
+    entryQuoteImpactPct: 1,
     top10HoldersPct: 10,
     sniperBundlePct: 4,
     uniqueMakers1h: 80,

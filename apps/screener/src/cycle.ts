@@ -29,6 +29,7 @@ import {
   sizeForArmStage,
   stageForCoin,
   stageSizeUsd,
+  wouldSkipCost3,
   type Env,
   type MarketQuote,
   type PhaseCStore,
@@ -92,6 +93,7 @@ export async function runPhaseCCycle(input: {
   const rules = {
     ...screenRulesFromThresholds(input.thresholds),
     maxRoundTripCostPct: config.maxRoundTripCostPct ?? 3,
+    entryImpactPctAbove: config.maxEntryImpactPct ?? 10,
   };
   const coins = await input.store.coins(200, {
     maxMintsPerDay: rules.walletMaxMintsPerDay ?? DEFAULT_WALLET_SIGNAL.maxMintsPerDay,
@@ -187,6 +189,7 @@ export async function runPhaseCCycle(input: {
         trackedSells: 0,
         quoteError: false,
         secondWave: "breakout",
+        entryQuoteImpactPct: 1,
       });
     }
   }
@@ -405,6 +408,9 @@ export async function runPhaseCCycle(input: {
         bid = modeled;
       }
     }
+    if (probe?.ok) {
+      coin.entryQuoteImpactPct = probe.impactPct;
+    }
     if (probe?.ok && bid?.ok) {
       coin.roundTripCostPct = roundTripCostPct(probe, bid, config.fomoFeeSchedule);
     }
@@ -424,9 +430,9 @@ export async function runPhaseCCycle(input: {
         return false;
       }
       if (
-        coin.roundTripCostPct !== null &&
-        coin.roundTripCostPct !== undefined &&
-        coin.roundTripCostPct > (rules.maxRoundTripCostPct ?? 3)
+        coin.entryQuoteImpactPct !== null &&
+        coin.entryQuoteImpactPct !== undefined &&
+        coin.entryQuoteImpactPct > (rules.entryImpactPctAbove ?? 10)
       ) {
         return false;
       }
@@ -544,6 +550,25 @@ export async function runPhaseCCycle(input: {
   }
   if (result.lock) {
     await input.store.saveProtocol(result.lock.fingerprint, result.lock.body, input.now);
+  }
+  const costFingerprint = result.lock?.fingerprint ?? stored?.fingerprint ?? null;
+  for (const coin of coins) {
+    if (!wouldSkipCost3(coin.roundTripCostPct, config.maxRoundTripCostPct ?? 3)) continue;
+    const stage = stageForCoin(coin, input.now);
+    const arm = stage ? assignArm(coin.mint, stage, coin.trackedBuyers, coin.xMentions) : null;
+    input.warn(
+      `cost3 would-skip mint=${coin.mint} stage=${stage ?? "none"} arm=${arm ?? "none"} cost=${String(coin.roundTripCostPct)} entryImpact=${String(coin.entryQuoteImpactPct ?? "null")} exitImpact=${String(coin.exitQuoteImpactPct ?? "null")}`,
+    );
+    await input.store.logCostWouldSkip({
+      at: input.now,
+      fingerprint: costFingerprint,
+      mint: coin.mint,
+      stage: stage ?? null,
+      arm,
+      roundTripCostPct: coin.roundTripCostPct ?? null,
+      entryImpactPct: coin.entryQuoteImpactPct ?? null,
+      exitImpactPct: coin.exitQuoteImpactPct ?? null,
+    });
   }
   if (result.pauseReason) {
     const fingerprint = result.lock?.fingerprint ?? stored?.fingerprint;

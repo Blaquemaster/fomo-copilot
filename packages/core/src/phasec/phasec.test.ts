@@ -37,7 +37,7 @@ import {
   quotedRoundTrip,
   roundTripCostPct,
 } from "./quote.js";
-import { screenCoin, type ScreenRules } from "./screen.js";
+import { screenCoin, wouldSkipCost3, type ScreenRules } from "./screen.js";
 import {
   deadCoinObservation,
   mihaoObservation,
@@ -96,6 +96,7 @@ function coin(mint: string, overrides: Partial<PassCoin> = {}): PassCoin {
     mintAuthorityActive: false,
     freezeAuthorityActive: false,
     exitQuoteImpactPct: 1,
+    entryQuoteImpactPct: 1,
     top10HoldersPct: 10,
     sniperBundlePct: 5,
     uniqueMakers1h: 80,
@@ -377,13 +378,14 @@ describe("phase C", () => {
     expect(controlPost.pct).toBe(2);
   });
 
-  it("hard-fails a coin when the quoted round-trip cost is above 3%", () => {
+  it("records a round-trip cost above 3% as report-only, not a screen fail", () => {
     const failed = screenCoin(
       {
         mintAuthorityActive: false,
         freezeAuthorityActive: false,
         transferFeeBps: 0,
         exitQuoteImpactPct: 1,
+        entryQuoteImpactPct: 1,
         top10HoldersPct: 10,
         sniperBundlePct: 5,
         liquidityUsd: 20_000,
@@ -394,8 +396,9 @@ describe("phase C", () => {
       },
       { ...rules, maxRoundTripCostPct: 3 },
     );
-    expect(failed.verdict).toBe("fail");
-    expect(failed.hard.some((item) => item.includes("round-trip cost 4.01%"))).toBe(true);
+    expect(failed.verdict).toBe("pass");
+    expect(failed.hard.some((item) => item.includes("round-trip cost"))).toBe(false);
+    expect(wouldSkipCost3(4.01, 3)).toBe(true);
     const mint = mintFor("post_graduation", 0, "screen_only", "CheapSize");
     const result = runPhaseCPass(
       pass({
@@ -405,7 +408,7 @@ describe("phase C", () => {
             trackedBuyers: 0,
             graduatedAt: new Date("2026-11-19T16:10:00.000Z"),
             createdAt: new Date("2026-11-19T15:00:00.000Z"),
-            roundTripCostPct: 1.5,
+            roundTripCostPct: 4.01,
           }),
         ],
       }),
@@ -413,6 +416,8 @@ describe("phase C", () => {
     const entry = result.entries.find((row) => row.mint === mint);
     expect(entry?.arm).toBe("screen_only");
     expect(entry?.sizePct).toBe(0.5);
+    expect(entry?.wouldSkipCost3).toBe(true);
+    expect(entry?.roundTripCostPct).toBe(4.01);
     const entryBid = {
       ok: true as const,
       execPriceUsd: 1,
@@ -436,7 +441,68 @@ describe("phase C", () => {
       outAmount: "1",
     };
     // $5 notional, lowest-fee schedule: $0.10 + $0.10 FOMO fees = 4% with no impact.
+    // That is both sides, not a one-sided 2%.
     expect(roundTripCostPct(entryBid, exitBid, "solana_lowest_fee")).toBeCloseTo(4, 8);
+    expect(quotedRoundTrip(entryBid, exitBid, "solana_lowest_fee")).toBeCloseTo(-0.04, 8);
+  });
+
+  it("hard-fails when entry impact is above 10% and watches a missing entry-impact quote", () => {
+    const failed = screenCoin(
+      {
+        mintAuthorityActive: false,
+        freezeAuthorityActive: false,
+        transferFeeBps: 0,
+        exitQuoteImpactPct: 1,
+        entryQuoteImpactPct: 94,
+        top10HoldersPct: 10,
+        sniperBundlePct: 5,
+        liquidityUsd: 20_000,
+        uniqueMakers1h: 80,
+        creatorSells: 0,
+        quoteError: false,
+        roundTripCostPct: 4.01,
+      },
+      { ...rules, entryImpactPctAbove: 10 },
+    );
+    expect(failed.verdict).toBe("fail");
+    expect(failed.hard.some((item) => item.includes("entry impact 94%"))).toBe(true);
+    const missingCost = screenCoin(
+      {
+        mintAuthorityActive: false,
+        freezeAuthorityActive: false,
+        transferFeeBps: 0,
+        exitQuoteImpactPct: 1,
+        entryQuoteImpactPct: 1,
+        top10HoldersPct: 10,
+        sniperBundlePct: 5,
+        liquidityUsd: 20_000,
+        uniqueMakers1h: 80,
+        creatorSells: 0,
+        quoteError: false,
+        roundTripCostPct: null,
+      },
+      rules,
+    );
+    expect(missingCost.verdict).toBe("pass");
+    const missingEntry = screenCoin(
+      {
+        mintAuthorityActive: false,
+        freezeAuthorityActive: false,
+        transferFeeBps: 0,
+        exitQuoteImpactPct: 1,
+        entryQuoteImpactPct: null,
+        top10HoldersPct: 10,
+        sniperBundlePct: 5,
+        liquidityUsd: 20_000,
+        uniqueMakers1h: 80,
+        creatorSells: 0,
+        quoteError: false,
+        roundTripCostPct: 1.5,
+      },
+      rules,
+    );
+    expect(missingEntry.verdict).toBe("watch");
+    expect(missingEntry.warnings.some((item) => item === "entry impact missing")).toBe(true);
   });
 
   it("pre-registers the paper rule and extends until 100 measured alerts", () => {
@@ -752,6 +818,7 @@ describe("phase C", () => {
         freezeAuthorityActive: false,
         transferFeeBps: 0,
         exitQuoteImpactPct: 1,
+        entryQuoteImpactPct: 1,
         top10HoldersPct: 10,
         sniperBundlePct: 1,
         liquidityUsd: 20_000,

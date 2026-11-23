@@ -2,6 +2,8 @@ import type { Env } from "../config/env.js";
 import type { Thresholds } from "../config/thresholds.js";
 import type { ScreenRules } from "./screen.js";
 import {
+  COST_LIMIT_MODE,
+  DEFAULT_MAX_ENTRY_IMPACT_PCT,
   DEFAULT_MAX_ROUND_TRIP_COST_PCT,
   DEFAULT_SCREEN_ONLY_SIZE_PCT,
   defaultSizePct,
@@ -56,5 +58,7 @@ export function phaseCConfigFromEnv(env: Env, thresholds: Thresholds): PhaseCCon
     fomoFeeSchedule: env.FOMO_FEE_SCHEDULE ?? "solana_lowest_fee",
     screenOnlySizePct: DEFAULT_SCREEN_ONLY_SIZE_PCT,
     maxRoundTripCostPct: DEFAULT_MAX_ROUND_TRIP_COST_PCT,
+    maxEntryImpactPct: DEFAULT_MAX_ENTRY_IMPACT_PCT,
+    costLimitMode: COST_LIMIT_MODE,
   };
 }

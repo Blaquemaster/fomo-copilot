@@ -42,9 +42,21 @@ export interface PhaseCStore {
     tradableInFomo?: boolean | null;
     sniperUnmeasured?: boolean;
     roundTripCostPct?: number | null;
+    wouldSkipCost3?: boolean | null;
     alertAt: Date;
     entryAfter: Date;
   }): Promise<string>;
+  logCostWouldSkip(input: {
+    at: Date;
+    fingerprint: string | null;
+    mint: string;
+    stage: string | null;
+    arm: string | null;
+    roundTripCostPct: number | null;
+    entryImpactPct: number | null;
+    exitImpactPct: number | null;
+    screenVerdict?: string | null;
+  }): Promise<void>;
   markDelivered(ids: readonly string[], at: Date): Promise<void>;
   openPosition(
     id: string,

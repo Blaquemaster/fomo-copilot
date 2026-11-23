@@ -36,6 +36,7 @@ import {
   allowsEntry,
   screenCoin,
   sniperIsFetchable,
+  wouldSkipCost3,
   type ScreenFacts,
   type ScreenRules,
 } from "./screen.js";
@@ -57,6 +58,7 @@ export interface PassCoin extends ScoreCoin {
   createdSlot?: number | null;
   quoteSource?: "jupiter" | "curve_modeled";
   roundTripCostPct?: number | null;
+  entryQuoteImpactPct?: number | null;
 }
 
 export interface PassPosition {
@@ -119,6 +121,7 @@ export interface PlannedEntry {
   sniperUnmeasured: boolean;
   entryAfter: Date;
   roundTripCostPct?: number | null;
+  wouldSkipCost3?: boolean | null;
 }
 
 export interface PlannedOpen {
@@ -212,6 +215,7 @@ function screenOf(coin: PassCoin, liquidity: number | null, rules: ScreenRules) 
     creatorSells: coin.creatorSells,
     quoteError: coin.quoteError,
     sniperFetchable: sniperIsFetchable(coin),
+    entryQuoteImpactPct: coin.entryQuoteImpactPct ?? null,
     roundTripCostPct: coin.roundTripCostPct ?? null,
   };
   return screenCoin(facts, rules);
@@ -517,6 +521,7 @@ export function runPhaseCPass(input: PassInput): PassResult {
         sniperUnmeasured: screen.sniperUnmeasured,
         entryAfter: new Date(input.now.getTime() + config.entryDelaySec * 1000),
         roundTripCostPct: coin.roundTripCostPct ?? null,
+        wouldSkipCost3: wouldSkipCost3(coin.roundTripCostPct, config.maxRoundTripCostPct ?? 3),
       });
       if (!held) immediate.push(text);
       busy.add(coin.mint);

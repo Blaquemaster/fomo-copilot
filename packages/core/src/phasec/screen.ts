@@ -15,8 +15,10 @@ export interface ScreenRules {
   sniperWarn: number;
   minLiquidityUsd: number;
   minMakers1h: number;
-  /** Hard fail when the estimated round-trip cost (same model as net_return) exceeds this percent. */
+  /** Report-only threshold for estimated round-trip cost, in percent. Not a screen gate. */
   maxRoundTripCostPct?: number;
+  /** Hard fail when the entry quote's price impact exceeds this percent. Defaults to 10. */
+  entryImpactPctAbove?: number;
 }
 
 export interface ScreenFacts {
@@ -30,7 +32,9 @@ export interface ScreenFacts {
   uniqueMakers1h: number | null;
   creatorSells: number;
   quoteError: boolean;
-  /** Estimated round-trip cost in percent, or null when it has not been measured. */
+  /** Entry quote price impact in percent, or null when it has not been measured. */
+  entryQuoteImpactPct?: number | null;
+  /** Estimated round-trip cost in percent, or null when it has not been measured. Report-only. */
   roundTripCostPct?: number | null;
   /**
    * True when a launch pool and create slot are known, so a sniper share can be fetched.
@@ -54,7 +58,7 @@ const REQUIRED: Array<[keyof ScreenFacts, string]> = [
   ["top10HoldersPct", "holders"],
   ["sniperBundlePct", "snipers"],
   ["liquidityUsd", "liquidity"],
-  ["roundTripCostPct", "round-trip cost"],
+  ["entryQuoteImpactPct", "entry impact"],
 ];
 
 /**
@@ -84,6 +88,7 @@ export function failsCheaperGates(
     top10HoldersPct?: number | null;
     exitQuoteImpactPct?: number | null;
     transferFeeBps?: number | null;
+    entryQuoteImpactPct?: number | null;
     roundTripCostPct?: number | null;
   },
   rules: ScreenRules,
@@ -112,9 +117,14 @@ export function failsCheaperGates(
   ) {
     return true;
   }
-  const maxCost = rules.maxRoundTripCostPct ?? 3;
-  const cost = coin.roundTripCostPct;
-  if (cost !== null && cost !== undefined && cost > maxCost) return true;
+  const maxEntry = rules.entryImpactPctAbove ?? 10;
+  if (
+    coin.entryQuoteImpactPct !== null &&
+    coin.entryQuoteImpactPct !== undefined &&
+    coin.entryQuoteImpactPct > maxEntry
+  ) {
+    return true;
+  }
   return false;
 }
 
@@ -134,6 +144,7 @@ export function shouldFetchSniper(
     top10HoldersPct?: number | null;
     exitQuoteImpactPct?: number | null;
     transferFeeBps?: number | null;
+    entryQuoteImpactPct?: number | null;
     roundTripCostPct?: number | null;
   },
   rules: ScreenRules,
@@ -146,6 +157,7 @@ export function shouldFetchSniper(
   if (coin.freezeAuthorityActive === null || coin.freezeAuthorityActive === undefined) return false;
   if (coin.top10HoldersPct === null || coin.top10HoldersPct === undefined) return false;
   if (coin.exitQuoteImpactPct === null || coin.exitQuoteImpactPct === undefined) return false;
+  if (coin.entryQuoteImpactPct === null || coin.entryQuoteImpactPct === undefined) return false;
   return true;
 }
 
@@ -175,13 +187,13 @@ export function screenCoin(facts: ScreenFacts, rules: ScreenRules): ScreenResult
   if (facts.exitQuoteImpactPct !== null && facts.exitQuoteImpactPct > rules.exitImpactPctAbove) {
     hard.push(`exit impact ${facts.exitQuoteImpactPct.toString()}%`);
   }
-  const maxCost = rules.maxRoundTripCostPct ?? 3;
+  const maxEntry = rules.entryImpactPctAbove ?? 10;
   if (
-    facts.roundTripCostPct !== null &&
-    facts.roundTripCostPct !== undefined &&
-    facts.roundTripCostPct > maxCost
+    facts.entryQuoteImpactPct !== null &&
+    facts.entryQuoteImpactPct !== undefined &&
+    facts.entryQuoteImpactPct > maxEntry
   ) {
-    hard.push(`round-trip cost ${facts.roundTripCostPct.toString()}%`);
+    hard.push(`entry impact ${facts.entryQuoteImpactPct.toString()}%`);
   }
   if (
     rules.top10FailAbove !== undefined &&
@@ -199,7 +211,7 @@ export function screenCoin(facts: ScreenFacts, rules: ScreenRules): ScreenResult
   }
   const sniperUnmeasured = isSniperUnmeasured(facts);
   for (const [key, label] of REQUIRED) {
-    if (facts[key] === null) missing.push(label);
+    if (facts[key] === null || facts[key] === undefined) missing.push(label);
   }
   if (facts.top10HoldersPct !== null && facts.top10HoldersPct > rules.top10Warn) {
     warnings.push(`top 10 holders ${facts.top10HoldersPct.toFixed(1)}%`);
@@ -229,4 +241,9 @@ export function screenCoin(facts: ScreenFacts, rules: ScreenRules): ScreenResult
     };
   }
   return { verdict: "pass", hard, warnings, sniperUnmeasured };
+}
+
+/** Report-only: true when a measured round-trip cost exceeds the 3% threshold. Missing cost is false. */
+export function wouldSkipCost3(costPct: number | null | undefined, maxCostPct = 3): boolean {
+  return costPct !== null && costPct !== undefined && costPct > maxCostPct;
 }

@@ -351,6 +351,7 @@ export class PhaseCRepository implements PhaseCStore {
     tradableInFomo?: boolean | null;
     sniperUnmeasured?: boolean;
     roundTripCostPct?: number | null;
+    wouldSkipCost3?: boolean | null;
     alertAt: Date;
     entryAfter: Date;
   }): Promise<string> {
@@ -360,8 +361,8 @@ export class PhaseCRepository implements PhaseCStore {
       const inserted = await client.query<{ id: string }>(
         `insert into phasec_alert
           (mint, stage, arm, kind, created_at, delivered_at, held_reason, size_pct, strength, body,
-           fingerprint, tradable_in_fomo, sniper_unmeasured, round_trip_cost_pct)
-         values ($1, $2, $3, 'entry', $4, null, $5, $6, $7, $8, $9, $10, $11, $12)
+           fingerprint, tradable_in_fomo, sniper_unmeasured, round_trip_cost_pct, would_skip_cost3)
+         values ($1, $2, $3, 'entry', $4, null, $5, $6, $7, $8, $9, $10, $11, $12, $13)
          returning id`,
         [
           input.mint,
@@ -376,13 +377,14 @@ export class PhaseCRepository implements PhaseCStore {
           input.tradableInFomo ?? null,
           input.sniperUnmeasured ?? false,
           input.roundTripCostPct ?? null,
+          input.wouldSkipCost3 ?? null,
         ],
       );
       await client.query(
         `insert into phasec_position
           (mint, stage, arm, status, alert_at, entry_after, size_pct, exit_plan, screen_failed,
-           sniper_unmeasured, fingerprint, round_trip_cost_pct)
-         values ($1, $2, $3, 'pending', $4, $5, $6, $7, false, $8, $9, $10)`,
+           sniper_unmeasured, fingerprint, round_trip_cost_pct, would_skip_cost3)
+         values ($1, $2, $3, 'pending', $4, $5, $6, $7, false, $8, $9, $10, $11)`,
         [
           input.mint,
           input.stage,
@@ -394,6 +396,7 @@ export class PhaseCRepository implements PhaseCStore {
           input.sniperUnmeasured ?? false,
           input.fingerprint ?? null,
           input.roundTripCostPct ?? null,
+          input.wouldSkipCost3 ?? null,
         ],
       );
       await client.query("commit");
@@ -404,6 +407,36 @@ export class PhaseCRepository implements PhaseCStore {
     } finally {
       client.release();
     }
+  }
+
+  async logCostWouldSkip(input: {
+    at: Date;
+    fingerprint: string | null;
+    mint: string;
+    stage: string | null;
+    arm: string | null;
+    roundTripCostPct: number | null;
+    entryImpactPct: number | null;
+    exitImpactPct: number | null;
+    screenVerdict?: string | null;
+  }): Promise<void> {
+    await this.pool.query(
+      `insert into phasec_cost_log
+        (logged_at, fingerprint, mint, stage, arm, round_trip_cost_pct, would_skip_cost3,
+         entry_impact_pct, exit_impact_pct, screen_verdict)
+       values ($1, $2, $3, $4, $5, $6, true, $7, $8, $9)`,
+      [
+        input.at.toISOString(),
+        input.fingerprint,
+        input.mint,
+        input.stage,
+        input.arm,
+        input.roundTripCostPct,
+        input.entryImpactPct,
+        input.exitImpactPct,
+        input.screenVerdict ?? null,
+      ],
+    );
   }
 
   async markDelivered(ids: readonly string[], at: Date): Promise<void> {

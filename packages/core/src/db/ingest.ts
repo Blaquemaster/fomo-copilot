@@ -551,6 +551,22 @@ alter table phasec_alert add column if not exists sniper_unmeasured boolean not 
 alter table phasec_position add column if not exists sniper_unmeasured boolean not null default false;
 alter table phasec_alert add column if not exists round_trip_cost_pct double precision;
 alter table phasec_position add column if not exists round_trip_cost_pct double precision;
+alter table phasec_alert add column if not exists would_skip_cost3 boolean;
+alter table phasec_position add column if not exists would_skip_cost3 boolean;
+create table if not exists phasec_cost_log (
+  id bigserial primary key,
+  logged_at timestamptz not null,
+  fingerprint text,
+  mint text not null,
+  stage text,
+  arm text,
+  round_trip_cost_pct double precision,
+  would_skip_cost3 boolean not null,
+  entry_impact_pct double precision,
+  exit_impact_pct double precision,
+  screen_verdict text
+);
+create index if not exists phasec_cost_log_at_idx on phasec_cost_log (logged_at);
 alter table phasec_position add column if not exists fingerprint text;
 alter table phasec_pause add column if not exists fingerprint text;
 create index if not exists wallet_fill_mint_side_idx on wallet_fill (mint, side);
@@ -808,6 +824,30 @@ export async function migrate(pool: pg.Pool): Promise<void> {
       await client.query("alter table phasec_pause drop constraint if exists phasec_pause_pkey");
       await client.query(
         "alter table phasec_pause add constraint phasec_pause_pkey primary key (fingerprint, day)",
+      );
+      await client.query(
+        "alter table phasec_alert add column if not exists would_skip_cost3 boolean",
+      );
+      await client.query(
+        "alter table phasec_position add column if not exists would_skip_cost3 boolean",
+      );
+      await client.query(`
+        create table if not exists phasec_cost_log (
+          id bigserial primary key,
+          logged_at timestamptz not null,
+          fingerprint text,
+          mint text not null,
+          stage text,
+          arm text,
+          round_trip_cost_pct double precision,
+          would_skip_cost3 boolean not null,
+          entry_impact_pct double precision,
+          exit_impact_pct double precision,
+          screen_verdict text
+        )
+      `);
+      await client.query(
+        "create index if not exists phasec_cost_log_at_idx on phasec_cost_log (logged_at)",
       );
     }
     await client.query(

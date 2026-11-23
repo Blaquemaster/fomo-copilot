@@ -291,6 +291,7 @@ export {
   failsCheaperGates,
   shouldFetchSniper,
   sniperIsFetchable,
+  wouldSkipCost3,
   type ScreenRules,
 } from "./phasec/screen.js";
 export {
@@ -302,9 +303,13 @@ export {
 export { DEFAULT_WALLET_SIGNAL, type WalletSignalRules } from "./phasec/store.js";
 export {
   assignExitTreatment,
+  COST_LIMIT_MODE,
+  DEFAULT_MAX_ENTRY_IMPACT_PCT,
   DEFAULT_MAX_ROUND_TRIP_COST_PCT,
   DEFAULT_SCREEN_ONLY_SIZE_PCT,
   defaultSizePct,
+  FOMO_FEE_ASSUMPTION,
+  FOMO_FEE_SOURCE_URL,
   parseLockedConfig,
   protocolBody,
   protocolFingerprint,
