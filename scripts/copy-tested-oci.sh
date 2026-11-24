@@ -55,10 +55,16 @@ host=${destination%%/*}
 rest=${destination#*/}
 name=${rest%%:*}
 tag=${rest##*:}
-got=$(curl -fsSI \
+headers=$(mktemp)
+code=$(curl -sS -D "$headers" -o /dev/null -w '%{http_code}' \
   -H "Accept: application/vnd.oci.image.index.v1+json, application/vnd.docker.distribution.manifest.list.v2+json, application/vnd.docker.distribution.manifest.v2+json" \
-  "${scheme}://${host}/v2/${name}/manifests/${tag}" |
-  awk 'tolower($1)=="docker-content-digest:" { print $2 }' | tr -d '\r')
+  "${scheme}://${host}/v2/${name}/manifests/${tag}" || true)
+got=$(awk 'tolower($1)=="docker-content-digest:" { print $2 }' "$headers" | tr -d '\r')
+rm -f "$headers"
+if [[ "$code" != "200" || -z "$got" ]]; then
+  echo "sequence stopped: registry digest ${got:-missing} HTTP ${code} != recorded ${expected}" >&2
+  exit 1
+fi
 if [[ "$got" != "$expected" ]]; then
   echo "sequence stopped: registry digest ${got:-missing} != recorded ${expected}" >&2
   exit 1

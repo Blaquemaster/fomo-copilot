@@ -625,9 +625,16 @@ done
 curl -fsS http://127.0.0.1:5000/v2/ >/dev/null
 docker tag fomo-ci-ingestor 127.0.0.1:5000/fomo-ingestor:tested
 docker push 127.0.0.1:5000/fomo-ingestor:tested
-published=$(curl -fsSI \
+published_headers=$(mktemp)
+published_code=$(curl -sS -D "$published_headers" -o /dev/null -w '%{http_code}' \
   -H "Accept: application/vnd.oci.image.index.v1+json, application/vnd.docker.distribution.manifest.list.v2+json, application/vnd.docker.distribution.manifest.v2+json" \
-  http://127.0.0.1:5000/v2/fomo-ingestor/manifests/tested | awk 'tolower($1)=="docker-content-digest:" { print $2 }' | tr -d '\r')
+  http://127.0.0.1:5000/v2/fomo-ingestor/manifests/tested || true)
+published=$(awk 'tolower($1)=="docker-content-digest:" { print $2 }' "$published_headers" | tr -d '\r')
+rm -f "$published_headers"
+if [[ "$published_code" != "200" || -z "$published" ]]; then
+  echo "local registry manifest request failed HTTP ${published_code}" >&2
+  exit 1
+fi
 test -n "$published"
 expected_id=$(docker image inspect --format '{{.Id}}' fomo-ci-ingestor)
 verify_log=$(bash scripts/verify-published-image.sh \
@@ -682,9 +689,16 @@ echo "digest-pinned pull matches ${recorded_digest}"
 docker tag node:22.23.4-bookworm-slim@sha256:5ec23b7c622b00547753bc6ffd78085dd868a68aeb41c8e0a1418f033e13d96d \
   127.0.0.1:5000/fomo-ingestor:rebuilt
 docker push 127.0.0.1:5000/fomo-ingestor:rebuilt
-rebuilt=$(curl -fsSI \
+rebuilt_headers=$(mktemp)
+rebuilt_code=$(curl -sS -D "$rebuilt_headers" -o /dev/null -w '%{http_code}' \
   -H "Accept: application/vnd.oci.image.index.v1+json, application/vnd.docker.distribution.manifest.list.v2+json, application/vnd.docker.distribution.manifest.v2+json" \
-  http://127.0.0.1:5000/v2/fomo-ingestor/manifests/rebuilt | awk 'tolower($1)=="docker-content-digest:" { print $2 }' | tr -d '\r')
+  http://127.0.0.1:5000/v2/fomo-ingestor/manifests/rebuilt || true)
+rebuilt=$(awk 'tolower($1)=="docker-content-digest:" { print $2 }' "$rebuilt_headers" | tr -d '\r')
+rm -f "$rebuilt_headers"
+if [[ "$rebuilt_code" != "200" || -z "$rebuilt" ]]; then
+  echo "rebuilt manifest request failed HTTP ${rebuilt_code}" >&2
+  exit 1
+fi
 set +e
 rebuild_log=$(bash scripts/verify-published-image.sh \
   --reference "127.0.0.1:5000/fomo-ingestor@${rebuilt}" \

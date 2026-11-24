@@ -1,5 +1,6 @@
 import { readdirSync, readFileSync } from "node:fs";
 import path from "node:path";
+import process from "node:process";
 
 const workflowDir = path.resolve(".github/workflows");
 const markers = [
