@@ -12,7 +12,7 @@
     "scripts/pre-merge-deploy-check.sh": "4256d713fbdc6cff593ed15088e9c2159bbae4529115a01ba133399cc67fba7b",
     "scripts/halt-on-schema-drift.sh": "a4496a016214f3f44382cb48a1b4ab4dbf0beae2f92d47a0f800d8d1fdbc76c9",
     "scripts/verify-published-image.sh": "0fd2174b1a7674da48733a025923a3fd75bbef221c2c2bbd833060364ace1ae9",
-    "scripts/setup-deploy-user.sh": "b4ccf799d244d85bed7b1372c2637682cddc378622d26913079c9abbacfa46db",
+    "scripts/setup-deploy-user.sh": "a5d7e829387a37ad2f32303cf65c4c47c506b9e2f90424ba24059d5d5d31f5d0",
     "scripts/fomo-deploy-helper": "4b018e22560367231f81a34b63529ca8e6b3ea588118542157618c8a8fd5fd82",
     "scripts/cutover-report.sh": "857f3483bec8bcb8bdd963d7d3379d011a306d285a73dbedc68429e4015e1f38",
     "scripts/copy-tested-oci.sh": "ab2ba48b4a3defcf59acc63cd0f7f69c1094017d2e105818017ceecbe300a456",
@@ -21,6 +21,6 @@
     "scripts/hold-deploy-workflow.sh": "1d2c588ec01ca309ce23955bc629452bb857f83b70edc600e403628cac2fce82",
     "scripts/check-merged-tree.sh": "8170b1b0998fc9deb66e6f86a8e02940d654b396bb00bec9eb3b948c8d6c11d0",
     "infra/sql/fomo-shadow-diagnostic.sql": "a61f128dc9534de4bd52c33c02cf5a6a77a6a92695c6ee2e227454831c454328",
-    "infra/refused-digests.txt": "066f19022241eecbad4cc9d2b6ccf410a4cbd933582d535e2797965bcfca0282"
+    "infra/refused-digests.txt": "fc2f99e0899bb0c79e68800b221a7ceb12fca01863179530bd716a4bc160eac3"
   }
 }

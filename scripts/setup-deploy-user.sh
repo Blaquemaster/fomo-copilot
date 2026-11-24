@@ -56,7 +56,15 @@ Match User fomo-deploy
     PasswordAuthentication no
     KbdInteractiveAuthentication no
 EOF
+host_keys_created=no
+sshd_checked=no
 if command -v sshd >/dev/null 2>&1; then
+  sshd_checked=yes
+  install -d -m 755 -o root -g root /run/sshd
+  if ! compgen -G '/etc/ssh/ssh_host_*_key' >/dev/null; then
+    ssh-keygen -A
+    host_keys_created=yes
+  fi
   sshd -t
 fi
 if [[ -z "${GITHUB_ACTIONS:-}" ]] && command -v systemctl >/dev/null 2>&1; then
@@ -112,6 +120,14 @@ echo "change user fomo-deploy shell=/bin/bash docker_group=no"
 echo "change password login locked"
 echo "change authorized_keys from the supplied public key"
 echo "change sshd Match User fomo-deploy PasswordAuthentication no"
+if [[ "$sshd_checked" == yes ]]; then
+  echo "change sshd privilege separation directory /run/sshd"
+fi
+if [[ "$host_keys_created" == yes ]]; then
+  echo "change ssh host keys generated because none existed"
+else
+  echo "unchanged ssh host keys"
+fi
 echo "change helper /usr/local/lib/fomo/fomo-deploy-helper root:root mode 755"
 echo "change sudoers only /usr/local/lib/fomo/fomo-deploy-helper"
 echo "change protected config /etc/fomo/docker-compose.yml"
