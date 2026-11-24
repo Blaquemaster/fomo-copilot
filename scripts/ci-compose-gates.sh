@@ -330,7 +330,8 @@ echo "$wrong_log" | grep -q "run_id"
 
 echo "a permitted shadow write still leaves no row"
 compose exec -T postgres psql -v ON_ERROR_STOP=1 -U fomo -d fomo \
-  -c "grant insert on phasec_position to fomo_shadow_ci"
+  -c "grant insert on phasec_position to fomo_shadow_ci" \
+  -c "grant usage, select on sequence phasec_position_id_seq to fomo_shadow_ci"
 set +e
 permitted_log=$(bash scripts/preflight.sh --live \
   --accepted "$live_accepted" \
@@ -342,12 +343,14 @@ permitted_log=$(bash scripts/preflight.sh --live \
   --shadow-user fomo_shadow_ci 2>&1)
 permitted_code=$?
 set -e
+echo "$permitted_log"
 test "$permitted_code" -ne 0
 echo "$permitted_log" | grep -q "shadow_permissions"
 probe_rows=$(compose exec -T postgres psql -U fomo -d fomo -At -c "select count(*) from phasec_position where mint = 'preflight-probe-deny'")
 test "$probe_rows" = "0"
 compose exec -T postgres psql -v ON_ERROR_STOP=1 -U fomo -d fomo \
-  -c "revoke insert on phasec_position from fomo_shadow_ci"
+  -c "revoke insert on phasec_position from fomo_shadow_ci" \
+  -c "revoke usage, select on sequence phasec_position_id_seq from fomo_shadow_ci"
 rm -f "$live_accepted" "$wrong_accepted"
 
 compose stop shadow
