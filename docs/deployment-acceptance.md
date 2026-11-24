@@ -2,11 +2,11 @@
 
 This is the only deployment plan. It is not a deployment. Nothing in this branch contacts the server, merges, or starts paper.
 
-The release candidate is the branch `cursor/release-candidate-8ff7`. It contains the held stack through this change. CI builds the ingestor image and records its id in `release-digest.json` and in the compose-gates log line `release digest`. That id is the only image a later deploy may start. There is no schema-compatible fallback image. Rollback is forward-fix-only.
+The release candidate is the branch `cursor/release-candidate-8ff7`. It contains the held stack through this change. CI builds the ingestor image and records the registry reference `repository@sha256:...` in `release-digest.json` and in the compose-gates log line `release digest`. Use the reference from the push run whose commit equals the branch head. That reference is the only image a later deploy may pull. The publish check compares it with the local image id from the same run. There is no schema-compatible fallback image. Rollback is forward-fix-only.
 
 ## What you can approve now
 
-Conditional on the checks in this revision: a bounded rollout and a diagnostic collection. Steps 1 through 7 below are the approval checklist. Do not dispatch until the pre-dispatch restore has succeeded.
+Conditional on the checks in this revision: a bounded rollout and a diagnostic collection. Steps 0 through 8 below are the approval checklist, including the named stops for schema drift and the live probes. Do not dispatch until the publish check prints `replacement may start` and the pre-dispatch restore has succeeded.
 
 - One merge of this release candidate. The merge does not deploy. See below.
 - An off-host backup while the current ingestor is still running.
@@ -32,9 +32,9 @@ A dispatch that is already running is not cancelled: `concurrency.group` is `dep
 The dispatch starts work only when both of these are true:
 
 - `confirm` is `promote-tested-digest`
-- `image_digest` is the `sha256:` id recorded by the green CI run
+- `image_digest` is the registry reference `ghcr.io/blaquemaster/fomo-copilot/ingestor@sha256:...` recorded by the green push run
 
-Anything else exits before SSH. The job does not build from the checkout. It starts the image id that was loaded on the server.
+Anything else exits before SSH. The job does not build from the checkout. It pulls that registry reference and starts that image.
 
 ## Server steps that need your yes
 
@@ -132,7 +132,7 @@ node scripts/migration-inventory.mjs \
 
 `migrate()` uses one transaction. `lock_timeout` is 3 seconds and `statement_timeout` is 60 seconds. If either fires, the catch block rolls that transaction back. None of the new ids are committed. It is not a per-migration commit. The statements are idempotent, so one rerun after a timeout is safe. Do not loop on a failure.
 
-CI rehearses this on a synthetic copy: a new database whose `schema_migrations` table contains only the production ids, then `migrate()`, then `pg_dump -Fc`, `pg_dumpall --roles-only`, and `pg_restore` into a second database. That rehearsal is not a copy of production data. The production dump in step 2 is the one that matters, and it happens only when you say so.
+CI rehearses this on a synthetic copy: a new database whose `schema_migrations` table contains only the production ids, then `migrate()`, then `pg_dump -Fc`, `pg_dumpall --roles-only`, and `pg_restore` into a second database. That rehearsal is not a copy of production data. The production dump in step 3 is the one that matters, and it happens only when you say so.
 
 ## Live preflight
 
