@@ -645,7 +645,7 @@ export async function runPhaseCCycle(input: {
   const destination = resolveAlertChat({
     destination: config.destination,
     testChatId: input.env.TELEGRAM_TEST_CHAT_ID ?? null,
-    adminChatId: input.env.TELEGRAM_ADMIN_CHAT_ID,
+    adminChatId: input.env.TELEGRAM_ADMIN_CHAT_ID ?? "",
   });
   await input.store.markSellWarned(result.sellWarnings);
   await input.store.markScaled(result.scaled, input.now);

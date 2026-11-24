@@ -25,6 +25,10 @@ export async function deliverCrashAlert(options: {
   host?: string;
   fetchImpl?: typeof fetch;
 }): Promise<void> {
+  if (!options.token || !options.chatId) {
+    options.logger.warn({ kind: options.kind }, "crash alert skipped: no telegram credentials");
+    return;
+  }
   const nowMs = (options.now ?? new Date()).getTime();
   if (options.fatal) {
     if (fatalSent) return;

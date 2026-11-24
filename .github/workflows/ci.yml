@@ -72,3 +72,16 @@ jobs:
 
       - name: Secret scan
         run: gitleaks detect --source . --redact --no-banner --exit-code 1
+
+  compose-gates:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Compose stop-state gates
+        run: bash scripts/ci-compose-gates.sh

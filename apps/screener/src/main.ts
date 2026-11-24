@@ -72,7 +72,7 @@ await startApp({
           const destination = resolveAlertChat({
             destination: env.ALERT_DESTINATION ?? "test",
             testChatId: env.TELEGRAM_TEST_CHAT_ID ?? null,
-            adminChatId: env.TELEGRAM_ADMIN_CHAT_ID,
+            adminChatId: env.TELEGRAM_ADMIN_CHAT_ID ?? "",
           });
           await runPhaseCCycle({
             now: new Date(),
@@ -84,7 +84,7 @@ await startApp({
             send: async (text) => {
               if ("blocked" in destination) return;
               await sendTelegramMessage({
-                token: env.TELEGRAM_BOT_TOKEN,
+                token: env.TELEGRAM_BOT_TOKEN ?? "",
                 chatId: destination.chatId,
                 text,
               });

@@ -575,13 +575,29 @@ function normalDraw(random: () => number): number {
  * Measured on clustered days, a rare large return, and one missing pair per sim.
  * Not a promise about a future window. The report quotes the returned numbers.
  */
+function wilsonInterval(successes: number, sims: number): { low: number; high: number } {
+  const z = 1.959963984540054;
+  const p = successes / sims;
+  const z2 = z * z;
+  const denom = 1 + z2 / sims;
+  const center = (p + z2 / (2 * sims)) / denom;
+  const margin = (z * Math.sqrt((p * (1 - p)) / sims + z2 / (4 * sims * sims))) / denom;
+  return { low: Math.max(0, center - margin), high: Math.min(1, center + margin) };
+}
+
 export function measureBootstrapCalibration(seed = 11): {
   sims: number;
   falsePositiveRate: number;
+  falsePositiveLow: number;
+  falsePositiveHigh: number;
   intervalCoverage: number;
+  coverageLow: number;
+  coverageHigh: number;
   powerAt15pp: number;
+  powerLow: number;
+  powerHigh: number;
 } {
-  const sims = 40;
+  const sims = 1000;
   const random = unitRandom(seed);
   const oneSim = (trueDelta: number) => {
     const pairs: Array<{ day: string; wallet: number; control: number }> = [];
@@ -618,11 +634,20 @@ export function measureBootstrapCalibration(seed = 11): {
     const large = oneSim(0.15);
     if (large.low !== null && large.low > EXPERIMENT_MIN_ADVANTAGE) powered += 1;
   }
+  const falsePositive = wilsonInterval(falsePositives, sims);
+  const coverage = wilsonInterval(covered, sims);
+  const power = wilsonInterval(powered, sims);
   return {
     sims,
     falsePositiveRate: falsePositives / sims,
+    falsePositiveLow: falsePositive.low,
+    falsePositiveHigh: falsePositive.high,
     intervalCoverage: covered / sims,
+    coverageLow: coverage.low,
+    coverageHigh: coverage.high,
     powerAt15pp: powered / sims,
+    powerLow: power.low,
+    powerHigh: power.high,
   };
 }
 

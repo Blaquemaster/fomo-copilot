@@ -82,4 +82,33 @@ describe.skipIf(!databaseUrl)("enrollment/outcome restart integration test", () 
       await second.end();
     }
   });
+
+  it("claims an observation once, blocks a second claim, and allows a re-take after expiry", async () => {
+    const pool = createPool(databaseUrl ?? "");
+    try {
+      await migrate(pool);
+      const store = new PhaseCRepository(pool);
+      const now = new Date("2026-11-24T13:00:00.000Z");
+      const first = await store.claimObservation(
+        "RestartMint1111111111111111111111111111111",
+        "15m",
+        now,
+      );
+      const again = await store.claimObservation(
+        "RestartMint1111111111111111111111111111111",
+        "15m",
+        new Date(now.getTime() + 1000),
+      );
+      const retaken = await store.claimObservation(
+        "RestartMint1111111111111111111111111111111",
+        "15m",
+        new Date(now.getTime() + 3 * 60 * 1000),
+      );
+      expect(first).toBe(true);
+      expect(again).toBe(false);
+      expect(retaken).toBe(true);
+    } finally {
+      await pool.end();
+    }
+  });
 });

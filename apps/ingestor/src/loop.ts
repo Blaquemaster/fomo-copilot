@@ -169,7 +169,7 @@ export async function runIngestLoop(input: {
     input.env.HELIUS_API_KEY,
     input.env.TELEGRAM_BOT_TOKEN,
     input.env.POSTGRES_PASSWORD,
-  ];
+  ].filter((value): value is string => Boolean(value));
   let attempt = 0;
   let outageAlerted = false;
   const choice = { method: selectWsMethod(input.env.HELIUS_PLAN, input.env.HELIUS_WS_MODE) };
@@ -1823,8 +1823,8 @@ async function notify(
 ): Promise<void> {
   try {
     await sendTelegramMessage({
-      token: input.env.TELEGRAM_BOT_TOKEN,
-      chatId: input.env.TELEGRAM_ADMIN_CHAT_ID,
+      token: input.env.TELEGRAM_BOT_TOKEN ?? "",
+      chatId: input.env.TELEGRAM_ADMIN_CHAT_ID ?? "",
       text: truncateTelegramText(redactString(text, secrets)),
     });
   } catch (error) {

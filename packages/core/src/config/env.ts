@@ -12,7 +12,7 @@ export const envSchema = z.object({
   POSTGRES_PASSWORD: z.string().min(8).max(256),
   POSTGRES_DB: simpleName,
   DATABASE_URL: z.string().min(1).max(2048),
-  TELEGRAM_BOT_TOKEN: z.string().min(8).max(256),
+  TELEGRAM_BOT_TOKEN: z.string().min(8).max(256).optional(),
   TELEGRAM_ADMIN_CHAT_ID: z
     .string()
     .trim()
@@ -24,7 +24,8 @@ export const envSchema = z.object({
       } catch {
         return false;
       }
-    }),
+    })
+    .optional(),
   HELIUS_API_KEY: z.string().min(8).max(256),
   THRESHOLDS_PATH: z.string().min(1).max(512).optional(),
   // Developer until the owner switches this to free (planned 2026-12-07).
@@ -233,7 +234,7 @@ export function loadEnv(source: NodeJS.ProcessEnv = process.env): Env {
   if (!parsed.success) {
     throw new ConfigError(`env: ${formatZodIssues(parsed.error)}`);
   }
-  if (/\s/.test(parsed.data.TELEGRAM_BOT_TOKEN)) {
+  if (parsed.data.TELEGRAM_BOT_TOKEN && /\s/.test(parsed.data.TELEGRAM_BOT_TOKEN)) {
     throw new ConfigError("env: TELEGRAM_BOT_TOKEN: invalid_token");
   }
   assertDatabaseUrl(parsed.data);
@@ -246,7 +247,8 @@ export function loadEnv(source: NodeJS.ProcessEnv = process.env): Env {
 
 /** Values that must never appear in logs or crash alerts. Longest first. */
 export function secretValuesFromEnv(env: Env): string[] {
-  const values = [env.TELEGRAM_BOT_TOKEN, env.HELIUS_API_KEY, env.POSTGRES_PASSWORD];
+  const values = [env.HELIUS_API_KEY, env.POSTGRES_PASSWORD];
+  if (env.TELEGRAM_BOT_TOKEN) values.push(env.TELEGRAM_BOT_TOKEN);
   if (env.JUPITER_API_KEY) values.push(env.JUPITER_API_KEY);
   if (env.BSC_WSS_URL && !env.BSC_WSS_URL.includes("bsc-rpc.publicnode.com")) {
     values.push(env.BSC_WSS_URL);

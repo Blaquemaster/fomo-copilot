@@ -369,10 +369,16 @@ describe("review 3", () => {
   it("measures bootstrap false positives, coverage, and power", () => {
     const measured = measureBootstrapCalibration(11);
     expect(measured).toEqual({
-      sims: 40,
-      falsePositiveRate: 0,
-      intervalCoverage: 0.825,
-      powerAt15pp: 0.775,
+      sims: 1000,
+      falsePositiveRate: 0.019,
+      falsePositiveLow: 0.012196885750790904,
+      falsePositiveHigh: 0.02948445591231312,
+      intervalCoverage: 0.798,
+      coverageLow: 0.771996830196033,
+      coverageHigh: 0.8217224217465763,
+      powerAt15pp: 0.769,
+      powerLow: 0.7418776678486424,
+      powerHigh: 0.7940635360861289,
     });
   });
 });

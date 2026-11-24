@@ -33,7 +33,7 @@ await startApp({
       pool ??= createPool(env.DATABASE_URL);
       return new IngestRepository(pool);
     };
-    const bot = new Bot(env.TELEGRAM_BOT_TOKEN, {
+    const bot = new Bot(env.TELEGRAM_BOT_TOKEN ?? "", {
       client: {
         // Longer than the 30s long poll, shorter than grammY's 500s default,
         // so a dead network fails instead of leaving the process hung.
@@ -45,7 +45,7 @@ await startApp({
       const result = await handleTelegramMessage({
         chatId: ctx.chat?.id,
         text: ctx.message?.text,
-        adminChatId: env.TELEGRAM_ADMIN_CHAT_ID,
+        adminChatId: env.TELEGRAM_ADMIN_CHAT_ID ?? "",
         reply: async (text) => {
           await ctx.reply(text);
         },
@@ -54,8 +54,8 @@ await startApp({
             app: "alerter",
             kind: "crash_test",
             error,
-            token: env.TELEGRAM_BOT_TOKEN,
-            chatId: env.TELEGRAM_ADMIN_CHAT_ID,
+            token: env.TELEGRAM_BOT_TOKEN ?? "",
+            chatId: env.TELEGRAM_ADMIN_CHAT_ID ?? "",
             secrets,
             logger,
             fatal: true,
@@ -94,8 +94,8 @@ await startApp({
         app: "alerter",
         kind: "handler",
         error: botError,
-        token: env.TELEGRAM_BOT_TOKEN,
-        chatId: env.TELEGRAM_ADMIN_CHAT_ID,
+        token: env.TELEGRAM_BOT_TOKEN ?? "",
+        chatId: env.TELEGRAM_ADMIN_CHAT_ID ?? "",
         secrets,
         logger,
         fatal: false,

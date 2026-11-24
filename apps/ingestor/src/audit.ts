@@ -323,8 +323,8 @@ export async function runRecallAudit(input: {
       );
     }
     await sendTelegramMessage({
-      token: input.env.TELEGRAM_BOT_TOKEN,
-      chatId: input.env.TELEGRAM_ADMIN_CHAT_ID,
+      token: input.env.TELEGRAM_BOT_TOKEN ?? "",
+      chatId: input.env.TELEGRAM_ADMIN_CHAT_ID ?? "",
       text: lines.join("\n"),
     });
   }
