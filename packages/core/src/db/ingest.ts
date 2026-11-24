@@ -636,12 +636,11 @@ alter table phasec_execution add column if not exists entry_due_at timestamptz;
 alter table phasec_execution add column if not exists latest_entry_at timestamptz;
 alter table phasec_execution add column if not exists chain text not null default 'solana';
 alter table phasec_execution add column if not exists process_instance_id text;
+alter table phasec_execution add column if not exists enrollment_id text;
+alter table phasec_execution add column if not exists run_id text;
 create unique index if not exists phasec_execution_run_chain_mint_idx
   on phasec_execution (run_id, chain, mint)
   where run_id is not null;
-
-alter table phasec_execution add column if not exists enrollment_id text;
-alter table phasec_execution add column if not exists run_id text;
 
 create table if not exists phasec_quote_attempt (
   id bigserial primary key,
