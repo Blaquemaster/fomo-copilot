@@ -1,4 +1,4 @@
-import { nextTransactionVersion, parsedScanCredits } from "@fomo/core";
+import { boundedScanBudget, nextTransactionVersion, parsedScanCredits } from "@fomo/core";
 
 export class HeliusRpcError extends Error {
   readonly code: number | null;
@@ -149,14 +149,35 @@ export async function scanInstructionHistory(input: {
   gate?: (input: { historyPages: number }) => Promise<boolean>;
   fetchImpl?: typeof fetch;
   baseUrl?: string;
-}): Promise<{ matches: ScanMatch[]; creditsCharged: number; complete: boolean }> {
+}): Promise<{
+  matches: ScanMatch[];
+  creditsCharged: number;
+  complete: boolean;
+  requestsSent?: number;
+  scannedTransactions?: number;
+  exceeded?: boolean;
+}> {
   const matches: ScanMatch[] = [];
   let creditsCharged = 0;
+  let scannedTransactions = 0;
+  let requestsSent = 0;
+  let exceeded = false;
   let paginationToken: string | undefined;
   let complete = false;
   const maxPages = input.maxPages ?? 4;
-  const maxScanned = input.maxScannedTransactions ?? 10_000;
-  const historyPages = Math.max(1, Math.ceil(maxScanned / 1000));
+  const budget = boundedScanBudget(input.maxScannedTransactions ?? 10_000);
+  if (input.gate && !budget.allowed) {
+    return {
+      matches,
+      creditsCharged,
+      complete,
+      requestsSent,
+      scannedTransactions,
+      exceeded: true,
+    };
+  }
+  const maxScanned = budget.allowed ? budget.maxScanned : (input.maxScannedTransactions ?? 10_000);
+  const historyPages = budget.allowed ? budget.historyPages : Math.ceil(maxScanned / 1000);
   for (let page = 0; page < maxPages; page += 1) {
     if (
       !(await diagnosticGateAllows(() => input.gate?.({ historyPages }) ?? Promise.resolve(true)))
@@ -216,6 +237,11 @@ export async function scanInstructionHistory(input: {
         : {};
     const scanned =
       typeof scan["scannedTransactions"] === "number" ? scan["scannedTransactions"] : 0;
+    requestsSent += 1;
+    scannedTransactions += scanned;
+    if (input.gate && scanned > maxScanned) {
+      exceeded = true;
+    }
     creditsCharged +=
       typeof scan["creditsCharged"] === "number"
         ? scan["creditsCharged"]
@@ -239,11 +265,11 @@ export async function scanInstructionHistory(input: {
       stopped === "windowEnd" ||
       (typeof through === "number" && through <= input.slotGt) ||
       paginationToken === undefined;
-    if (covered) {
-      complete = true;
+    if (exceeded || covered) {
+      if (covered) complete = true;
       break;
     }
   }
-  if (!complete && paginationToken === undefined) complete = true;
-  return { matches, creditsCharged, complete };
+  if (!complete && paginationToken === undefined && !exceeded) complete = true;
+  return { matches, creditsCharged, complete, requestsSent, scannedTransactions, exceeded };
 }

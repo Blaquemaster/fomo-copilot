@@ -13,13 +13,13 @@ export const DOLLAR_CEILING_MICROS = BigInt(DIAGNOSTIC_BUDGET.incrementalCeiling
 /**
  * Helius prices named by the endpoint the credit buys.
  * The diagnostic runner sends only the scan. Parsed Streams are the ingestor's
- * parsedTransactionSubscribe deliveries. This repository does not call the REST history route.
+ * parsedTransactionSubscribe deliveries. The legacy Enhanced Transactions route is not called.
  */
 export const HELIUS_DIAGNOSTIC_ENDPOINTS = {
-  parsedEventsRest: {
-    name: "Parsed Events REST",
+  enhancedTransactions: {
+    name: "Legacy Enhanced Transactions",
     endpoint: "GET https://api.helius.xyz/v0/addresses/{address}/transactions",
-    credits: 10,
+    credits: 100,
   },
   parsedEventsScan: {
     name: "Parsed Events scan",
@@ -27,6 +27,8 @@ export const HELIUS_DIAGNOSTIC_ENDPOINTS = {
     requestCredits: 10,
     creditsPerHistoryPage: 1,
     transactionsPerPage: 1000,
+    /** Helius scans at most this many transactions unless the request sets a lower budget. */
+    maxScannedTransactions: 10_000,
   },
   parsedStreamDelivery: {
     name: "Parsed Streams delivery",
@@ -38,6 +40,34 @@ export const HELIUS_DIAGNOSTIC_ENDPOINTS = {
 /** Helius methods the diagnostic entrypoint actually charges. */
 export const DIAGNOSTIC_HELIUS_METHODS = ["parsedEventsScan"] as const;
 
+/** The only database role allowed to run the diagnostic entrypoint. */
+export const DIAGNOSTIC_DB_ROLE = "fomo_shadow";
+
+/** A scan request may not ask for more than Helius's 10,000-transaction budget. */
+export function boundedScanBudget(maxScannedTransactions: number): {
+  allowed: boolean;
+  maxScanned: number;
+  historyPages: number;
+  reservedCredits: number;
+} {
+  const maxScanned = Math.floor(maxScannedTransactions);
+  const cap = HELIUS_DIAGNOSTIC_ENDPOINTS.parsedEventsScan.maxScannedTransactions;
+  if (!Number.isFinite(maxScanned) || maxScanned < 1 || maxScanned > cap) {
+    return { allowed: false, maxScanned: 0, historyPages: 0, reservedCredits: 0 };
+  }
+  const historyPages = Math.ceil(
+    maxScanned / HELIUS_DIAGNOSTIC_ENDPOINTS.parsedEventsScan.transactionsPerPage,
+  );
+  return {
+    allowed: true,
+    maxScanned,
+    historyPages,
+    reservedCredits:
+      HELIUS_DIAGNOSTIC_ENDPOINTS.parsedEventsScan.requestCredits +
+      historyPages * HELIUS_DIAGNOSTIC_ENDPOINTS.parsedEventsScan.creditsPerHistoryPage,
+  };
+}
+
 export const EXHAUSTION_EFFECT = {
   allowance: DIAGNOSTIC_ALLOWANCE,
   stops: ["reference_scan", "reconciliation", "quote_collection"] as const,
@@ -48,7 +78,9 @@ export function heliusDiagnosticCredits(
   method: string,
   detail?: { transactionsScanned?: number; historyPages?: number; deliveredEvents?: number },
 ): number {
-  if (method === "parsedEventsRest") return HELIUS_DIAGNOSTIC_ENDPOINTS.parsedEventsRest.credits;
+  if (method === "enhancedTransactions" || method === "parsedEventsRest") {
+    return HELIUS_DIAGNOSTIC_ENDPOINTS.enhancedTransactions.credits;
+  }
   if (method === "parsedEventsScan") {
     const pageSize = HELIUS_DIAGNOSTIC_ENDPOINTS.parsedEventsScan.transactionsPerPage;
     const scanned = Number.isFinite(detail?.transactionsScanned)
@@ -207,6 +239,60 @@ export async function chargeDiagnostic(
       jupiterQuotes: Number(saved?.jupiter_quotes ?? 0),
       publicRpcCalls: Number(saved?.public_rpc_calls ?? 0),
       spentUsdMicros: saved?.spent_usd_micros ?? "0",
+    };
+  } catch (error) {
+    await client.query("rollback");
+    throw error;
+  } finally {
+    client.release();
+  }
+}
+
+/**
+ * After a scan response, replace the reserved maximum with the pages actually scanned.
+ * A response above the reservation is kept at the reservation and reported as exceeded.
+ */
+export async function reconcileDiagnosticScan(
+  pool: Pool,
+  input: {
+    scope: string;
+    processId: string;
+    reservedCredits: number;
+    actualTransactions: number;
+  },
+): Promise<{ actualCredits: number; exceeded: boolean; heliusCredits: number }> {
+  const actualCredits = heliusDiagnosticCredits("parsedEventsScan", {
+    transactionsScanned: input.actualTransactions,
+  });
+  const exceeded = actualCredits > input.reservedCredits;
+  const release = exceeded ? 0 : Math.max(0, input.reservedCredits - actualCredits);
+  const client = await pool.connect();
+  try {
+    await client.query("begin");
+    if (release > 0) {
+      const usd = (BigInt(release) * HELIUS_USD_MICROS_PER_CREDIT).toString();
+      await client.query(
+        `update diagnostic_spend set
+           helius_credits = greatest(0, helius_credits - $2),
+           spent_usd_micros = greatest(0, spent_usd_micros - $3)
+         where scope = $1`,
+        [input.scope, release, usd],
+      );
+    }
+    await client.query(
+      `insert into diagnostic_spend_event (scope, provider, method, units, process_id, accepted)
+       values ($1, 'helius', 'parsedEventsScanReconcile', $2, $3, true)`,
+      [input.scope, exceeded ? input.reservedCredits : actualCredits, input.processId],
+    );
+    const next = await client.query<{ helius_credits: string }>(
+      "select helius_credits::text from diagnostic_spend where scope = $1",
+      [input.scope],
+    );
+    await client.query("commit");
+    return {
+      actualCredits,
+      exceeded,
+      heliusCredits: Number(next.rows[0]?.helius_credits ?? 0),
     };
   } catch (error) {
     await client.query("rollback");

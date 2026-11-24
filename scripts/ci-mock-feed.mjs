@@ -45,7 +45,14 @@ function sendText(socket, text) {
   socket.write(Buffer.concat([Buffer.from(header), payload]));
 }
 
-const counts = { scan: 0, publicRpc: 0, jupiter: 0, baselineHttp: 0, baselineWs: 0 };
+const counts = {
+  scan: 0,
+  publicRpc: 0,
+  jupiter: 0,
+  baselineHttp: 0,
+  baselineWs: 0,
+  lastScanBudget: 0,
+};
 let jupiterSeen = 0;
 
 const server = http.createServer((request, response) => {
@@ -60,11 +67,17 @@ const server = http.createServer((request, response) => {
   request.on("end", () => {
     if (url.startsWith("/v1/parsed-events/scan")) {
       counts.scan += 1;
+      try {
+        const parsed = JSON.parse(Buffer.concat(chunks).toString("utf8") || "{}");
+        counts.lastScanBudget = Number(parsed.budget?.maxScannedTransactions ?? 0);
+      } catch {
+        counts.lastScanBudget = 0;
+      }
       response.setHeader("content-type", "application/json");
       response.end(
         JSON.stringify({
           data: [],
-          scan: { scannedTransactions: 1000, creditsCharged: 11, stoppedOn: "windowEnd" },
+          scan: { scannedTransactions: 10000, creditsCharged: 20, stoppedOn: "windowEnd" },
         }),
       );
       return;

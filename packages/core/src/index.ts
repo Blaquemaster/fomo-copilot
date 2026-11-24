@@ -281,11 +281,14 @@ export {
 } from "./phasec/quote.js";
 export { collectJupiterBids, type JupiterRequest } from "./phasec/jupiterCollect.js";
 export {
+  DIAGNOSTIC_DB_ROLE,
   DIAGNOSTIC_HELIUS_METHODS,
   EXHAUSTION_EFFECT,
   HELIUS_DIAGNOSTIC_ENDPOINTS,
+  boundedScanBudget,
   chargeDiagnostic,
   heliusDiagnosticCredits,
+  reconcileDiagnosticScan,
   type SpendCaps,
 } from "./phasec/diagnosticSpend.js";
 export { coverageReadiness } from "./phasec/diagnosticSpec.js";

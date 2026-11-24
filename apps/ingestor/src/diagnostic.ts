@@ -16,6 +16,7 @@ if (isDirect) {
       try {
         const result = await runDiagnosticCollection({ pool, env });
         process.stdout.write(`diagnostic-result ${JSON.stringify(result)}\n`);
+        if (result.roleRefused) process.exitCode = 1;
       } finally {
         await pool.end();
       }

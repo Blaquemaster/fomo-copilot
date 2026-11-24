@@ -146,10 +146,12 @@ jobs:
             echo "deploy held: refusing a reference that is not the tested registry digest"
             exit 1
           fi
-          if [[ "$IMAGE_DIGEST" == *"sha256:766502c8029cded0d35ac946f6da35bbc46b5f3676fed0a7a5a0ee50e21aeec6"* ]]; then
-            echo "deploy held: this reference is not approvable"
-            exit 1
-          fi
+          case "$IMAGE_DIGEST" in
+            *sha256:766502c8029cded0d35ac946f6da35bbc46b5f3676fed0a7a5a0ee50e21aeec6* | *sha256:877b38b41fcf2e28bb1aa87488d37a301798992df4e2be63bddba30e3d65a4ed*)
+              echo "deploy held: this reference is not approvable"
+              exit 1
+              ;;
+          esac
           umask 077
           key_file="$(mktemp)"
           known_file="$(mktemp)"

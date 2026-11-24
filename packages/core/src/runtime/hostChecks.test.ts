@@ -338,26 +338,30 @@ describe("schema drift halt", () => {
 });
 
 describe("rejected release reference", () => {
-  it("refuses the previous registry digest before any pull", () => {
+  it("refuses the previous registry digests before any pull", () => {
     const script = path.join(root, "scripts/verify-published-image.sh");
     const deploy = readFileSync(path.join(root, ".github/workflows/deploy.yml"), "utf8");
-    expect(deploy).toContain(
+    const refused = [
       "sha256:766502c8029cded0d35ac946f6da35bbc46b5f3676fed0a7a5a0ee50e21aeec6",
-    );
+      "sha256:877b38b41fcf2e28bb1aa87488d37a301798992df4e2be63bddba30e3d65a4ed",
+    ];
+    for (const digest of refused) expect(deploy).toContain(digest);
     expect(deploy).toContain("not approvable");
-    expect(() =>
-      execFileSync(
-        "bash",
-        [
-          script,
-          "--reference",
-          "ghcr.io/blaquemaster/fomo-copilot/ingestor@sha256:766502c8029cded0d35ac946f6da35bbc46b5f3676fed0a7a5a0ee50e21aeec6",
-          "--expected-image-id",
-          "sha256:1111111111111111111111111111111111111111111111111111111111111111",
-        ],
-        { encoding: "utf8" },
-      ),
-    ).toThrow(/not approvable/);
+    for (const digest of refused) {
+      expect(() =>
+        execFileSync(
+          "bash",
+          [
+            script,
+            "--reference",
+            `ghcr.io/blaquemaster/fomo-copilot/ingestor@${digest}`,
+            "--expected-image-id",
+            "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+          ],
+          { encoding: "utf8" },
+        ),
+      ).toThrow(/not approvable/);
+    }
   });
 });
 

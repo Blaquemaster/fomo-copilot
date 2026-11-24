@@ -1,13 +1,16 @@
 import {
+  DIAGNOSTIC_DB_ROLE,
   DIAGNOSTIC_HELIUS_METHODS,
   EXHAUSTION_EFFECT,
   PUMP_PROGRAM_ID,
+  boundedScanBudget,
   budgetLevel,
   chargeDiagnostic,
   collectJupiterBids,
   coverageReadiness,
   intakeAllowanceCredits,
   qualificationGate,
+  reconcileDiagnosticScan,
   scanNamesForProgram,
   utcMonth,
   type Env,
@@ -22,6 +25,7 @@ type BudgetPool = Parameters<typeof chargeDiagnostic>[0];
 export interface DiagnosticRunResult {
   entrypoint: "apps/ingestor/dist/diagnostic.js";
   role: string | null;
+  roleRefused: boolean;
   budgetDbFailed: boolean;
   ingestorStopped: false;
   ingestor: "keeps_running";
@@ -55,6 +59,7 @@ export async function runDiagnosticCollection(input: {
   const caps = capsFromEnv(input.env);
   let denied = 0;
   let budgetDbFailed = false;
+  let roleRefused = false;
   let role: string | null = null;
   let accountUsagePaused = false;
 
@@ -81,13 +86,17 @@ export async function runDiagnosticCollection(input: {
   };
 
   try {
-    const who = await input.pool.query<{ current_user: string }>("select current_user");
-    role = who.rows[0]?.current_user ?? null;
+    const who = await input.pool.query<{ db_role: string; rolsuper: boolean }>(
+      `select current_user as db_role, rolsuper
+       from pg_roles where rolname = current_user`,
+    );
+    role = who.rows[0]?.db_role ?? null;
+    roleRefused = role !== DIAGNOSTIC_DB_ROLE || who.rows[0]?.rolsuper === true;
   } catch {
     budgetDbFailed = true;
   }
 
-  if (!budgetDbFailed) {
+  if (!budgetDbFailed && !roleRefused) {
     try {
       const usage = await input.pool.query<{ paused: boolean; credit_micros: string }>(
         "select paused, credit_micros::text from ingest_month where month = $1",
@@ -103,19 +112,32 @@ export async function runDiagnosticCollection(input: {
       accountUsagePaused = true;
     }
 
-    await scanInstructionHistory({
+    const scanBudget = boundedScanBudget(10_000);
+    const scanned = await scanInstructionHistory({
       apiKey: input.env.HELIUS_API_KEY,
       programId: PUMP_PROGRAM_ID,
       instructionNames: scanNamesForProgram(PUMP_PROGRAM_ID, input.env.PUMP_SUBSCRIBE_CREATE_POOL),
       slotGt: 0,
       slotLte: null,
       maxPages: 1,
-      maxScannedTransactions: 1000,
+      maxScannedTransactions: scanBudget.maxScanned,
       baseUrl: input.env.HELIUS_HTTP_BASE,
       fetchImpl: input.fetchImpl,
       gate: ({ historyPages }) =>
         charge({ provider: "helius", method: "parsedEventsScan", historyPages }),
     });
+    if ((scanned.requestsSent ?? 0) > 0 && scanBudget.allowed) {
+      try {
+        await reconcileDiagnosticScan(input.pool, {
+          scope,
+          processId,
+          reservedCredits: scanBudget.reservedCredits,
+          actualTransactions: scanned.scannedTransactions ?? 0,
+        });
+      } catch {
+        budgetDbFailed = true;
+      }
+    }
     await recallProgramFromPublicRpc({
       programId: PUMP_PROGRAM_ID,
       known: new Set(),
@@ -165,6 +187,7 @@ export async function runDiagnosticCollection(input: {
   return {
     entrypoint: "apps/ingestor/dist/diagnostic.js",
     role,
+    roleRefused,
     budgetDbFailed,
     ingestorStopped: false,
     ingestor: EXHAUSTION_EFFECT.ingestor,
