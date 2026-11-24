@@ -27,10 +27,10 @@ SHADOW_ENABLED=false
 EOF
 
 cat >"$shadow_env" <<'EOF'
-POSTGRES_USER=fomo
+POSTGRES_USER=fomo_shadow_ci
 POSTGRES_PASSWORD=password1
 POSTGRES_DB=fomo
-DATABASE_URL=postgres://fomo:password1@postgres:5432/fomo
+DATABASE_URL=postgres://fomo_shadow_ci:password1@postgres:5432/fomo
 HELIUS_API_KEY=ci-fake-helius
 NODE_ENV=test
 LOG_LEVEL=info
@@ -122,6 +122,48 @@ network=$(docker network ls --format '{{.Name}}' | grep '^fomo-ci' | head -1)
 test -n "$network"
 rollback_log=$(docker run --rm --network "$network" --env-file "$app_env" -e PAPER_ENABLED=false -e ALERTS_ENABLED=false fomo-ci-screener:previous node apps/screener/dist/main.js)
 echo "$rollback_log" | grep -q "screener stayed stopped"
+
+echo "restricted shadow role on the CI database only"
+compose exec -T postgres psql -v ON_ERROR_STOP=1 -U fomo -d fomo <<'SQL'
+drop role if exists fomo_shadow_ci;
+create role fomo_shadow_ci login nosuperuser nocreatedb nocreaterole noinherit password 'password1';
+grant connect on database fomo to fomo_shadow_ci;
+grant usage on schema public to fomo_shadow_ci;
+grant select on table
+  raw_events, candidates, wallet_fill, tracked_wallet, ingest_backfill, ingest_coin,
+  autobuy_intent, phasec_position, phasec_alert
+  to fomo_shadow_ci;
+grant select, insert, update on table
+  phasec_candidate, phasec_execution, phasec_observation, phasec_quote_attempt,
+  phasec_wallet_list_version, phasec_config_history
+  to fomo_shadow_ci;
+revoke insert, update, delete, truncate on table
+  phasec_position, phasec_alert, autobuy_intent, raw_events
+  from fomo_shadow_ci;
+SQL
+
+echo "shadow container identity cannot write a position"
+compose --profile shadow run --rm --no-deps --entrypoint node shadow \
+  --input-type=module -e "$(cat <<'JS'
+import { createPool } from "@fomo/core";
+const pool = createPool(process.env.DATABASE_URL);
+const who = await pool.query("select current_user");
+if (who.rows[0].current_user !== "fomo_shadow_ci") {
+  throw new Error("shadow is not the restricted role");
+}
+let denied = false;
+try {
+  await pool.query(
+    "insert into phasec_position (mint, stage, arm, status, alert_at, entry_after) values ('ci-shadow-deny', 'post_graduation', 'wallets_x_screen', 'pending', now(), now())",
+  );
+} catch (error) {
+  denied = /permission denied/i.test(String(error));
+}
+if (!denied) throw new Error("restricted role wrote a position");
+await pool.query("select count(*) from autobuy_intent");
+await pool.end();
+JS
+)"
 
 echo "shadow on, paper off"
 compose --profile shadow up -d --no-deps shadow
