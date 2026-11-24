@@ -162,7 +162,16 @@ describe("quoted paper path", () => {
             inAmount: amount,
             outAmount: amount === "666666666" ? "1800000" : "1000000",
             priceImpactPct: "0.01",
-            routePlan: [{ swapInfo: { feeAmount: "1000" } }],
+            routePlan: [
+              {
+                swapInfo: {
+                  ammKey: "pool",
+                  label: "Pump.fun",
+                  inAmount: amount,
+                  outAmount: amount === "666666666" ? "1800000" : "1000000",
+                },
+              },
+            ],
           }),
         };
       }) as unknown as typeof fetch,
@@ -236,7 +245,16 @@ describe("quoted paper path", () => {
         inAmount: "500000",
         outAmount: "260000000",
         priceImpactPct: "0.02",
-        routePlan: [{ swapInfo: { feeAmount: "500" } }],
+        routePlan: [
+          {
+            swapInfo: {
+              ammKey: "pool",
+              label: "Pump.fun",
+              inAmount: "500000",
+              outAmount: "260000000",
+            },
+          },
+        ],
       },
       { sizeUsd: 25, side: "sell", solPriceUsd: 150 },
     );

@@ -529,7 +529,16 @@ describe("phase C", () => {
         inAmount: "333333333",
         outAmount: "1000000",
         priceImpactPct: "0.02",
-        routePlan: [{ swapInfo: { feeAmount: "1000" } }],
+        routePlan: [
+          {
+            swapInfo: {
+              ammKey: "pool",
+              label: "Pump.fun",
+              inAmount: "333333333",
+              outAmount: "1000000",
+            },
+          },
+        ],
       },
       50,
     );
@@ -537,7 +546,8 @@ describe("phase C", () => {
     if (bid.ok) {
       expect(bid.outAmount).toBe("1000000");
       expect(bid.impactPct).toBeCloseTo(2);
-      expect(bid.feeUsd).toBeGreaterThan(0);
+      expect(bid.feeUsd).toBe(0);
+      expect(bid.feeQuoted).toBe(false);
       expect(bid.liquidityUsd).toBeNull();
     }
     const sell = parseJupiterQuote(
@@ -545,7 +555,16 @@ describe("phase C", () => {
         inAmount: "1000000",
         outAmount: "200000000",
         priceImpactPct: "0.1115",
-        routePlan: [{ swapInfo: { feeAmount: "1" } }],
+        routePlan: [
+          {
+            swapInfo: {
+              ammKey: "pool",
+              label: "Pump.fun",
+              inAmount: "1000000",
+              outAmount: "200000000",
+            },
+          },
+        ],
       },
       { sizeUsd: 5, side: "sell", solPriceUsd: 150 },
     );
@@ -584,6 +603,13 @@ describe("phase C", () => {
     expect(fomoFeeUsd(100)).toBe(0.95);
     expect(fomoFeeUsd(200)).toBeCloseTo(1);
     expect(fomoFeeUsd(100, "solana_other")).toBe(0.95);
+    expect(fomoFeeUsd(5, { schedule: "solana_other", otherMinUsd: 0.95, otherRate: 0.005 })).toBe(
+      0.95,
+    );
+    expect(fomoFeeUsd(10, { schedule: "fixed_usd", fixedUsd: 0.95 })).toBe(0.95);
+    expect(
+      fomoFeeUsd(1000, { schedule: "solana_other", otherMinUsd: 0.95, otherRate: 0.005 }),
+    ).toBe(5);
     const route = quotedRoundTrip(bid, { ok: false, reason: "no_route" });
     expect(route).toBe(-1);
   });
@@ -1026,10 +1052,23 @@ describe("phase C", () => {
         now: new Date("2026-11-19T16:30:00.000Z"),
         config: { ...config(), maxSizePoolShare: 0.01, bankroll: 1000 },
         coins: [coin(thinMint, { trackedBuyers: 1, liquidityUsd: 200 })],
+        quotes: [
+          {
+            mint: thinMint,
+            priceUsd: 0.00001,
+            liquidityUsd: 200,
+            volumeUsd1h: 1,
+            volumeUsd6h: 1,
+            volumeUsd24h: 1,
+            priceChange1hPct: 0,
+            source: "fixture",
+          },
+        ],
         entriesStartAt: new Date("2026-11-19T16:30:00.000Z"),
       }),
     );
     expect(thin.entries[0]?.amount).toBeCloseTo(2);
     expect(thin.entries[0]?.sizePct).toBeCloseTo(0.2);
+    expect(thin.entries[0]?.alertPriceUsd).toBeCloseTo(0.00001);
   });
 });

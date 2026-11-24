@@ -48,7 +48,13 @@ describe("loadThresholds", () => {
       daily_loss_cutoff_usd: "set-by-me",
       no_averaging_down: true,
     });
-    expect(thresholds.paper).toEqual({ assumed_slippage_bps: 150, assumed_fee_bps: 50 });
+    expect(thresholds.paper).toEqual({
+      assumed_slippage_bps: 150,
+      fee_schedule: "solana_lowest_fee",
+      tx_cost_usd: 0.95,
+      other_min_usd: 0.95,
+      other_rate: 0.005,
+    });
   });
 
   it("accepts numeric risk rules and a quiet-hours window", () => {
@@ -77,7 +83,8 @@ risk_rules:
   no_averaging_down: true
 paper:
   assumed_slippage_bps: 150
-  assumed_fee_bps: 50
+  fee_schedule: solana_lowest_fee
+  tx_cost_usd: 0.95
 `);
     const thresholds = loadThresholds(file);
     expect(thresholds.alerts.quiet_hours).toBe("22:00-07:00");

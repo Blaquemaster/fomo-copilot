@@ -373,6 +373,7 @@ export class PhaseCRepository implements PhaseCStore {
     sniperUnmeasured?: boolean;
     alertAt: Date;
     entryAfter: Date;
+    alertPriceUsd?: number | null;
   }): Promise<string> {
     const client = await this.pool.connect();
     try {
@@ -400,8 +401,8 @@ export class PhaseCRepository implements PhaseCStore {
       await client.query(
         `insert into phasec_position
           (mint, stage, arm, status, alert_at, entry_after, size_pct, exit_plan, screen_failed,
-           sniper_unmeasured)
-         values ($1, $2, $3, 'pending', $4, $5, $6, $7, false, $8)`,
+           sniper_unmeasured, alert_price_usd)
+         values ($1, $2, $3, 'pending', $4, $5, $6, $7, false, $8, $9)`,
         [
           input.mint,
           input.stage,
@@ -411,6 +412,7 @@ export class PhaseCRepository implements PhaseCStore {
           input.sizePct,
           input.exitPlan,
           input.sniperUnmeasured ?? false,
+          input.alertPriceUsd ?? null,
         ],
       );
       await client.query("commit");
@@ -446,7 +448,7 @@ export class PhaseCRepository implements PhaseCStore {
       `update phasec_position
        set status = 'open', opened_at = $9, entry_quote = $2, entry_impact_pct = $3,
            entry_fee_usd = $4, entry_size_usd = $5, entry_out_amount = $6,
-           fomo_fee_usd = $7, quote_source = $8
+           fomo_fee_usd = $7, quote_source = $8, fee_basis = 'fomo_schedule'
        where id = $1 and status = 'pending'`,
       [id, quote, impactPct, feeUsd, sizeUsd, outAmount, fomoFeeUsd, quoteSource, at.toISOString()],
     );
@@ -743,7 +745,7 @@ export class PhaseCRepository implements PhaseCStore {
     impactPct: number | null;
     feeUsd: number | null;
     failure: string | null;
-    fomoFeeUsd?: number;
+    fomoFeeUsd?: number | null;
     quoteSource?: string | null;
     at: Date;
   }): Promise<void> {
@@ -758,7 +760,8 @@ export class PhaseCRepository implements PhaseCStore {
            net_return_2x = case when $5::text like 'skipped%' then null else $4::double precision end,
            exit_reason = $5::text, exit_impact_pct = $6::double precision,
            exit_fee_usd = $7::double precision, quote_failure = $8::text, closed_at = $9::timestamptz,
-           fomo_fee_usd = coalesce(fomo_fee_usd, 0) + coalesce($10::double precision, 0),
+           fomo_fee_usd = case when $10::double precision is null then fomo_fee_usd else $10::double precision end,
+           fee_basis = case when $10::double precision is null then fee_basis else 'fomo_schedule' end,
            quote_source = coalesce($11::text, quote_source)
        where id = $1::bigint and status in ('open', 'pending')`,
       [

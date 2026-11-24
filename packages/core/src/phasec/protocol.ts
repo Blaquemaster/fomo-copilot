@@ -62,7 +62,11 @@ export interface PhaseCConfig {
   marketPollMinutes: number;
   xEnabled: boolean;
   destination: "test" | "admin";
-  fomoFeeSchedule: "solana_lowest_fee" | "solana_other";
+  fomoFeeSchedule: "solana_lowest_fee" | "solana_other" | "fixed_usd";
+  /** Fixed dollars per transaction when the schedule is fixed_usd. Default 0.95. */
+  txCostUsd?: number;
+  otherMinUsd?: number;
+  otherRate?: number;
   /** Consecutive true no-route answers required before a -100% dead close. Default 3. */
   deadNoRouteStreak?: number;
   /** Minimum spacing between those answers. Default 60 seconds. */
@@ -106,6 +110,9 @@ export function protocolBody(config: PhaseCConfig, rules?: unknown): string {
     weights: SCORE_WEIGHTS,
     exitTreatments: EXIT_TREATMENTS,
     fomoFeeSchedule: config.fomoFeeSchedule,
+    txCostUsd: config.txCostUsd ?? 0.95,
+    otherMinUsd: config.otherMinUsd ?? 0.95,
+    otherRate: config.otherRate ?? 0.005,
     deadNoRouteStreak: config.deadNoRouteStreak ?? 3,
     deadNoRouteGapMs: config.deadNoRouteGapMs ?? 60_000,
     maxRoundTripImpactPct: config.maxRoundTripImpactPct ?? 10,

@@ -541,6 +541,8 @@ alter table phasec_position add column if not exists entry_out_amount text;
 alter table phasec_position add column if not exists sell_warned boolean not null default false;
 alter table phasec_position add column if not exists scaled_at timestamptz;
 alter table phasec_position add column if not exists fomo_fee_usd double precision;
+alter table phasec_position add column if not exists fee_basis text;
+alter table phasec_position add column if not exists alert_price_usd double precision;
 alter table phasec_position add column if not exists scale_quote double precision;
 alter table phasec_position add column if not exists scale_impact_pct double precision;
 alter table phasec_position add column if not exists scale_proceeds_usd double precision;

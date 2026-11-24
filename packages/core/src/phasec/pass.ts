@@ -28,6 +28,7 @@ import {
   quoteKey,
   quotedRoundTrip,
   roundTripFomoFee,
+  type FomoFeeTerms,
   scaleOutRoundTrip,
   stageSizeUsd,
   type QuoteSource,
@@ -141,6 +142,7 @@ export interface PlannedEntry {
   fingerprint: string;
   sniperUnmeasured: boolean;
   entryAfter: Date;
+  alertPriceUsd: number | null;
 }
 
 export interface PlannedOpen {
@@ -191,7 +193,7 @@ export interface PlannedClose {
   impactPct: number | null;
   feeUsd: number | null;
   failure: string | null;
-  fomoFeeUsd: number;
+  fomoFeeUsd: number | null;
   quoteSource: QuoteSource | null;
   text: string;
 }
@@ -215,6 +217,22 @@ export interface PassResult {
   quoteFailures: PlannedQuoteFailure[];
   streaks: PlannedStreak[];
   restart: boolean;
+}
+
+function alertPrice(coin: PassCoin, input: PassInput): number | null {
+  const probe = input.bids?.[quoteKey(coin.mint, "probe", "1x")];
+  if (probe?.ok && probe.execPriceUsd > 0) return probe.execPriceUsd;
+  const market = input.quotes.find((quote) => quote.mint === coin.mint);
+  return market && market.priceUsd > 0 ? market.priceUsd : null;
+}
+
+function feeInput(config: PhaseCConfig): FomoFeeTerms {
+  return {
+    schedule: config.fomoFeeSchedule,
+    fixedUsd: config.txCostUsd,
+    otherMinUsd: config.otherMinUsd,
+    otherRate: config.otherRate,
+  };
 }
 
 function sizeFor(config: PhaseCConfig, sizePct: number): number {
@@ -372,7 +390,7 @@ export function runPhaseCPass(input: PassInput): PassResult {
           impactPct: null,
           feeUsd: null,
           failure: "no_quote",
-          fomoFeeUsd: 0,
+          fomoFeeUsd: null,
           quoteSource: null,
           text: `unpriced ${position.mint} counted as full loss`,
         });
@@ -394,7 +412,7 @@ export function runPhaseCPass(input: PassInput): PassResult {
           impactPct: one.impactPct,
           feeUsd: one.feeUsd,
           failure: "entry_impact",
-          fomoFeeUsd: 0,
+          fomoFeeUsd: null,
           quoteSource: one.source ?? "jupiter",
           text: `skip impact ${position.mint} ${one.impactPct.toFixed(2)}%`,
         });
@@ -430,7 +448,7 @@ export function runPhaseCPass(input: PassInput): PassResult {
             impactPct: roundTrip,
             feeUsd: null,
             failure: fillSell.ok ? "round_trip" : fillSell.reason,
-            fomoFeeUsd: 0,
+            fomoFeeUsd: null,
             quoteSource: fillSell.ok ? (fillSell.source ?? "jupiter") : null,
             text: `skip round trip ${position.mint}`,
           });
@@ -442,10 +460,10 @@ export function runPhaseCPass(input: PassInput): PassResult {
         id: position.id,
         quote: one.execPriceUsd,
         impactPct: one.impactPct,
-        feeUsd: one.feeUsd,
+        feeUsd: fomoFeeUsd(one.sizeUsd, feeInput(config)),
         sizeUsd: one.sizeUsd,
         outAmount: one.outAmount,
-        fomoFeeUsd: fomoFeeUsd(one.sizeUsd, config.fomoFeeSchedule),
+        fomoFeeUsd: fomoFeeUsd(one.sizeUsd, feeInput(config)),
         quoteSource: one.source ?? "jupiter",
       });
       openIds.add(position.id);
@@ -461,7 +479,7 @@ export function runPhaseCPass(input: PassInput): PassResult {
         impactPct: null,
         feeUsd: null,
         failure: one.reason,
-        fomoFeeUsd: 0,
+        fomoFeeUsd: null,
         quoteSource: null,
         text: `exit dead ${position.mint} net ${FULL_LOSS.toFixed(4)} 1x and 2x`,
       });
@@ -479,7 +497,7 @@ export function runPhaseCPass(input: PassInput): PassResult {
         impactPct: null,
         feeUsd: null,
         failure: one.ok ? "no_liquidity" : one.reason,
-        fomoFeeUsd: 0,
+        fomoFeeUsd: null,
         quoteSource: null,
         text: `unpriced ${position.mint} counted as full loss`,
       });
@@ -515,7 +533,7 @@ export function runPhaseCPass(input: PassInput): PassResult {
           : exitOne.ok && exitOne.execPriceUsd >= entry.execPriceUsd * 1.5
             ? exitOne
             : null;
-      const booking = trigger ? bookScaleHalf(entry, trigger, config.fomoFeeSchedule) : null;
+      const booking = trigger ? bookScaleHalf(entry, trigger, feeInput(config)) : null;
       if (booking) {
         storedHalf = { proceedsUsd: booking.proceedsUsd };
         position.scaledAt = input.now;
@@ -531,10 +549,10 @@ export function runPhaseCPass(input: PassInput): PassResult {
     }
     if (!exitOne.ok && bookDead(position, exitStreak)) {
       const net = storedHalf
-        ? scaleOutRoundTrip(entry, exitOne, config.fomoFeeSchedule, storedHalf)
+        ? scaleOutRoundTrip(entry, exitOne, feeInput(config), storedHalf)
         : FULL_LOSS;
       const net2x = storedHalf
-        ? scaleOutRoundTrip(entry, exitTwo, config.fomoFeeSchedule, storedHalf)
+        ? scaleOutRoundTrip(entry, exitTwo, feeInput(config), storedHalf)
         : FULL_LOSS;
       closes.push({
         id: position.id,
@@ -545,7 +563,7 @@ export function runPhaseCPass(input: PassInput): PassResult {
         impactPct: null,
         feeUsd: null,
         failure: exitOne.reason,
-        fomoFeeUsd: 0,
+        fomoFeeUsd: null,
         quoteSource: null,
         text: `exit dead ${position.mint} net ${net.toFixed(4)} 1x and 2x`,
       });
@@ -559,7 +577,7 @@ export function runPhaseCPass(input: PassInput): PassResult {
     }
     if (!exitOne.ok && horizonReached) {
       const net = storedHalf
-        ? scaleOutRoundTrip(entry, exitOne, config.fomoFeeSchedule, storedHalf)
+        ? scaleOutRoundTrip(entry, exitOne, feeInput(config), storedHalf)
         : FULL_LOSS;
       closes.push({
         id: position.id,
@@ -567,12 +585,12 @@ export function runPhaseCPass(input: PassInput): PassResult {
         quote: 0,
         net,
         net2x: storedHalf
-          ? scaleOutRoundTrip(entry, exitTwo, config.fomoFeeSchedule, storedHalf)
+          ? scaleOutRoundTrip(entry, exitTwo, feeInput(config), storedHalf)
           : FULL_LOSS,
         impactPct: null,
         feeUsd: null,
         failure: exitOne.reason,
-        fomoFeeUsd: 0,
+        fomoFeeUsd: null,
         quoteSource: null,
         text: storedHalf
           ? `unpriced ${position.mint} unsold half, scaled half kept`
@@ -593,12 +611,12 @@ export function runPhaseCPass(input: PassInput): PassResult {
     if (!decision.exit || latest === null) continue;
     const net =
       treatment === "scale_out"
-        ? scaleOutRoundTrip(entry, exitOne, config.fomoFeeSchedule, storedHalf)
-        : quotedRoundTrip(entry, exitOne, config.fomoFeeSchedule);
+        ? scaleOutRoundTrip(entry, exitOne, feeInput(config), storedHalf)
+        : quotedRoundTrip(entry, exitOne, feeInput(config));
     const net2x =
       treatment === "scale_out"
-        ? scaleOutRoundTrip(entry, exitTwo, config.fomoFeeSchedule, storedHalf)
-        : quotedRoundTrip(entry, exitTwo, config.fomoFeeSchedule);
+        ? scaleOutRoundTrip(entry, exitTwo, feeInput(config), storedHalf)
+        : quotedRoundTrip(entry, exitTwo, feeInput(config));
     const text = `exit ${decision.reason} ${position.mint} ${treatment} net1x ${net.toFixed(4)} net2x ${net2x.toFixed(4)}`;
     closes.push({
       id: position.id,
@@ -607,9 +625,9 @@ export function runPhaseCPass(input: PassInput): PassResult {
       net,
       net2x,
       impactPct: exitOne.ok ? exitOne.impactPct : null,
-      feeUsd: exitOne.ok ? exitOne.feeUsd : null,
+      feeUsd: exitOne.ok ? fomoFeeUsd(Math.max(0, exitOne.sizeUsd), feeInput(config)) : null,
       failure: null,
-      fomoFeeUsd: roundTripFomoFee(entry, exitOne, config.fomoFeeSchedule),
+      fomoFeeUsd: roundTripFomoFee(entry, exitOne, feeInput(config)),
       quoteSource: exitOne.ok ? (exitOne.source ?? "jupiter") : null,
       text,
     });
@@ -735,6 +753,7 @@ export function runPhaseCPass(input: PassInput): PassResult {
         fingerprint: currentFingerprint,
         sniperUnmeasured: screen.sniperUnmeasured,
         entryAfter: new Date(input.now.getTime() + config.entryDelaySec * 1000),
+        alertPriceUsd: alertPrice(coin, input),
       });
       if (!held) immediate.push(text);
       busy.add(coin.mint);

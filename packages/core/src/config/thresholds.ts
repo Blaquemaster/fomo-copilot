@@ -72,7 +72,12 @@ export const thresholdsSchema = z.strictObject({
   }),
   paper: z.strictObject({
     assumed_slippage_bps: bps,
-    assumed_fee_bps: bps,
+    fee_schedule: z
+      .enum(["solana_lowest_fee", "solana_other", "fixed_usd"])
+      .default("solana_lowest_fee"),
+    tx_cost_usd: z.number().nonnegative().max(1000).default(0.95),
+    other_min_usd: z.number().nonnegative().max(1000).default(0.95),
+    other_rate: z.number().nonnegative().max(1).default(0.005),
   }),
 });
 

@@ -131,7 +131,9 @@ export const envSchema = z.object({
   PAPER_MAX_DRAWDOWN_PCT: z.coerce.number().min(0).max(100).optional(),
   PAPER_WINDOW_DAYS: z.coerce.number().int().min(1).max(365).optional(),
   PAPER_ENTRY_DELAY_SEC: z.coerce.number().int().min(0).max(86_400).optional(),
-  FOMO_FEE_SCHEDULE: z.enum(["solana_lowest_fee", "solana_other"]).optional(),
+  FOMO_FEE_SCHEDULE: z.enum(["solana_lowest_fee", "solana_other", "fixed_usd"]).optional(),
+  /** Fixed dollars per transaction when FOMO_FEE_SCHEDULE is fixed_usd. */
+  FOMO_TX_COST_USD: z.coerce.number().nonnegative().max(1000).optional(),
   /** True no-route answers required before a dead -100% close. Default 3. */
   DEAD_NO_ROUTE_STREAK: z.coerce.number().int().min(1).max(20).optional(),
   /** Minimum seconds between those answers. Default 60. */

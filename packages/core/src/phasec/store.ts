@@ -45,6 +45,7 @@ export interface PhaseCStore {
     sniperUnmeasured?: boolean;
     alertAt: Date;
     entryAfter: Date;
+    alertPriceUsd?: number | null;
   }): Promise<string>;
   markDelivered(ids: readonly string[], at: Date): Promise<void>;
   openPosition(
@@ -125,7 +126,7 @@ export interface PhaseCStore {
     impactPct: number | null;
     feeUsd: number | null;
     failure: string | null;
-    fomoFeeUsd?: number;
+    fomoFeeUsd?: number | null;
     quoteSource?: string | null;
     at: Date;
   }): Promise<void>;

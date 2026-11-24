@@ -4,10 +4,10 @@
 # quiet_hours: "set-by-me", "off", or a 24-hour window "HH:MM-HH:MM" (overnight is allowed).
 # Risk sizes stay "set-by-me" until the owner sets a number.
 #
-# assumed_fee_bps is the spec's fallback (50 = 0.50%). Official FOMO help, verified
-# 2026-11-13, shows a route- and size-dependent schedule, and the Terms say the fee on
-# the confirmation screen controls. Keep 50 until the owner changes it. Paper trading
-# should record the confirmation-screen fee when that phase exists.
+# The old 50 bps allowance is retired. Paper uses a selectable FOMO route schedule.
+# solana_lowest_fee is the published lowest-fee route. solana_other is 0.50% with a
+# $0.95 minimum. fixed_usd charges tx_cost_usd per transaction. FOMO pays Solana
+# network and priority fees, so those are not added here.
 
 screen:
   first_screen_delay_s: 90
@@ -53,4 +53,7 @@ risk_rules:
   no_averaging_down: true
 paper:
   assumed_slippage_bps: 150
-  assumed_fee_bps: 50
+  fee_schedule: solana_lowest_fee
+  tx_cost_usd: 0.95
+  other_min_usd: 0.95
+  other_rate: 0.005
