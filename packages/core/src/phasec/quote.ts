@@ -179,26 +179,60 @@ export function quotedRoundTrip(
   return (proceeds - entryFee) / entry.sizeUsd - 1;
 }
 
+/** Half sold when scaledAt is set. Proceeds are net of that half's own fee. */
+export interface StoredScaleHalf {
+  proceedsUsd: number;
+}
+
+export interface ScaleHalfBooking {
+  quote: number;
+  impactPct: number;
+  proceedsUsd: number;
+  feeUsd: number;
+}
+
 /**
- * Scale-out sells half at the +50% trigger when the quote has reached it.
- * The other half uses the exit quote. A dead exit loses the unsold half.
+ * Book half the position at the trigger quote's own price.
+ * The trigger is the sell that first reached +50%, not a synthetic 1.5x and not the later close.
+ */
+export function bookScaleHalf(
+  entry: SizeBid,
+  trigger: SizeBid,
+  schedule: FomoFeeSchedule = "solana_lowest_fee",
+): ScaleHalfBooking | null {
+  if (!entry.ok || !trigger.ok || !(entry.execPriceUsd > 0) || !(entry.sizeUsd > 0)) return null;
+  if (!(trigger.execPriceUsd >= entry.execPriceUsd * 1.5)) return null;
+  const half = entry.sizeUsd / 2;
+  const feeRate = entry.sizeUsd > 0 ? entry.feeUsd / entry.sizeUsd : 0;
+  const gross = half * (trigger.execPriceUsd / entry.execPriceUsd) - half * feeRate;
+  const feeUsd = fomoFeeUsd(Math.max(0, gross), schedule);
+  return {
+    quote: trigger.execPriceUsd,
+    impactPct: trigger.impactPct,
+    proceedsUsd: gross - feeUsd,
+    feeUsd,
+  };
+}
+
+/**
+ * Scale-out uses the half booked when scaledAt was set.
+ * The other half uses the exit quote. A dead or missing exit loses only the unsold half.
+ * With no stored half, the close is an ordinary round trip, even if the close itself is above +50%.
  */
 export function scaleOutRoundTrip(
   entry: SizeBid,
   exit: SizeBid,
   schedule: FomoFeeSchedule = "solana_lowest_fee",
+  stored: StoredScaleHalf | null = null,
 ): number {
-  if (!entry.ok || !(entry.execPriceUsd > 0)) return FULL_LOSS;
-  const triggered = exit.ok && exit.execPriceUsd >= entry.execPriceUsd * 1.5;
-  if (!triggered) return quotedRoundTrip(entry, exit, schedule);
-  const half = entry.sizeUsd / 2;
-  const triggerPrice = entry.execPriceUsd * 1.5;
-  const feeRate = entry.sizeUsd > 0 ? entry.feeUsd / entry.sizeUsd : 0;
-  const scaledGross = half * (triggerPrice / entry.execPriceUsd) - half * feeRate;
-  const scaled = scaledGross - fomoFeeUsd(scaledGross, schedule);
+  if (!entry.ok || !(entry.execPriceUsd > 0) || !(entry.sizeUsd > 0)) return FULL_LOSS;
+  if (!stored) return quotedRoundTrip(entry, exit, schedule);
   const entryFee = fomoFeeUsd(entry.sizeUsd, schedule);
-  if (!exit.ok || exit.liquidityUsd === 0)
+  const scaled = stored.proceedsUsd;
+  if (!exit.ok || exit.liquidityUsd === 0 || !(exit.execPriceUsd > 0)) {
     return (scaled - entry.sizeUsd - entryFee) / entry.sizeUsd;
+  }
+  const half = entry.sizeUsd / 2;
   const restTokens = half / entry.execPriceUsd;
   const restGross = restTokens * exit.execPriceUsd - exit.feeUsd / 2;
   const rest = restGross - fomoFeeUsd(Math.max(0, restGross), schedule);

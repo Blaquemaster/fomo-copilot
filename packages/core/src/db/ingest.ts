@@ -541,6 +541,10 @@ alter table phasec_position add column if not exists entry_out_amount text;
 alter table phasec_position add column if not exists sell_warned boolean not null default false;
 alter table phasec_position add column if not exists scaled_at timestamptz;
 alter table phasec_position add column if not exists fomo_fee_usd double precision;
+alter table phasec_position add column if not exists scale_quote double precision;
+alter table phasec_position add column if not exists scale_impact_pct double precision;
+alter table phasec_position add column if not exists scale_proceeds_usd double precision;
+alter table phasec_position add column if not exists scale_fee_usd double precision;
 alter table phasec_position add column if not exists quote_source text;
 alter table phasec_position add column if not exists restarted_at timestamptz;
 alter table phasec_alert add column if not exists fingerprint text;
@@ -822,6 +826,10 @@ export async function migrate(pool: pg.Pool): Promise<void> {
     await client.query(
       "insert into schema_migrations (id) values ($1) on conflict (id) do nothing",
       ["022_sniper_created_slot"],
+    );
+    await client.query(
+      "insert into schema_migrations (id) values ($1) on conflict (id) do nothing",
+      ["023_scale_booking"],
     );
     await client.query(
       `update ingest_recall_audit a

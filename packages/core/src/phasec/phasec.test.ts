@@ -15,6 +15,7 @@ import {
 import { bankrollCurve, evaluatePaper, powerSampleSize } from "./paper.js";
 import { runPhaseCPass, type PassCoin, type PassInput } from "./pass.js";
 import {
+  assignExitTreatment,
   defaultSizePct,
   mintBucket,
   parseLockedConfig,
@@ -26,6 +27,8 @@ import { entryDecision, planTierPromotions } from "./risk.js";
 import { lookupTradableInFomo } from "./fomoLookup.js";
 import { assignArm, isFlapMint, scoreStrength } from "./score.js";
 import {
+  FULL_LOSS,
+  bookScaleHalf,
   fomoFeeUsd,
   jupiterQuoteUrl,
   jupiterRatePerMin,
@@ -35,6 +38,7 @@ import {
   parseJupiterQuote,
   quoteKey,
   quotedRoundTrip,
+  scaleOutRoundTrip,
 } from "./quote.js";
 import { screenCoin, type ScreenRules } from "./screen.js";
 import {
@@ -801,5 +805,110 @@ describe("phase C", () => {
     );
     expect(opened.opens[0]?.quote).toBe(2);
     expect(opened.opens[0]?.fomoFeeUsd).toBe(fomoFeeUsd(50));
+  });
+
+  it("books the scaled half at the +50% trigger after the price falls back", () => {
+    const entry = {
+      ok: true as const,
+      execPriceUsd: 1,
+      midPriceUsd: 1,
+      impactPct: 1,
+      feeUsd: 0,
+      sizeUsd: 10,
+      liquidityUsd: 1000,
+      inAmount: "1",
+      outAmount: "1",
+    };
+    const peak = { ...entry, execPriceUsd: 1.5, midPriceUsd: 1.5, sizeUsd: 5 };
+    const booked = bookScaleHalf(entry, peak, "solana_lowest_fee");
+    expect(booked?.quote).toBe(1.5);
+    const fallen = { ...entry, execPriceUsd: 0.7, midPriceUsd: 0.7 };
+    const net = scaleOutRoundTrip(
+      entry,
+      fallen,
+      "solana_lowest_fee",
+      booked ? { proceedsUsd: booked.proceedsUsd } : null,
+    );
+    const unsold = 5 * 0.7 - fomoFeeUsd(3.5);
+    expect(net).toBeCloseTo(((booked?.proceedsUsd ?? 0) + unsold - 10 - fomoFeeUsd(10)) / 10);
+    expect(net).toBeGreaterThan(quotedRoundTrip(entry, fallen));
+    const mild = { ...entry, execPriceUsd: 1.2, midPriceUsd: 1.2 };
+    expect(bookScaleHalf(entry, mild)).toBeNull();
+    expect(scaleOutRoundTrip(entry, mild)).toBeCloseTo(quotedRoundTrip(entry, mild));
+    const failed = scaleOutRoundTrip(
+      entry,
+      { ok: false, reason: "no_route" },
+      "solana_lowest_fee",
+      booked ? { proceedsUsd: booked.proceedsUsd } : null,
+    );
+    expect(failed).toBeCloseTo(((booked?.proceedsUsd ?? 0) - 10 - fomoFeeUsd(10)) / 10);
+    expect(failed).toBeGreaterThan(FULL_LOSS);
+
+    let mint = "Scale011111111111111111111111111111111111";
+    for (let index = 0; index < 80; index += 1) {
+      const candidate = `Scale${index.toString()}11111111111111111111111111111111`;
+      if (assignExitTreatment(candidate) === "scale_out") {
+        mint = candidate;
+        break;
+      }
+    }
+    const openedAt = new Date("2026-11-19T16:31:30.000Z");
+    const position = {
+      id: "scale-1",
+      mint,
+      stage: "trench" as const,
+      arm: "screen_only" as const,
+      status: "open" as const,
+      alertAt: openedAt,
+      entryAfter: openedAt,
+      openedAt,
+      entryQuote: 1,
+      entrySizeUsd: 10,
+      entryFeeUsd: 0,
+      sizePct: 0.5,
+      exitPlan: "scale",
+      screenFailed: false,
+    };
+    const peakPass = runPhaseCPass(
+      pass({
+        now: new Date("2026-11-19T16:40:00.000Z"),
+        positions: [position],
+        bids: {
+          [quoteKey(mint, "scale", "1x")]: peak,
+          [quoteKey(mint, "exit", "1x")]: { ...entry, execPriceUsd: 1.5, midPriceUsd: 1.5 },
+          [quoteKey(mint, "exit", "2x")]: {
+            ...entry,
+            execPriceUsd: 1.5,
+            midPriceUsd: 1.5,
+            sizeUsd: 20,
+          },
+        },
+      }),
+    );
+    expect(peakPass.closes).toEqual([]);
+    expect(peakPass.scaled[0]?.quote).toBe(1.5);
+    expect(peakPass.scaled[0]?.proceedsUsd).toBeCloseTo(booked?.proceedsUsd ?? 0);
+    const fallenPass = runPhaseCPass(
+      pass({
+        now: new Date("2026-11-19T16:50:00.000Z"),
+        positions: [
+          {
+            ...position,
+            scaledAt: new Date("2026-11-19T16:40:00.000Z"),
+            scaleQuote: peakPass.scaled[0]?.quote ?? null,
+            scaleProceedsUsd: peakPass.scaled[0]?.proceedsUsd ?? null,
+            scaleFeeUsd: peakPass.scaled[0]?.feeUsd ?? null,
+            scaleImpactPct: peakPass.scaled[0]?.impactPct ?? null,
+          },
+        ],
+        bids: {
+          [quoteKey(mint, "exit", "1x")]: fallen,
+          [quoteKey(mint, "exit", "2x")]: { ...fallen, sizeUsd: 20 },
+        },
+      }),
+    );
+    expect(fallenPass.scaled).toEqual([]);
+    expect(fallenPass.closes[0]?.reason).toBe("stop");
+    expect(fallenPass.closes[0]?.net).toBeCloseTo(net);
   });
 });

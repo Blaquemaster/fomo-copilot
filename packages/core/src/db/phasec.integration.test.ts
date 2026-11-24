@@ -295,4 +295,55 @@ describe.skipIf(!databaseUrl)("phasec closedBetween against postgres", () => {
       await pool.end();
     }
   }, 30_000);
+
+  it("keeps the scale-out booking after the paper window is marked restarted", async () => {
+    const pool = createPool(databaseUrl ?? "");
+    try {
+      await migrate(pool);
+      const repo = new PhaseCRepository(pool);
+      const at = new Date("2026-11-22T17:10:00.000Z");
+      const mint = "ScalePersist11111111111111111111111111111";
+      await repo.insertEntry({
+        mint,
+        stage: "trench",
+        arm: "wallets_x_screen",
+        sizePct: 0.5,
+        strength: 0.55,
+        exitPlan: "plan",
+        text: "entry",
+        held: false,
+        alertAt: at,
+        entryAfter: at,
+      });
+      const row = await pool.query<{ id: string }>(
+        "select id from phasec_position where mint = $1 order by id desc limit 1",
+        [mint],
+      );
+      const id = String(row.rows[0]?.id);
+      await repo.openPosition(id, 1, 1, 0, 10, "100", 0.2, "jupiter", at);
+      await repo.markScaled(
+        [{ id, quote: 1.5, impactPct: 2, proceedsUsd: 7.35, feeUsd: 0.15 }],
+        at,
+      );
+      const loaded = await repo.positions();
+      const open = loaded.find((position) => position.id === id);
+      expect(open?.scaleQuote).toBeCloseTo(1.5);
+      expect(open?.scaleProceedsUsd).toBeCloseTo(7.35);
+      expect(open?.scaledAt?.toISOString()).toBe(at.toISOString());
+      await repo.voidPaperWindow(at);
+      const stored = await pool.query<{
+        scale_quote: number;
+        scale_proceeds_usd: number;
+        restarted_at: Date;
+      }>(
+        "select scale_quote, scale_proceeds_usd, restarted_at from phasec_position where id = $1",
+        [id],
+      );
+      expect(Number(stored.rows[0]?.scale_quote)).toBeCloseTo(1.5);
+      expect(Number(stored.rows[0]?.scale_proceeds_usd)).toBeCloseTo(7.35);
+      expect(stored.rows[0]?.restarted_at).not.toBeNull();
+    } finally {
+      await pool.end();
+    }
+  }, 30_000);
 });

@@ -1,6 +1,6 @@
 import pg from "pg";
 
-import type { PassCoin, PassPosition } from "../phasec/pass.js";
+import type { PassCoin, PassPosition, PlannedScale } from "../phasec/pass.js";
 import type { ResolvedReturn } from "../phasec/paper.js";
 import type { PaperArm, Stage } from "../phasec/protocol.js";
 import {
@@ -248,13 +248,18 @@ export class PhaseCRepository implements PhaseCStore {
       entry_out_amount: string | null;
       sell_warned: boolean;
       scaled_at: Date | null;
+      scale_quote: number | null;
+      scale_impact_pct: number | null;
+      scale_proceeds_usd: number | null;
+      scale_fee_usd: number | null;
       size_pct: number;
       exit_plan: string;
       screen_failed: boolean;
     }>(
       `select id, mint, stage, arm, status, alert_at, entry_after, opened_at, entry_quote,
               entry_size_usd, entry_fee_usd, entry_out_amount, size_pct, exit_plan,
-              screen_failed, sell_warned, scaled_at
+              screen_failed, sell_warned, scaled_at, scale_quote, scale_impact_pct,
+              scale_proceeds_usd, scale_fee_usd
        from phasec_position
        where status in ('pending', 'open')
        order by alert_at`,
@@ -274,6 +279,10 @@ export class PhaseCRepository implements PhaseCStore {
       entryOutAmount: row.entry_out_amount,
       sellWarned: row.sell_warned,
       scaledAt: row.scaled_at ? date(row.scaled_at) : null,
+      scaleQuote: row.scale_quote === null ? null : Number(row.scale_quote),
+      scaleImpactPct: row.scale_impact_pct === null ? null : Number(row.scale_impact_pct),
+      scaleProceedsUsd: row.scale_proceeds_usd === null ? null : Number(row.scale_proceeds_usd),
+      scaleFeeUsd: row.scale_fee_usd === null ? null : Number(row.scale_fee_usd),
       sizePct: Number(row.size_pct),
       exitPlan: row.exit_plan,
       screenFailed: row.screen_failed,
@@ -433,12 +442,16 @@ export class PhaseCRepository implements PhaseCStore {
     );
   }
 
-  async markScaled(ids: readonly string[], at: Date): Promise<void> {
-    if (ids.length === 0) return;
-    await this.pool.query(
-      "update phasec_position set scaled_at = $2 where id = any($1::bigint[]) and scaled_at is null",
-      [ids, at.toISOString()],
-    );
+  async markScaled(rows: readonly PlannedScale[], at: Date): Promise<void> {
+    for (const row of rows) {
+      await this.pool.query(
+        `update phasec_position
+         set scaled_at = $2, scale_quote = $3, scale_impact_pct = $4,
+             scale_proceeds_usd = $5, scale_fee_usd = $6
+         where id = $1::bigint and scaled_at is null`,
+        [row.id, at.toISOString(), row.quote, row.impactPct, row.proceedsUsd, row.feeUsd],
+      );
+    }
   }
 
   async saveMintCache(

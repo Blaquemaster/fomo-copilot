@@ -1,4 +1,4 @@
-import type { PassCoin, PassPosition } from "./pass.js";
+import type { PassCoin, PassPosition, PlannedScale } from "./pass.js";
 import type { ResolvedReturn } from "./paper.js";
 import type { Stage } from "./protocol.js";
 import type { TierWallet } from "./risk.js";
@@ -53,7 +53,7 @@ export interface PhaseCStore {
     at: Date,
   ): Promise<void>;
   markSellWarned(ids: readonly string[]): Promise<void>;
-  markScaled(ids: readonly string[], at: Date): Promise<void>;
+  markScaled(rows: readonly PlannedScale[], at: Date): Promise<void>;
   saveMintCache(
     rows: readonly {
       mint: string;

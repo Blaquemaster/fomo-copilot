@@ -13,6 +13,7 @@ import {
 } from "./protocol.js";
 import {
   FULL_LOSS,
+  bookScaleHalf,
   fomoFeeUsd,
   quoteKey,
   quotedRoundTrip,
@@ -20,7 +21,9 @@ import {
   scaleOutRoundTrip,
   stageSizeUsd,
   type QuoteSource,
+  type ScaleHalfBooking,
   type SizeBid,
+  type StoredScaleHalf,
 } from "./quote.js";
 import {
   bankrollLossPct,
@@ -73,6 +76,10 @@ export interface PassPosition {
   entryInAmount?: string | null;
   entryOutAmount?: string | null;
   scaledAt?: Date | null;
+  scaleQuote?: number | null;
+  scaleImpactPct?: number | null;
+  scaleProceedsUsd?: number | null;
+  scaleFeeUsd?: number | null;
   sellWarned?: boolean;
   sizePct: number;
   exitPlan: string;
@@ -130,6 +137,10 @@ export interface PlannedOpen {
   quoteSource: QuoteSource;
 }
 
+export interface PlannedScale extends ScaleHalfBooking {
+  id: string;
+}
+
 export interface PlannedClose {
   id: string;
   reason: "invalidation" | "stop" | "horizon" | "dead" | "unpriced";
@@ -159,7 +170,7 @@ export interface PassResult {
   tierRequests: Array<{ wallet: string; from: "base"; to: "high"; text: string; held: boolean }>;
   paper: PaperEvaluation;
   sellWarnings: string[];
-  scaled: string[];
+  scaled: PlannedScale[];
   restart: boolean;
 }
 
@@ -246,7 +257,7 @@ export function runPhaseCPass(input: PassInput): PassResult {
   }
 
   const sellWarnings: string[] = [];
-  const scaled: string[] = [];
+  const scaled: PlannedScale[] = [];
   const opens: PlannedOpen[] = [];
   const openIds = new Set<string>();
   const closes: PlannedClose[] = [];
@@ -320,50 +331,80 @@ export function runPhaseCPass(input: PassInput): PassResult {
     const latest = exitOne.ok ? exitOne.execPriceUsd : null;
     const horizonReached = input.now.getTime() >= openedAt.getTime() + config.horizonMs;
     const treatment = assignExitTreatment(position.mint);
-    if (
-      treatment === "scale_out" &&
-      !position.scaledAt &&
-      exitOne.ok &&
-      entry.ok &&
-      exitOne.execPriceUsd >= entry.execPriceUsd * 1.5
-    ) {
-      immediate.push(
-        `scale-out ${position.mint} half at ${exitOne.execPriceUsd.toString()} impact ${exitOne.impactPct.toFixed(2)}%`,
-      );
-      position.scaledAt = input.now;
-      scaled.push(position.id);
+    let storedHalf: StoredScaleHalf | null =
+      position.scaleProceedsUsd !== null && position.scaleProceedsUsd !== undefined
+        ? { proceedsUsd: position.scaleProceedsUsd }
+        : null;
+    if (treatment === "scale_out" && !position.scaledAt && entry.ok) {
+      const halfBid = input.bids?.[quoteKey(position.mint, "scale", "1x")];
+      const trigger =
+        halfBid?.ok === true && halfBid.execPriceUsd >= entry.execPriceUsd * 1.5
+          ? halfBid
+          : exitOne.ok && exitOne.execPriceUsd >= entry.execPriceUsd * 1.5
+            ? exitOne
+            : null;
+      const booking = trigger ? bookScaleHalf(entry, trigger, config.fomoFeeSchedule) : null;
+      if (booking) {
+        storedHalf = { proceedsUsd: booking.proceedsUsd };
+        position.scaledAt = input.now;
+        position.scaleQuote = booking.quote;
+        position.scaleImpactPct = booking.impactPct;
+        position.scaleProceedsUsd = booking.proceedsUsd;
+        position.scaleFeeUsd = booking.feeUsd;
+        scaled.push({ id: position.id, ...booking });
+        immediate.push(
+          `scale-out ${position.mint} half at ${booking.quote.toString()} impact ${booking.impactPct.toFixed(2)}%`,
+        );
+      }
     }
     if (isDead(exitOne)) {
+      const net = storedHalf
+        ? scaleOutRoundTrip(entry, exitOne, config.fomoFeeSchedule, storedHalf)
+        : FULL_LOSS;
+      const net2x = storedHalf
+        ? scaleOutRoundTrip(entry, exitTwo, config.fomoFeeSchedule, storedHalf)
+        : FULL_LOSS;
       closes.push({
         id: position.id,
         reason: "dead",
         quote: 0,
-        net: FULL_LOSS,
-        net2x: FULL_LOSS,
+        net,
+        net2x,
         impactPct: null,
         feeUsd: null,
         failure: exitOne.ok ? "no_liquidity" : exitOne.reason,
         fomoFeeUsd: 0,
         quoteSource: exitOne.ok ? (exitOne.source ?? "jupiter") : null,
-        text: `exit dead ${position.mint} net ${FULL_LOSS.toFixed(4)} 1x and 2x`,
+        text: `exit dead ${position.mint} net ${net.toFixed(4)} 1x and 2x`,
       });
       closedIds.add(position.id);
-      immediate.push(`exit dead ${position.mint} full loss`);
+      immediate.push(
+        storedHalf
+          ? `exit dead ${position.mint} unsold half lost, scaled half kept`
+          : `exit dead ${position.mint} full loss`,
+      );
       continue;
     }
     if (!exitOne.ok && horizonReached) {
+      const net = storedHalf
+        ? scaleOutRoundTrip(entry, exitOne, config.fomoFeeSchedule, storedHalf)
+        : 0;
       closes.push({
         id: position.id,
         reason: "unpriced",
         quote: 0,
-        net: 0,
-        net2x: 0,
+        net,
+        net2x: storedHalf
+          ? scaleOutRoundTrip(entry, exitTwo, config.fomoFeeSchedule, storedHalf)
+          : 0,
         impactPct: null,
         feeUsd: null,
         failure: exitOne.reason,
         fomoFeeUsd: 0,
         quoteSource: null,
-        text: `unpriced ${position.mint} excluded`,
+        text: storedHalf
+          ? `unpriced ${position.mint} unsold half, scaled half kept`
+          : `unpriced ${position.mint} excluded`,
       });
       closedIds.add(position.id);
       continue;
@@ -380,11 +421,11 @@ export function runPhaseCPass(input: PassInput): PassResult {
     if (!decision.exit || latest === null) continue;
     const net =
       treatment === "scale_out"
-        ? scaleOutRoundTrip(entry, exitOne, config.fomoFeeSchedule)
+        ? scaleOutRoundTrip(entry, exitOne, config.fomoFeeSchedule, storedHalf)
         : quotedRoundTrip(entry, exitOne, config.fomoFeeSchedule);
     const net2x =
       treatment === "scale_out"
-        ? scaleOutRoundTrip(entry, exitTwo, config.fomoFeeSchedule)
+        ? scaleOutRoundTrip(entry, exitTwo, config.fomoFeeSchedule, storedHalf)
         : quotedRoundTrip(entry, exitTwo, config.fomoFeeSchedule);
     const text = `exit ${decision.reason} ${position.mint} ${treatment} net1x ${net.toFixed(4)} net2x ${net2x.toFixed(4)}`;
     closes.push({
