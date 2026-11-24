@@ -400,7 +400,14 @@ HELIUS_HTTP_BASE=http://fomo-ci-mock:8787
 HELIUS_WS_BASE=ws://fomo-ci-mock:8787
 BSC_WSS_URL=ws://fomo-ci-mock:8787
 EOF
+set +e
 bash scripts/replace-ingestor.sh --live --project fomo-ci --env-file "$app_env" --record /tmp/fomo-live-replacement.txt
+live_code=$?
+set -e
+echo "live replacement exit $live_code"
+cat /tmp/fomo-live-trace 2>/dev/null || true
+docker logs fomo-ci-ingestor-1 2>&1 || true
+test "$live_code" = "0"
 grep -q 'result=ok' /tmp/fomo-live-replacement.txt
 compose stop ingestor
 docker rm -f fomo-ci-mock >/dev/null 2>&1 || true
