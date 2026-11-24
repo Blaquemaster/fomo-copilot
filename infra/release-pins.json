@@ -15,7 +15,7 @@
     "scripts/setup-deploy-user.sh": "b4ccf799d244d85bed7b1372c2637682cddc378622d26913079c9abbacfa46db",
     "scripts/fomo-deploy-helper": "4b018e22560367231f81a34b63529ca8e6b3ea588118542157618c8a8fd5fd82",
     "scripts/cutover-report.sh": "857f3483bec8bcb8bdd963d7d3379d011a306d285a73dbedc68429e4015e1f38",
-    "scripts/copy-tested-oci.sh": "d482fc54ebeb356599f395457d9e9b2dd1ffdf639de1964db8d9a7bf371a3e70",
+    "scripts/copy-tested-oci.sh": "ab2ba48b4a3defcf59acc63cd0f7f69c1094017d2e105818017ceecbe300a456",
     "scripts/verify-release-handoff.sh": "079438cd67714b16ab9a30afbeea08ea76b8762eef01f3fb4c10ba5164bcfdd7",
     "scripts/check-deploy-triggers.mjs": "eb889547028abc31faf175430ba47d35f3903022cd652fb3642e593bdbad01f7",
     "scripts/hold-deploy-workflow.sh": "1d2c588ec01ca309ce23955bc629452bb857f83b70edc600e403628cac2fce82",
