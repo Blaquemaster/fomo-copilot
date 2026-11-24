@@ -857,6 +857,10 @@ export async function migrate(pool: pg.Pool): Promise<void> {
       ["024_quote_failure"],
     );
     await client.query(
+      "insert into schema_migrations (id) values ($1) on conflict (id) do nothing",
+      ["025_wallet_fill_amounts"],
+    );
+    await client.query(
       `update ingest_recall_audit a
        set skipped = true,
            error_reason = 'before_coverage'
@@ -1928,12 +1932,17 @@ export class IngestRepository {
     wallet: string;
     side: "buy" | "sell" | "swap";
     venue: string;
+    solAmount?: number | null;
+    tokenAmount?: number | null;
   }): Promise<void> {
     const inserted = await this.pool.query(
       `insert into wallet_fill
-        (signature, event_index, slot, mint, wallet, side, venue)
-       values ($1,$2,$3,$4,$5,$6,$7)
-       on conflict (signature, event_index, wallet) do nothing`,
+        (signature, event_index, slot, mint, wallet, side, venue, sol_amount, token_amount)
+       values ($1,$2,$3,$4,$5,$6,$7,$8,$9)
+       on conflict (signature, event_index, wallet) do update set
+         sol_amount = coalesce(wallet_fill.sol_amount, excluded.sol_amount),
+         token_amount = coalesce(wallet_fill.token_amount, excluded.token_amount)
+       returning (xmax = 0) as inserted`,
       [
         input.signature,
         input.eventIndex,
@@ -1942,9 +1951,11 @@ export class IngestRepository {
         input.wallet,
         input.side,
         input.venue,
+        input.solAmount ?? null,
+        input.tokenAmount ?? null,
       ],
     );
-    if ((inserted.rowCount ?? 0) === 0) return;
+    if (inserted.rows[0]?.inserted !== true) return;
     await this.pool.query(
       `insert into coin_wallet_signal
         (mint, tracked_buyers, tracked_buys, tracked_sells, updated_at)

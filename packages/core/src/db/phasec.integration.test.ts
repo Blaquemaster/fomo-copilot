@@ -432,4 +432,59 @@ describe.skipIf(!databaseUrl)("phasec closedBetween against postgres", () => {
       await pool.end();
     }
   }, 30_000);
+
+  it("does not replace a stored wallet fill amount with null", async () => {
+    const pool = createPool(databaseUrl ?? "");
+    try {
+      await migrate(pool);
+      const { IngestRepository } = await import("../index.js");
+      const repo = new IngestRepository(pool);
+      await repo.insertWalletFill({
+        signature: "amount-sig",
+        eventIndex: 0,
+        slot: 10,
+        mint: "AmountMint111111111111111111111111111111",
+        wallet: "amount-wallet",
+        side: "buy",
+        venue: "pump",
+        solAmount: -0.2,
+        tokenAmount: 42,
+      });
+      await repo.insertWalletFill({
+        signature: "amount-sig",
+        eventIndex: 0,
+        slot: 10,
+        mint: "AmountMint111111111111111111111111111111",
+        wallet: "amount-wallet",
+        side: "buy",
+        venue: "pump",
+      });
+      const kept = await pool.query<{ sol_amount: number; token_amount: number }>(
+        "select sol_amount, token_amount from wallet_fill where signature = 'amount-sig'",
+      );
+      expect(Number(kept.rows[0]?.sol_amount)).toBeCloseTo(-0.2);
+      expect(Number(kept.rows[0]?.token_amount)).toBe(42);
+      await pool.query(
+        "update wallet_fill set sol_amount = null, token_amount = null where signature = 'amount-sig'",
+      );
+      await repo.insertWalletFill({
+        signature: "amount-sig",
+        eventIndex: 0,
+        slot: 10,
+        mint: "AmountMint111111111111111111111111111111",
+        wallet: "amount-wallet",
+        side: "buy",
+        venue: "pump",
+        solAmount: -0.1,
+        tokenAmount: 7,
+      });
+      const filled = await pool.query<{ sol_amount: number; token_amount: number }>(
+        "select sol_amount, token_amount from wallet_fill where signature = 'amount-sig'",
+      );
+      expect(Number(filled.rows[0]?.sol_amount)).toBeCloseTo(-0.1);
+      expect(Number(filled.rows[0]?.token_amount)).toBe(7);
+    } finally {
+      await pool.end();
+    }
+  }, 30_000);
 });

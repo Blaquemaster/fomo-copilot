@@ -665,6 +665,19 @@ describe("ingest loop", () => {
               context: { slot: 12 },
               value: {
                 transaction: { signature: "fill-sig", slot: 12, error: null },
+                accountKeys: ["tracked-wallet"],
+                meta: {
+                  preBalances: [2_000_000_000],
+                  postBalances: [1_800_000_000],
+                  preTokenBalances: [],
+                  postTokenBalances: [
+                    {
+                      mint: "coin-mint",
+                      owner: "tracked-wallet",
+                      uiTokenAmount: { uiAmount: 42 },
+                    },
+                  ],
+                },
                 instructions: [
                   {
                     programId: "LanMV9sAd7wArD4vJFi2qDdfnVhFxYSUg6eADduJ3uj",
@@ -691,6 +704,8 @@ describe("ingest loop", () => {
           mint: "coin-mint",
           side: "buy",
           venue: "launchlab",
+          solAmount: -0.2,
+          tokenAmount: 42,
         }),
       );
     });

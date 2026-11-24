@@ -460,6 +460,10 @@ export interface WalletFillDraft {
   wallet: string;
   side: "buy" | "sell" | "swap";
   venue: string;
+  /** Signed SOL change for the wallet. Negative means SOL left the wallet. Null when meta is absent. */
+  solAmount: number | null;
+  /** Signed token change for the wallet and mint. Null when token balances are absent. */
+  tokenAmount: number | null;
 }
 
 const MINT_ACCOUNT_NAMES = new Set([
@@ -513,6 +517,13 @@ export function walletFillsFromParsed(
     const mint = mintFromNamed(named);
     const wallet = walletFromNamed(named, tracked);
     if (mint === null || wallet === null) return;
+    const tx = transaction ?? {};
+    const amounts = walletBalanceDeltas({
+      wallet,
+      mint,
+      meta: asRecord(value?.["meta"]) ?? asRecord(tx["meta"]),
+      accountKeys: accountKeysOf(value, tx),
+    });
     fills.push({
       signature,
       eventIndex,
@@ -521,9 +532,75 @@ export function walletFillsFromParsed(
       wallet,
       side: tradeSide(record["instructionName"]),
       venue,
+      solAmount: amounts.solAmount,
+      tokenAmount: amounts.tokenAmount,
     });
   });
   return fills;
+}
+
+/** Signed balance changes. A missing meta leaves both amounts null so a later row can fill them. */
+export function walletBalanceDeltas(input: {
+  wallet: string;
+  mint: string;
+  meta: Record<string, unknown> | null;
+  accountKeys: readonly string[];
+}): { solAmount: number | null; tokenAmount: number | null } {
+  if (input.meta === null) return { solAmount: null, tokenAmount: null };
+  const index = input.accountKeys.indexOf(input.wallet);
+  const pre = input.meta["preBalances"];
+  const post = input.meta["postBalances"];
+  let solAmount: number | null = null;
+  if (index >= 0 && Array.isArray(pre) && Array.isArray(post)) {
+    const before = Number(pre[index]);
+    const after = Number(post[index]);
+    if (Number.isFinite(before) && Number.isFinite(after))
+      solAmount = (after - before) / 1_000_000_000;
+  }
+  return { solAmount, tokenAmount: tokenDelta(input.meta, input.wallet, input.mint) };
+}
+
+function tokenDelta(meta: Record<string, unknown>, wallet: string, mint: string): number | null {
+  const before = tokenUi(meta["preTokenBalances"], wallet, mint);
+  const after = tokenUi(meta["postTokenBalances"], wallet, mint);
+  if (before === null && after === null) return null;
+  return (after ?? 0) - (before ?? 0);
+}
+
+function tokenUi(value: unknown, wallet: string, mint: string): number | null {
+  if (!Array.isArray(value)) return null;
+  let sum = 0;
+  let found = false;
+  for (const entry of value) {
+    const record = asRecord(entry);
+    if (record === null || record["mint"] !== mint || record["owner"] !== wallet) continue;
+    const ui = asRecord(record["uiTokenAmount"]);
+    const amount = Number(ui?.["uiAmount"]);
+    if (!Number.isFinite(amount)) continue;
+    sum += amount;
+    found = true;
+  }
+  return found ? sum : null;
+}
+
+function accountKeysOf(
+  value: Record<string, unknown> | null,
+  transaction: Record<string, unknown>,
+): string[] {
+  const direct = value?.["accountKeys"];
+  if (Array.isArray(direct)) {
+    return direct.filter((key): key is string => typeof key === "string");
+  }
+  const message = asRecord(transaction["message"]);
+  const keys = message?.["accountKeys"];
+  if (!Array.isArray(keys)) return [];
+  return keys
+    .map((key) => {
+      if (typeof key === "string") return key;
+      const record = asRecord(key);
+      return typeof record?.["pubkey"] === "string" ? record["pubkey"] : null;
+    })
+    .filter((key): key is string => key !== null);
 }
 
 function tradeSide(name: string): "buy" | "sell" | "swap" {
