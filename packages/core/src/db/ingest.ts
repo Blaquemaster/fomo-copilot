@@ -564,6 +564,25 @@ create table if not exists phasec_quote_failure (
 );
 create index if not exists phasec_quote_failure_position_idx
   on phasec_quote_failure (position_id, observed_at desc);
+
+create table if not exists phasec_candidate (
+  id bigserial primary key,
+  pass_at timestamptz not null,
+  mint text not null,
+  stage text not null,
+  group_name text not null,
+  verdict text not null,
+  reason text not null,
+  recorded_only boolean not null,
+  during_pause boolean not null,
+  alert_price_usd double precision,
+  outcome_due_at timestamptz not null,
+  outcome_price_usd double precision,
+  outcome_net double precision,
+  outcome_status text not null default 'pending'
+);
+create index if not exists phasec_candidate_due_idx
+  on phasec_candidate (outcome_due_at) where outcome_status = 'pending';
 alter table phasec_position add column if not exists quote_source text;
 alter table phasec_position add column if not exists restarted_at timestamptz;
 alter table phasec_alert add column if not exists fingerprint text;
@@ -859,6 +878,10 @@ export async function migrate(pool: pg.Pool): Promise<void> {
     await client.query(
       "insert into schema_migrations (id) values ($1) on conflict (id) do nothing",
       ["025_wallet_fill_amounts"],
+    );
+    await client.query(
+      "insert into schema_migrations (id) values ($1) on conflict (id) do nothing",
+      ["026_candidate_log"],
     );
     await client.query(
       `update ingest_recall_audit a

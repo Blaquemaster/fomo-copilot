@@ -54,6 +54,7 @@ import {
   type ScreenFacts,
   type ScreenRules,
 } from "./screen.js";
+import { buildCandidateLog, type CandidateLogRow } from "./outcomes.js";
 import { inQuietHours, nextEtMidnight } from "./time.js";
 
 export interface PassCoin extends ScoreCoin {
@@ -216,6 +217,7 @@ export interface PassResult {
   scaled: PlannedScale[];
   quoteFailures: PlannedQuoteFailure[];
   streaks: PlannedStreak[];
+  candidates: CandidateLogRow[];
   restart: boolean;
 }
 
@@ -788,6 +790,20 @@ export function runPhaseCPass(input: PassInput): PassResult {
     return { ...request, text, held };
   });
 
+  const prices = new Map<string, number | null>();
+  for (const quote of input.quotes) prices.set(quote.mint, quote.priceUsd);
+  for (const entry of entries) {
+    if (entry.alertPriceUsd !== null) prices.set(entry.mint, entry.alertPriceUsd);
+  }
+  const candidates = buildCandidateLog({
+    now: input.now,
+    coins,
+    rules: input.rules,
+    paused,
+    entries,
+    prices,
+  });
+
   const paper = evaluatePaper({
     // The window runs from the first allowed entry, not from registration, so a test that
     // registers mid-day and starts at the next ET midnight still gets its full window.
@@ -832,6 +848,7 @@ export function runPhaseCPass(input: PassInput): PassResult {
     scaled,
     quoteFailures,
     streaks,
+    candidates,
     restart,
   };
 }

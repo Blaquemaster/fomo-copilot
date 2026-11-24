@@ -1,5 +1,6 @@
 import pg from "pg";
 
+import type { CandidateLogRow } from "../phasec/outcomes.js";
 import type {
   PassCoin,
   PassPosition,
@@ -482,6 +483,65 @@ export class PhaseCRepository implements PhaseCStore {
         ],
       );
     }
+  }
+
+  async insertCandidates(rows: readonly CandidateLogRow[], at: Date): Promise<void> {
+    for (const row of rows) {
+      await this.pool.query(
+        `insert into phasec_candidate
+          (pass_at, mint, stage, group_name, verdict, reason, recorded_only, during_pause,
+           alert_price_usd, outcome_due_at, outcome_status)
+         values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,'pending')`,
+        [
+          at.toISOString(),
+          row.mint,
+          row.stage,
+          row.group,
+          row.verdict,
+          row.reason,
+          row.recordedOnly,
+          row.duringPause,
+          row.alertPriceUsd,
+          row.outcomeDueAt.toISOString(),
+        ],
+      );
+    }
+  }
+
+  async dueCandidates(
+    now: Date,
+    limit: number,
+  ): Promise<Array<{ id: string; mint: string; alertPriceUsd: number | null }>> {
+    const result = await this.pool.query<{
+      id: string;
+      mint: string;
+      alert_price_usd: number | null;
+    }>(
+      `select id, mint, alert_price_usd from phasec_candidate
+       where outcome_status = 'pending' and outcome_due_at <= $1
+       order by outcome_due_at
+       limit $2`,
+      [now.toISOString(), limit],
+    );
+    return result.rows.map((row) => ({
+      id: String(row.id),
+      mint: row.mint,
+      alertPriceUsd: row.alert_price_usd === null ? null : Number(row.alert_price_usd),
+    }));
+  }
+
+  async saveCandidateOutcome(
+    id: string,
+    status: "priced" | "missing",
+    priceUsd: number | null,
+    net: number | null,
+  ): Promise<void> {
+    await this.pool.query(
+      `update phasec_candidate
+       set outcome_status = $2, outcome_price_usd = $3, outcome_net = $4
+       where id = $1::bigint and outcome_status = 'pending'`,
+      [id, status, priceUsd, net],
+    );
   }
 
   async saveNoRouteStreaks(rows: readonly PlannedStreak[]): Promise<void> {

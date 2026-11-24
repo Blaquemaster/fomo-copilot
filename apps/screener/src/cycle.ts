@@ -43,6 +43,7 @@ import {
   screenCreditProjection,
 } from "./accounts.js";
 import { collectJupiterBids, fetchSolPriceUsd, type JupiterRequest } from "./jupiter.js";
+import { priceDueCandidates } from "./outcomes.js";
 import { readPoolStates } from "./poolRead.js";
 
 const ENRICH_PER_PASS = 16;
@@ -642,6 +643,14 @@ export async function runPhaseCCycle(input: {
   await input.store.markScaled(result.scaled, input.now);
   await input.store.saveQuoteFailures(result.quoteFailures, input.now);
   await input.store.saveNoRouteStreaks(result.streaks);
+  await input.store.insertCandidates(result.candidates, input.now);
+  await priceDueCandidates({
+    now: input.now,
+    store: input.store,
+    solPriceUsd: solPrice,
+    fetchImpl: input.fetchImpl,
+    apiKey: input.env.JUPITER_API_KEY ?? null,
+  });
   let autobuyMode: "off" | "dry_run" = "off";
   try {
     autobuyMode = resolveAutobuyMode({

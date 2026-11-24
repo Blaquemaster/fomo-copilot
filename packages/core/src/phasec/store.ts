@@ -1,3 +1,4 @@
+import type { CandidateLogRow } from "./outcomes.js";
 import type {
   PassCoin,
   PassPosition,
@@ -68,6 +69,16 @@ export interface PhaseCStore {
   markSellWarned(ids: readonly string[]): Promise<void>;
   markScaled(rows: readonly PlannedScale[], at: Date): Promise<void>;
   saveQuoteFailures(rows: readonly PlannedQuoteFailure[], at: Date): Promise<void>;
+  insertCandidates(rows: readonly CandidateLogRow[], at: Date): Promise<void>;
+  dueCandidates(now: Date, limit: number): Promise<
+    Array<{ id: string; mint: string; alertPriceUsd: number | null }>
+  >;
+  saveCandidateOutcome(
+    id: string,
+    status: "priced" | "missing",
+    priceUsd: number | null,
+    net: number | null,
+  ): Promise<void>;
   saveNoRouteStreaks(rows: readonly PlannedStreak[]): Promise<void>;
   openPools(
     mints: readonly string[],
