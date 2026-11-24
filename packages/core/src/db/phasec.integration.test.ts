@@ -206,6 +206,15 @@ describe.skipIf(!databaseUrl)("phasec live wallet signal against postgres", () =
       // Bought about two hours ago: still held but no longer a fresh signal.
       await fill("StaleWallet", mints.stale, "buy", TIP - 18_000);
       await fill("TipWallet", "TipMint", "buy", TIP);
+      for (const wallet of ["BotWallet", "FreshWallet", "SoldWallet", "StaleWallet", "TipWallet"]) {
+        await pool.query(
+          `insert into tracked_wallet
+             (address, hit_rate, early_entries, early_wins, derivation, active, selected_at, scoring_version)
+           values ($1, 0.7, 10, 7, 'test', true, '2026-11-21T14:00:00Z', 3)
+           on conflict (address) do update set active = true, selected_at = '2026-11-21T14:00:00Z'`,
+          [wallet],
+        );
+      }
 
       const coins = await repo.coins(200, { maxMintsPerDay: 40, freshMinutes: 60 });
       const buyers = new Map(coins.map((coin) => [coin.mint, coin.trackedBuyers]));
