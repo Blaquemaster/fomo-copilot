@@ -142,7 +142,8 @@ elif [[ "$live" == "1" ]]; then
   env_text=$(docker inspect -f '{{range .Config.Env}}{{println .}}{{end}}' "${project}-ingestor-1")
   echo "$env_text" | grep 'AUTOBUY_MODE' || true
   echo "$env_text" | grep -q 'AUTOBUY_MODE=dry_run'
-  running=$(docker ps --format '{{.Names}}' | grep -E 'screener|alerter|outcome|shadow' || true)
+  running=$(docker ps --format '{{.Names}}' | grep -E '(^|-)(screener|alerter|outcomes|shadow)(-|$)' || true)
+  echo "paper services: ${running:-none}"
   test -z "$running"
 else
   compose up -d --no-deps --no-build ingestor

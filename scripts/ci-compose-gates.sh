@@ -389,6 +389,7 @@ bash scripts/replace-ingestor.sh --oneshot --project fomo-ci --env-file "$app_en
 grep -q 'wide_recovery=disabled' /tmp/fomo-ingestor-replacement.txt
 grep -q 'result=ok' /tmp/fomo-ingestor-replacement.txt
 
+docker rm -f fomo-ci-stale-screener >/dev/null 2>&1 || true
 echo "mock feed for the long-running ingestor"
 network=$(docker network ls --format '{{.Name}}' | grep '^fomo-ci' | head -1)
 docker run -d --name fomo-ci-mock --network "$network" \
