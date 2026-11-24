@@ -1,0 +1,7 @@
+#!/bin/sh
+# DO NOT INSTALL from this repo automatically. See infra/db/roles-plan.md.
+# Root-owned wrapper. Reads SQL on stdin and connects only as fomo_audit.
+# No arguments are passed through. The password comes from a root-only file.
+set -eu
+exec docker exec -i fomo-copilot-postgres-1 \
+  psql -X -v ON_ERROR_STOP=1 -U fomo_audit -d "${FOMO_AUDIT_DB:?set FOMO_AUDIT_DB out of band}"

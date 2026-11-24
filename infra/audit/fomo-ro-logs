@@ -1,0 +1,18 @@
+#!/bin/sh
+# DO NOT INSTALL from this repo automatically. See infra/db/roles-plan.md.
+# Root-owned wrapper. Service is one of the four names. Since is at most 168h.
+set -eu
+service="${1:?service}"
+since="${2:?since}"
+case "$service" in
+  ingestor|screener|alerter|postgres) ;;
+  *) echo "service not allowed" >&2; exit 2 ;;
+esac
+case "$since" in
+  *[!0-9]*) echo "since must be hours" >&2; exit 2 ;;
+esac
+if [ "$since" -gt 168 ]; then
+  echo "since must be at most 168h" >&2
+  exit 2
+fi
+docker logs --since "${since}h" "fomo-copilot-${service}-1"

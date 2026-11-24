@@ -7,6 +7,18 @@ import { describe, expect, it } from "vitest";
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../..");
 
 describe("repository guards", () => {
+  it("does not apply the database role plan", () => {
+    const migrate = readFileSync(path.join(root, "packages/core/src/db/ingest.ts"), "utf8");
+    const roles = readFileSync(path.join(root, "infra/db/roles.sql"), "utf8");
+    expect(migrate).not.toMatch(/create role/i);
+    expect(migrate).not.toContain("fomo_audit");
+    expect(roles).toContain("DO NOT APPLY");
+    expect(roles).toContain("CREATE ROLE fomo_ingestor");
+    expect(roles).toContain("REVOKE UPDATE, DELETE, TRUNCATE ON TABLE raw_events FROM fomo_ingestor");
+    expect(roles).toContain("GRANT pg_read_all_data TO fomo_audit");
+    expect(roles).not.toMatch(/postgres:\/\/|password\s*=\s*['"][^<]/i);
+  });
+
   it("gives postgres only its own settings so app env edits do not recreate it", () => {
     const compose = readFileSync(path.join(root, "infra/docker-compose.yml"), "utf8");
     const postgres = compose.split(/^ {2}ingestor:/m)[0] ?? "";
