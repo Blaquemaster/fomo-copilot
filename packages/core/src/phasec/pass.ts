@@ -194,7 +194,8 @@ export interface PlannedClose {
     | "near_zero_recovery"
     | "transfer_restriction"
     | "skipped_impact"
-    | "skipped_exit_impact";
+    | "skipped_exit_impact"
+    | "unfilled";
   quote: number;
   net: number | null;
   net2x: number | null;
@@ -382,6 +383,12 @@ export function runPhaseCPass(input: PassInput): PassResult {
       pool: input.poolState?.[position.mint] ?? null,
     });
 
+  const asEntryResult = (
+    reason: PlannedClose["reason"],
+    net: number,
+  ): { reason: PlannedClose["reason"]; net: number } =>
+    config.experimentProtocol === true ? { reason: "unfilled", net: 0 } : { reason, net };
+
   for (const position of input.positions) {
     if (position.status !== "pending") continue;
     const due = input.now.getTime() >= position.entryAfter.getTime();
@@ -391,18 +398,22 @@ export function runPhaseCPass(input: PassInput): PassResult {
     const quotedEntry = input.bids?.[entryKey];
     if (!quotedEntry) {
       if (expired) {
+        const booked = asEntryResult("unpriced", FULL_LOSS);
         closes.push({
           id: position.id,
-          reason: "unpriced",
+          reason: booked.reason,
           quote: 0,
-          net: FULL_LOSS,
-          net2x: FULL_LOSS,
+          net: booked.net,
+          net2x: booked.net,
           impactPct: null,
           feeUsd: null,
           failure: "no_quote",
           fomoFeeUsd: null,
           quoteSource: null,
-          text: `unpriced ${position.mint} counted as full loss`,
+          text:
+            booked.reason === "unfilled"
+              ? `unfilled ${position.mint} cash unchanged`
+              : `unpriced ${position.mint} counted as full loss`,
         });
         closedIds.add(position.id);
       }
@@ -413,12 +424,13 @@ export function runPhaseCPass(input: PassInput): PassResult {
     if (one.ok && one.liquidityUsd !== 0) {
       const entryCap = input.rules.entryImpactPctAbove ?? 10;
       if (one.impactPct > entryCap) {
+        const booked = asEntryResult("skipped_impact", 0);
         closes.push({
           id: position.id,
-          reason: "skipped_impact",
+          reason: booked.reason,
           quote: one.execPriceUsd,
-          net: 0,
-          net2x: 0,
+          net: booked.net,
+          net2x: booked.net,
           impactPct: one.impactPct,
           feeUsd: one.feeUsd,
           failure: "entry_impact",
@@ -449,12 +461,13 @@ export function runPhaseCPass(input: PassInput): PassResult {
               source: null,
             });
           }
+          const booked = asEntryResult("skipped_exit_impact", 0);
           closes.push({
             id: position.id,
-            reason: "skipped_exit_impact",
+            reason: booked.reason,
             quote: one.execPriceUsd,
-            net: 0,
-            net2x: 0,
+            net: booked.net,
+            net2x: booked.net,
             impactPct: roundTrip,
             feeUsd: null,
             failure: fillSell.ok ? "round_trip" : fillSell.reason,
@@ -480,36 +493,48 @@ export function runPhaseCPass(input: PassInput): PassResult {
       continue;
     }
     if (!one.ok && bookDead(position, entryStreak)) {
+      const booked = asEntryResult("dead", FULL_LOSS);
       closes.push({
         id: position.id,
-        reason: "dead",
+        reason: booked.reason,
         quote: 0,
-        net: FULL_LOSS,
-        net2x: FULL_LOSS,
+        net: booked.net,
+        net2x: booked.net,
         impactPct: null,
         feeUsd: null,
         failure: one.reason,
         fomoFeeUsd: null,
         quoteSource: null,
-        text: `exit dead ${position.mint} net ${FULL_LOSS.toFixed(4)} 1x and 2x`,
+        text:
+          booked.reason === "unfilled"
+            ? `unfilled ${position.mint} cash unchanged`
+            : `exit dead ${position.mint} net ${FULL_LOSS.toFixed(4)} 1x and 2x`,
       });
       closedIds.add(position.id);
-      immediate.push(`exit dead ${position.mint} full loss`);
+      immediate.push(
+        booked.reason === "unfilled"
+          ? `unfilled ${position.mint} cash unchanged`
+          : `exit dead ${position.mint} full loss`,
+      );
       continue;
     }
     if (expired) {
+      const booked = asEntryResult("unpriced", FULL_LOSS);
       closes.push({
         id: position.id,
-        reason: "unpriced",
+        reason: booked.reason,
         quote: 0,
-        net: FULL_LOSS,
-        net2x: FULL_LOSS,
+        net: booked.net,
+        net2x: booked.net,
         impactPct: null,
         feeUsd: null,
         failure: one.ok ? "no_liquidity" : one.reason,
         fomoFeeUsd: null,
         quoteSource: null,
-        text: `unpriced ${position.mint} counted as full loss`,
+        text:
+          booked.reason === "unfilled"
+            ? `unfilled ${position.mint} cash unchanged`
+            : `unpriced ${position.mint} counted as full loss`,
       });
       closedIds.add(position.id);
     }
@@ -626,7 +651,7 @@ export function runPhaseCPass(input: PassInput): PassResult {
       now: input.now,
       entryQuote: entry.ok ? entry.execPriceUsd : 0,
       latestQuote: latest,
-      stopPct: config.exitStopPct,
+      stopPct: config.stopsEnabled === false ? Number.POSITIVE_INFINITY : config.exitStopPct,
       horizonMs: config.horizonMs,
       screenFailed: position.screenFailed || failedMints.has(position.mint),
     });
@@ -699,6 +724,7 @@ export function runPhaseCPass(input: PassInput): PassResult {
       if (isFlapMint(coin.mint)) continue;
       const stage = stageForCoin(coin, input.now);
       if (!stage || seen.has(`${coin.mint}:${stage}`)) continue;
+      if (config.experimentProtocol === true && stage !== "post_graduation") continue;
       const screen = screenOf(coin, quotes.get(coin.mint)?.liquidityUsd ?? null, input.rules);
       if (screen.verdict === "fail") continue;
       const arm = assignArm(coin.mint, stage, coin.trackedBuyers, coin.xMentions);
@@ -831,6 +857,7 @@ export function runPhaseCPass(input: PassInput): PassResult {
     paused,
     entries,
     prices,
+    experiment: config.experimentProtocol === true,
   });
 
   const paper = evaluatePaper({

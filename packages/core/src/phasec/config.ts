@@ -1,6 +1,11 @@
 import type { Env } from "../config/env.js";
 import type { Thresholds } from "../config/thresholds.js";
 import type { ScreenRules } from "./screen.js";
+import {
+  EXPERIMENT_ALLOCATED_USD,
+  EXPERIMENT_ENTRY_DELAY_SEC,
+  EXPERIMENT_WINDOW_DAYS,
+} from "./experimentProtocol.js";
 import { defaultSizePct, type PhaseCConfig } from "./protocol.js";
 
 export function screenRulesFromThresholds(thresholds: Thresholds): ScreenRules {
@@ -38,9 +43,9 @@ export function phaseCConfigFromEnv(env: Env, thresholds: Thresholds): PhaseCCon
     quietPostGradMinStrength: env.QUIET_POST_GRAD_MIN_STRENGTH ?? 0.7,
     quietPostGradMinSizePct: env.QUIET_POST_GRAD_MIN_SIZE_PCT ?? 2,
     exitStopPct: env.EXIT_STOP_PCT ?? 25,
-    entryDelaySec: env.PAPER_ENTRY_DELAY_SEC ?? thresholds.screen.first_screen_delay_s,
+    entryDelaySec: env.PAPER_ENTRY_DELAY_SEC ?? EXPERIMENT_ENTRY_DELAY_SEC,
     horizonMs: 60 * 60 * 1000,
-    paperWindowDays: env.PAPER_WINDOW_DAYS ?? 7,
+    paperWindowDays: env.PAPER_WINDOW_DAYS ?? EXPERIMENT_WINDOW_DAYS,
     paperMinAlerts: env.PAPER_MIN_ALERTS ?? 100,
     paperMaxDrawdownPct: env.PAPER_MAX_DRAWDOWN_PCT ?? 15,
     maxPerHour: thresholds.alerts.max_per_hour,
@@ -58,6 +63,8 @@ export function phaseCConfigFromEnv(env: Env, thresholds: Thresholds): PhaseCCon
     maxRoundTripImpactPct: thresholds.screen.hard_fail.round_trip_impact_pct_above,
     maxSizePoolShare: thresholds.screen.entries.max_size_pool_share,
     scaleOutEnabled: env.EXPERIMENT_SCALE_OUT === "true",
-    fixedNotionalUsd: env.EXPERIMENT_FIXED_NOTIONAL_USD,
+    fixedNotionalUsd: env.EXPERIMENT_FIXED_NOTIONAL_USD ?? EXPERIMENT_ALLOCATED_USD,
+    experimentProtocol: true,
+    stopsEnabled: false,
   };
 }

@@ -1,4 +1,5 @@
 import { PROVEN_WALLET_RULE, SCORING_VERSION } from "../ingest/wallets.js";
+import { EXPERIMENT_PROTOCOL } from "./experimentProtocol.js";
 
 /** Frozen at the first screener pass. A later config change does not retune a running test. */
 
@@ -79,6 +80,10 @@ export interface PhaseCConfig {
   scaleOutEnabled?: boolean;
   /** When set, every stage uses this dollar size. Graduated coins are not sized larger. */
   fixedNotionalUsd?: number;
+  /** Adopted experiment defaults: graduated pools, no stop, unfilled entry is zero. */
+  experimentProtocol?: boolean;
+  /** False disables the price stop. Undefined keeps the older paper stop. */
+  stopsEnabled?: boolean;
 }
 
 export function defaultSizePct(): Record<Stage, number> {
@@ -124,6 +129,9 @@ export function protocolBody(config: PhaseCConfig, rules?: unknown): string {
     scaleOutEnabled: config.scaleOutEnabled === true,
     fixedNotionalUsd: config.fixedNotionalUsd ?? null,
     walletCohort: "exploratory_activity_graduation_selected",
+    experiment: EXPERIMENT_PROTOCOL,
+    experimentProtocol: config.experimentProtocol === true,
+    stopsEnabled: config.stopsEnabled !== false,
     scoringVersion: SCORING_VERSION,
     walletMinEntries: PROVEN_WALLET_RULE.minEntries,
     sniperUnmeasured: "watch_until_measured",

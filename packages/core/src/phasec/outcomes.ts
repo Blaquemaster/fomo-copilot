@@ -1,18 +1,29 @@
+import {
+  DIAGNOSTIC_DELAYS_MS,
+  EXPERIMENT_HORIZON_MS,
+  EXPERIMENT_LATENESS_MS,
+  drawBenchmark,
+  matchOneToOne,
+  type StratumCoin,
+} from "./experimentProtocol.js";
 import { isFlapMint, stageForCoin, type ScoreCoin } from "./score.js";
 import { screenCoin, type ScreenFacts, type ScreenRules } from "./screen.js";
 import type { Stage } from "./protocol.js";
 import type { PlannedEntry } from "./pass.js";
 
-/** Scheduled executable observations. A quote taken later is not labeled as if it were on time. */
-export const OBSERVATION_DELAYS_MS = [15 * 60 * 1000, 30 * 60 * 1000, 60 * 60 * 1000] as const;
-export const LATENESS_GRACE_MS = 3 * 60 * 1000;
+/** 15/30/45 are diagnostics. 60 minutes is the exit. A late quote is not the exit. */
+export const OBSERVATION_DELAYS_MS = [...DIAGNOSTIC_DELAYS_MS, EXPERIMENT_HORIZON_MS] as const;
+export const LATENESS_GRACE_MS = EXPERIMENT_LATENESS_MS;
 
-export function scheduleObservations(t0: Date): Array<{ dueAt: Date; label: string }> {
-  return [
-    { dueAt: new Date(t0.getTime() + OBSERVATION_DELAYS_MS[0]), label: "15m" },
-    { dueAt: new Date(t0.getTime() + OBSERVATION_DELAYS_MS[1]), label: "30m" },
-    { dueAt: new Date(t0.getTime() + OBSERVATION_DELAYS_MS[2]), label: "60m" },
-  ];
+export function scheduleObservations(
+  t0: Date,
+): Array<{ dueAt: Date; label: string; role: "diagnostic" | "exit" }> {
+  const labels = ["15m", "30m", "45m", "60m"] as const;
+  return OBSERVATION_DELAYS_MS.map((delay, index) => ({
+    dueAt: new Date(t0.getTime() + delay),
+    label: labels[index] ?? "60m",
+    role: index === OBSERVATION_DELAYS_MS.length - 1 ? "exit" : "diagnostic",
+  }));
 }
 
 export function observationLabel(input: {
@@ -59,11 +70,13 @@ export interface CandidateLogRow {
  */
 export function buildCandidateLog(input: {
   now: Date;
-  coins: readonly (ScoreCoin & ScreenFacts)[];
+  coins: readonly (ScoreCoin & ScreenFacts & { poolType?: string | null })[];
   rules: ScreenRules;
   paused: boolean;
   entries: readonly PlannedEntry[];
   prices: ReadonlyMap<string, number | null>;
+  /** Freshly graduated 1:1 controls and a separate pre-screen draw. */
+  experiment?: boolean;
 }): CandidateLogRow[] {
   const rows: CandidateLogRow[] = [];
   const used = new Set<string>();
@@ -138,6 +151,10 @@ export function buildCandidateLog(input: {
   }
   const walletCount = rows.filter((row) => row.group === "wallet").length;
   const walletMints = new Set(rows.filter((row) => row.group === "wallet").map((row) => row.mint));
+  if (input.experiment === true) {
+    applyExperimentControls(rows, input);
+    return rows;
+  }
   const pool = input.coins.filter((coin) => {
     const stage = stageForCoin(coin, input.now);
     return stage === "trench" && !walletMints.has(coin.mint) && !isFlapMint(coin.mint);
@@ -161,6 +178,65 @@ export function buildCandidateLog(input: {
     });
   }
   return rows;
+}
+
+function applyExperimentControls(
+  rows: CandidateLogRow[],
+  input: {
+    now: Date;
+    coins: readonly (ScoreCoin & ScreenFacts & { poolType?: string | null })[];
+    rules: ScreenRules;
+  },
+): void {
+  const stratumFor = (coin: ScoreCoin & { poolType?: string | null }): StratumCoin | null => {
+    if (!coin.graduatedAt) return null;
+    const minutes = (input.now.getTime() - coin.graduatedAt.getTime()) / 60_000;
+    if (minutes < 0 || minutes > 30) return null;
+    return {
+      mint: coin.mint,
+      venue: coin.poolType ?? "unknown",
+      liquidityUsd: coin.liquidityUsd,
+      minutesSinceGraduation: minutes,
+      hourUtc: input.now.getUTCHours(),
+    };
+  };
+  const graduated = input.coins.flatMap((coin) => {
+    const stratum = stratumFor(coin);
+    if (!stratum || screenCoin(coin, input.rules).verdict !== "pass") return [];
+    return [{ coin, stratum }];
+  });
+  const wallets = graduated.filter((row) => row.coin.trackedBuyers >= 1).map((row) => row.stratum);
+  const screened = graduated.filter((row) => row.coin.trackedBuyers < 1).map((row) => row.stratum);
+  const matched = matchOneToOne({ wallets, screened, now: input.now });
+  const byMint = new Map(rows.map((row) => [row.mint, row]));
+  for (const pair of matched.pairs) {
+    const row = byMint.get(pair.control);
+    if (!row) continue;
+    row.group = "screened_control";
+    row.reason = pair.fallback;
+    row.recordedOnly = true;
+  }
+  for (const mint of matched.unmatched) {
+    const row = byMint.get(mint);
+    if (!row) continue;
+    row.reason = `${row.reason}; unmatched`;
+  }
+  const exclude = new Set<string>([
+    ...wallets.map((row) => row.mint),
+    ...matched.pairs.map((pair) => pair.control),
+  ]);
+  for (const mint of drawBenchmark({
+    coins: input.coins.filter((coin) => stratumFor(coin) !== null),
+    exclude,
+    count: wallets.length,
+    now: input.now,
+  })) {
+    const row = byMint.get(mint);
+    if (!row || row.group === "wallet" || row.group === "screened_control") continue;
+    row.reason = `pre_screen benchmark; prior ${row.group}`;
+    row.group = "pre_screen";
+    row.recordedOnly = true;
+  }
 }
 
 /** A missing follow-up quote is missing, not a loss. */

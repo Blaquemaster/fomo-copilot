@@ -84,11 +84,17 @@ describe("candidate log", () => {
 
   it("stores a failed one-hour quote as missing and a priced quote as a return", () => {
     const scheduled = scheduleObservations(new Date("2026-11-24T12:00:00.000Z"));
-    expect(scheduled.map((row) => row.label)).toEqual(["15m", "30m", "60m"]);
+    expect(scheduled.map((row) => row.label)).toEqual(["15m", "30m", "45m", "60m"]);
+    expect(scheduled.map((row) => row.role)).toEqual([
+      "diagnostic",
+      "diagnostic",
+      "diagnostic",
+      "exit",
+    ]);
     expect(
       observationLabel({
         scheduledLabel: "60m",
-        dueAt: scheduled[2]?.dueAt ?? new Date(),
+        dueAt: scheduled[3]?.dueAt ?? new Date(),
         observedAt: new Date("2026-11-24T13:10:00.000Z"),
       }).label,
     ).toBe("late");
