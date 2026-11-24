@@ -113,7 +113,32 @@ The CI role `fomo_shadow_ci` exists only on the CI database. It is not the produ
 
 ## Preflight, then the 7-day clock
 
-`scripts/preflight.sh` is built and is not run against the server by this change. It reads two local JSON files. It has no host flag. When the owner is ready, the observed file has to show all of the following, matching the accepted manifest:
+The live command is read-only. It uses the local docker socket and `docker compose exec` into postgres. It does not use sudo, and it does not open a remote host. This change does not run it against the server. CI runs it against the CI compose project only.
+
+Exact command, from the checkout, as a user who can already run docker:
+
+```bash
+bash scripts/preflight.sh --live \
+  --accepted /etc/fomo/preflight-accepted.json \
+  --project fomo-copilot \
+  --env-file /opt/fomo-copilot/.env \
+  --file infra/docker-compose.yml \
+  --service ingestor \
+  --shadow-user fomo_shadow
+```
+
+The probes gather:
+
+- the running image id of the named service, from `docker inspect`
+- the latest `phasec_config_history` fingerprint, its venue allowlist, and its wallet-list version, which must match `phasec_wallet_list_version`
+- the single non-null `phasec_execution.run_id`
+- one `INSERT` into `phasec_position` as the shadow role, inside a transaction that is rolled back, including when the insert is denied
+- the latest `ingest_recall_audit` row and one stored `phasec_observation` joined to `phasec_quote_attempt`
+- `phasec_score_shadow` lookback start and end
+- the age of that recall row and of `ingest_status.updated_at`
+- `INGEST_WIDE_RECOVERY` on the running containers, and any wide checkpoint whose `recovery_completed_at` is set
+
+Those facts are passed to the same checker as the file mode. The command exits 0 only when every line matches the accepted file:
 
 - the running image digest
 - the config fingerprint
@@ -126,4 +151,4 @@ The CI role `fomo_shadow_ci` exists only on the CI database. It is not the produ
 - the reference reconciliation schedule and the freshness schedule both running
 - wide recovery disabled, and a wide gap handled as unrecovered
 
-The command exits 0 only when every line matches. `shadowClock` stays stopped until that exit. It is a 7-day clock. It also stays stopped while the qualification gate sees an empty venue scope, an unset wallet-list version, or a failed preflight. Passing preflight does not enable inferential Go, paper, or alerts.
+`shadowClock` stays stopped until that exit. It is a 7-day clock. It also stays stopped while the qualification gate sees an empty venue scope, an unset wallet-list version, or a failed preflight. Passing preflight does not enable inferential Go, paper, or alerts.

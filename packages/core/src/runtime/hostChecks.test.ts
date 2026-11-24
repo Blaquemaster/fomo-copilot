@@ -202,17 +202,81 @@ function runPreflight(accepted: unknown, observed: unknown) {
 }
 
 describe("preflight checker", () => {
-  it("passes a complete observed report and refuses a live host", () => {
+  it("passes a complete observed report and refuses a remote host", () => {
     const { accepted, observed } = preflightPair();
     expect(runPreflight(accepted, observed).body).toMatchObject({
       pass: true,
       shadowClockStarts: true,
     });
     expect(() =>
-      execFileSync("bash", [path.join(root, "scripts/preflight.sh"), "--live"], {
+      execFileSync("bash", [path.join(root, "scripts/preflight.sh"), "--host"], {
         encoding: "utf8",
       }),
-    ).toThrow(/does not contact a host/);
+    ).toThrow(/does not open a remote host/);
+  });
+
+  it("shapes a live probe and feeds it to the checker", () => {
+    const dir = mkdtempSync(path.join(tmpdir(), "fomo-preflight-live-"));
+    const rawPath = path.join(dir, "raw.json");
+    const acceptedPath = path.join(dir, "accepted.json");
+    const raw = {
+      imageId: "sha256:running",
+      imageDigests: { "fomo-ci-shadow-1": "sha256:running" },
+      wideRecoveryEnv: "unset",
+      configFingerprint: "cfg",
+      configBody: JSON.stringify({
+        effectiveConfig: { venueAllowlist: ["pump"], walletListVersion: "wallets-v1" },
+      }),
+      runIds: ["run-1"],
+      walletListHash: "wallets-v1",
+      recall: { start: 1, end: 2, skipped: false, errored: false, incomplete: false, age: 10 },
+      observation: { mint: "m", label: "60m" },
+      lookbackStart: "2026-11-23T00:00:00Z",
+      lookbackEnd: "2026-11-24T00:00:00Z",
+      statusAge: 5,
+      wideCompleted: 0,
+      writeDenied: true,
+      writeRolledBack: true,
+    };
+    writeFileSync(rawPath, JSON.stringify(raw));
+    writeFileSync(acceptedPath, JSON.stringify(preflightPair().accepted));
+    const stdout = execFileSync(
+      "node",
+      [
+        path.join(root, "scripts/preflight-live.mjs"),
+        "--fixture",
+        rawPath,
+        "--accepted",
+        acceptedPath,
+      ],
+      { encoding: "utf8" },
+    );
+    const parsed = JSON.parse(stdout) as {
+      observed: { shadowPermissions: { prohibitedWritesDenied: boolean }; runId: string };
+      result: { pass: boolean; shadowClockStarts: boolean };
+    };
+    expect(parsed.result).toMatchObject({ pass: true, shadowClockStarts: true });
+    expect(parsed.observed.runId).toBe("run-1");
+    const denied = { ...raw, writeDenied: false };
+    writeFileSync(rawPath, JSON.stringify(denied));
+    try {
+      execFileSync(
+        "node",
+        [
+          path.join(root, "scripts/preflight-live.mjs"),
+          "--fixture",
+          rawPath,
+          "--accepted",
+          acceptedPath,
+        ],
+        { encoding: "utf8" },
+      );
+      throw new Error("a permitted write was accepted");
+    } catch (error) {
+      if (error instanceof Error && error.message === "a permitted write was accepted") throw error;
+      const failed = error as { stdout: string };
+      expect(failed.stdout).toContain("shadow_permissions");
+    }
   });
 
   it("fails closed when permissions, the cycle, or wide recovery do not match", () => {

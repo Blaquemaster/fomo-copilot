@@ -1,13 +1,16 @@
 import { readFileSync } from "node:fs";
 import process from "node:process";
+import { pathToFileURL } from "node:url";
 
 function fail(message) {
   process.stderr.write(`${message}\n`);
   process.exit(1);
 }
 
-if (process.argv.includes("--host") || process.argv.includes("--live")) {
-  fail("preflight is build-only and does not contact a host");
+function isMain() {
+  const entry = process.argv[1];
+  if (!entry) return false;
+  return import.meta.url === pathToFileURL(entry).href;
 }
 
 function sameList(left, right) {
@@ -65,8 +68,13 @@ function arg(name) {
   return process.argv[index + 1];
 }
 
-const accepted = JSON.parse(readFileSync(arg("--accepted"), "utf8"));
-const observed = JSON.parse(readFileSync(arg("--observed"), "utf8"));
-const result = evaluatePreflight(accepted, observed);
-process.stdout.write(`${JSON.stringify(result)}\n`);
-if (!result.pass) process.exit(1);
+if (isMain()) {
+  if (process.argv.includes("--host") || process.argv.includes("--live")) {
+    fail("preflight file check does not contact a host; use scripts/preflight.sh --live");
+  }
+  const accepted = JSON.parse(readFileSync(arg("--accepted"), "utf8"));
+  const observed = JSON.parse(readFileSync(arg("--observed"), "utf8"));
+  const result = evaluatePreflight(accepted, observed);
+  process.stdout.write(`${JSON.stringify(result)}\n`);
+  if (!result.pass) process.exit(1);
+}

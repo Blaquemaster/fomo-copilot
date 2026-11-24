@@ -8,7 +8,7 @@ cd "$root"
 app_env=$(mktemp)
 shadow_env=$(mktemp)
 fail_compose=$(mktemp)
-trap 'rm -f "$app_env" "$shadow_env" "$fail_compose" ${schema_file:-} ${manifest_file:-} ${empty_manifest:-}; docker compose --project-name fomo-ci --env-file "$app_env" -f infra/docker-compose.yml -f infra/docker-compose.ci.yml down -v --remove-orphans >/dev/null 2>&1 || true' EXIT
+trap 'rm -f "$app_env" "$shadow_env" "$fail_compose" ${schema_file:-} ${manifest_file:-} ${empty_manifest:-} ${live_accepted:-} ${wrong_accepted:-}; docker compose --project-name fomo-ci --env-file "$app_env" -f infra/docker-compose.yml -f infra/docker-compose.ci.yml down -v --remove-orphans >/dev/null 2>&1 || true' EXIT
 
 cat >"$app_env" <<'EOF'
 POSTGRES_USER=fomo
@@ -249,6 +249,86 @@ for _ in $(seq 1 40); do
 done
 test "$found" = "1"
 test -z "$(docker ps --format '{{.Names}}' | grep -E 'screener|alerter' || true)"
+
+echo "seed read-only preflight evidence"
+compose exec -T postgres psql -v ON_ERROR_STOP=1 -U fomo -d fomo <<'SQL'
+insert into phasec_config_history (fingerprint, body, recorded_at)
+values (
+  'cfg-ci',
+  '{"effectiveConfig":{"venueAllowlist":["pump"],"walletListVersion":"wallets-ci"}}',
+  now()
+);
+insert into phasec_wallet_list_version (list_hash, recorded_at, wallet_count)
+values ('wallets-ci', now(), 1);
+insert into phasec_execution (
+  mint, group_name, enrolled_at, entry_at, venue, intended_spend_usd, route, run_id
+) values (
+  'preflight-mint', 'pre_screen', now(), now(), 'pump', 20, 'unknown', 'run-ci'
+);
+insert into ingest_recall_audit (
+  ran_at, program_id, window_start_slot, window_end_slot,
+  expected, matched, missed, recovered, decode_failed, credits
+) values (now(), 'preflight-probe', 10, 20, 1, 1, 0, 0, 0, 0);
+insert into phasec_observation (mint, label, role, due_at, observed_at, status)
+values ('preflight-mint', '60m', 'exit', now(), now(), 'stored');
+insert into phasec_quote_attempt (mint, label, requested_at, status)
+values ('preflight-mint', '60m', now(), 'stored');
+insert into phasec_score_shadow (
+  id, ranked_count, lookback_start, lookback_end, entry_count, scoring_version, updated_at
+) values (
+  1, 1, '2026-11-23T00:00:00Z', '2026-11-24T00:00:00Z', 1, 1, now()
+);
+insert into ingest_status (id, state, ws_method, plan, mode, updated_at)
+values (1, 'ok', 'none', 'free', 'dry-run', now());
+insert into ingest_recovery_checkpoint (
+  program_id, from_slot, to_slot, signatures_seen, finished, recovery_completed_at, recorded_at
+) values ('preflight-probe', 1, 1000, 1, true, null, now());
+SQL
+
+echo "live preflight probes the CI stack and feeds the checker"
+shadow_cid=$(docker ps -q --filter name=fomo-ci --filter name=shadow --filter status=running | head -1)
+test -n "$shadow_cid"
+live_digest=$(docker inspect -f '{{.Image}}' "$shadow_cid")
+live_accepted=$(mktemp)
+cat >"$live_accepted" <<EOF
+{
+  "imageDigest": "${live_digest}",
+  "configFingerprint": "cfg-ci",
+  "runId": "run-ci",
+  "venueScope": ["pump"],
+  "walletListVersion": "wallets-ci",
+  "wideRecovery": { "flag": "disabled" }
+}
+EOF
+live_log=$(bash scripts/preflight.sh --live \
+  --accepted "$live_accepted" \
+  --project fomo-ci \
+  --env-file "$app_env" \
+  --file infra/docker-compose.yml \
+  --file infra/docker-compose.ci.yml \
+  --service shadow \
+  --shadow-user fomo_shadow_ci)
+echo "$live_log" | grep -q '"pass":true'
+echo "$live_log" | grep -q '"shadowClockStarts":true'
+probe_rows=$(compose exec -T postgres psql -U fomo -d fomo -At -c "select count(*) from phasec_position where mint = 'preflight-probe-deny'")
+test "$probe_rows" = "0"
+wrong_accepted=$(mktemp)
+sed 's/run-ci/run-wrong/' "$live_accepted" >"$wrong_accepted"
+set +e
+wrong_log=$(bash scripts/preflight.sh --live \
+  --accepted "$wrong_accepted" \
+  --project fomo-ci \
+  --env-file "$app_env" \
+  --file infra/docker-compose.yml \
+  --file infra/docker-compose.ci.yml \
+  --service shadow \
+  --shadow-user fomo_shadow_ci 2>&1)
+wrong_code=$?
+set -e
+test "$wrong_code" -ne 0
+echo "$wrong_log" | grep -q "run_id"
+rm -f "$live_accepted" "$wrong_accepted"
+
 compose stop shadow
 
 echo "compose gates passed"
