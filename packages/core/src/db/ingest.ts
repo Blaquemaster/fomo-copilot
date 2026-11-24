@@ -637,6 +637,20 @@ create table if not exists phasec_wallet_list_version (
   freeze_at timestamptz
 );
 
+alter table ingest_backfill add column if not exists recovery_completed_at timestamptz;
+
+create table if not exists ingest_recovery_checkpoint (
+  id bigserial primary key,
+  program_id text not null,
+  from_slot bigint not null,
+  to_slot bigint not null,
+  page_before text,
+  signatures_seen integer not null,
+  finished boolean not null,
+  recovery_completed_at timestamptz,
+  recorded_at timestamptz not null
+);
+
 create or replace view phasec_gap_period as
 select id, program_id, observed_at, gap_from_slot, gap_to_slot, reason
 from ingest_backfill
@@ -944,6 +958,10 @@ export async function migrate(pool: pg.Pool): Promise<void> {
     await client.query(
       "insert into schema_migrations (id) values ($1) on conflict (id) do nothing",
       ["027_execution_record"],
+    );
+    await client.query(
+      "insert into schema_migrations (id) values ($1) on conflict (id) do nothing",
+      ["028_wide_recovery"],
     );
     await client.query(
       `update ingest_recall_audit a
@@ -1468,13 +1486,14 @@ export class IngestRepository {
     gapFromSlot: number | null;
     gapToSlot: number | null;
     reason: string | null;
+    recoveryCompletedAt?: Date | null;
   }): Promise<void> {
     await this.pool.query(
       `insert into ingest_backfill
         (observed_at, program_id, gap_seconds, gap_slots, events_recovered, pages_fetched,
          signatures_seen, transactions_fetched, reached_checkpoint, credit_cap_hit,
-         unrecovered, gap_from_slot, gap_to_slot, reason)
-       values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)`,
+         unrecovered, gap_from_slot, gap_to_slot, reason, recovery_completed_at)
+       values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)`,
       [
         input.observedAt.toISOString(),
         input.programId,
@@ -1490,6 +1509,35 @@ export class IngestRepository {
         input.gapFromSlot,
         input.gapToSlot,
         input.reason,
+        input.recoveryCompletedAt?.toISOString() ?? null,
+      ],
+    );
+  }
+
+  async insertRecoveryCheckpoint(input: {
+    programId: string;
+    fromSlot: number;
+    toSlot: number;
+    pageBefore: string | null;
+    signaturesSeen: number;
+    finished: boolean;
+    recoveryCompletedAt: Date | null;
+    recordedAt: Date;
+  }): Promise<void> {
+    await this.pool.query(
+      `insert into ingest_recovery_checkpoint
+        (program_id, from_slot, to_slot, page_before, signatures_seen, finished,
+         recovery_completed_at, recorded_at)
+       values ($1,$2,$3,$4,$5,$6,$7,$8)`,
+      [
+        input.programId,
+        input.fromSlot,
+        input.toSlot,
+        input.pageBefore,
+        input.signaturesSeen,
+        input.finished,
+        input.recoveryCompletedAt?.toISOString() ?? null,
+        input.recordedAt.toISOString(),
       ],
     );
   }

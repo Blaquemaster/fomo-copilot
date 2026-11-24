@@ -15,6 +15,9 @@ import {
   subscribedPrograms,
   enabledVenues,
   blockLagAlert,
+  serviceEnabled,
+  walkSignatureGap,
+  fetchSignaturePage,
   venueForProgram,
   venueStaleAlert,
   pumpTradeRetention,
@@ -2055,7 +2058,34 @@ async function recoverOverflow(input: {
     const tooWide = span.toSlot - span.fromSlot > BACKFILL_MAX_SLOT_SPAN;
     let recovered = 0;
     let fetched = 0;
+    let pagesFetched = 0;
+    let recoveryCompletedAt: Date | null = null;
     let failed = tooWide;
+    if (tooWide && serviceEnabled(input.env.INGEST_WIDE_RECOVERY)) {
+      try {
+        const now = new Date();
+        const walked = await walkSignatureGap({
+          programId: span.programId,
+          fromSlot: span.fromSlot,
+          toSlot: span.toSlot,
+          now,
+          fetchPage: (before) =>
+            fetchSignaturePage({
+              programId: span.programId,
+              before,
+            }),
+        });
+        for (const checkpoint of walked.checkpoints) {
+          await input.repo.insertRecoveryCheckpoint(checkpoint);
+        }
+        pagesFetched = walked.checkpoints.length;
+        failed = !walked.finished;
+        recoveryCompletedAt = walked.finished ? now : null;
+      } catch (error) {
+        failed = true;
+        input.logger.warn({ err: error, programId: span.programId }, "wide recovery failed");
+      }
+    }
     if (!tooWide && scanNamesForProgram(span.programId).length > 0) {
       try {
         const scan = input.deps?.scanHistory ?? scanInstructionHistory;
@@ -2116,7 +2146,7 @@ async function recoverOverflow(input: {
       gapSeconds: null,
       gapSlots: span.toSlot - span.fromSlot,
       eventsRecovered: recovered,
-      pagesFetched: 0,
+      pagesFetched,
       signaturesSeen: span.frames,
       transactionsFetched: fetched,
       reachedCheckpoint: !failed,
@@ -2125,6 +2155,7 @@ async function recoverOverflow(input: {
       gapFromSlot: span.fromSlot,
       gapToSlot: span.toSlot,
       reason: "queue_overflow",
+      recoveryCompletedAt,
     });
   }
 }

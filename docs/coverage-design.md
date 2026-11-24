@@ -1,6 +1,6 @@
 # Coverage design
 
-The live backfill still stops at about 600 slots. `walkSignatureGap` can page the public Solana RPC past that cap. It does not write `raw_events` and it does not call Helius. The live loop does not call it until the wide-recovery change is on and `INGEST_WIDE_RECOVERY` is exactly `true`.
+The live backfill still stops at about 600 slots unless `INGEST_WIDE_RECOVERY` is the exact word `true`. That path pages the public Solana RPC, writes a checkpoint per page, and sets `recovery_completed_at` only when the walk finishes inside the gap. It does not write `raw_events` and it does not call Helius. Unset leaves the old unrecovered gap.
 
 ## What a healthy period is
 
@@ -31,4 +31,4 @@ Pump.fun has a public-RPC check (`recallPumpFromPublicRpc`). It is not on a time
 
 ## Recovery beyond 600 slots
 
-`walkSignatureGap` pages `getSignaturesForAddress` on the public RPC and stamps `recovery_completed_at` on the page that reaches the start of the gap. The live ingestor still treats a wider gap as unrecovered until that walker is switched on. Until then, an outage longer than about two minutes stays an unrecovered gap.
+`walkSignatureGap` pages `getSignaturesForAddress` on the public RPC, records each page in `ingest_recovery_checkpoint`, and sets `recovery_completed_at` on the page that reaches the start of the gap. The ingestor calls it only when `INGEST_WIDE_RECOVERY` is exactly `true`. Until that flag is set, an outage longer than about two minutes stays an unrecovered gap.

@@ -1,11 +1,11 @@
 import { describe, expect, it } from "vitest";
 
-import { createPool, migrate, PhaseCRepository } from "../index.js";
+import { createPool, IngestRepository, migrate, PhaseCRepository } from "../index.js";
 
 const databaseUrl = process.env["PHASEC_TEST_DATABASE_URL"];
 
 describe.skipIf(!databaseUrl)("collection restart", () => {
-  it("keeps one enrollment and its horizon rows across a new connection", async () => {
+  it("keeps one enrollment, its horizon rows, and a recovery checkpoint across a new connection", async () => {
     const mint = "RestartMint1111111111111111111111111111111";
     const first = createPool(databaseUrl ?? "");
     const at = new Date("2026-11-24T12:00:00.000Z");
@@ -41,6 +41,16 @@ describe.skipIf(!databaseUrl)("collection restart", () => {
       await store.insertCandidates([row], at);
       await store.insertCandidates([{ ...row, reason: "duplicate", execution: undefined }], at);
       await store.recordWalletList("abc", 2, at, null);
+      await new IngestRepository(first).insertRecoveryCheckpoint({
+        programId: "restart-check",
+        fromSlot: 1,
+        toSlot: 5_000,
+        pageBefore: null,
+        signaturesSeen: 3,
+        finished: true,
+        recoveryCompletedAt: at,
+        recordedAt: at,
+      });
     } finally {
       await first.end();
     }
@@ -62,7 +72,12 @@ describe.skipIf(!databaseUrl)("collection restart", () => {
       expect(execution.rows[0]?.n).toBe("1");
       expect(execution.rows[0]?.route).toBe("unknown");
       expect(Number(observations.rows[0]?.n)).toBeGreaterThanOrEqual(8);
+      const checkpoint = await second.query<{ recovery_completed_at: Date }>(
+        "select recovery_completed_at from ingest_recovery_checkpoint where program_id = $1",
+        ["restart-check"],
+      );
       expect(facts.rows[0]?.decision_facts?.group).toBe("wallet");
+      expect(checkpoint.rows[0]?.recovery_completed_at.toISOString()).toBe(at.toISOString());
     } finally {
       await second.end();
     }

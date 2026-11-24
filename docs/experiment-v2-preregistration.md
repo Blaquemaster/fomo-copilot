@@ -132,7 +132,7 @@ Pass criteria:
 
 - **Isolation.** No trades, no Telegram, no auto-enable, no unintended production writes, including across a restart.
 - **Feed.** Observed recall at least 99% against an independent reference for each included venue, in windows across the week, at least 300 reference events per venue, with the uncertainty of that rate recorded.
-- **Gaps.** Every gap recorded. Eligibility withheld when history is incomplete. A staging replay of a 30-minute outage and a multi-hour outage does not create a duplicate enrollment or a retroactive signal. Recovery past about 600 slots on the live ingestor is **not built**.
+- **Gaps.** Every gap recorded. Eligibility withheld when history is incomplete. A staging replay of a 30-minute outage and a multi-hour outage does not create a duplicate enrollment or a retroactive signal. Recovery past about 600 slots exists and stays off unless `INGEST_WIDE_RECOVERY` is exactly `true`. It does not write live events.
 - **Decisions.** Frozen membership and decision-time facts can be reconstructed. Fixture checks and a manual sample show no wrong mint, side, or quantity.
 - **Scheduler.** At least 99% of attempts dispatched within 60 seconds of the target. No silent drops. Late quotes labeled late. The 3-minute exit limit enforced.
 - **Capacity.** At least 30% request headroom at the observed peak, including fee scenarios and retries. A burst replay meets the deadlines.
