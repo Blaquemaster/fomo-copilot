@@ -778,7 +778,7 @@ set -e
 test "$extra_code" -ne 0
 test "$bash_code" -ne 0
 set +e
-bash scripts/setup-deploy-user.sh "${deploy_key}.pub" >/tmp/fomo-deploy-unprivileged.txt
+bash scripts/setup-deploy-user.sh "${deploy_key}.pub" >/tmp/fomo-deploy-unprivileged.txt 2>&1
 unprivileged=$?
 set -e
 test "$unprivileged" -ne 0
