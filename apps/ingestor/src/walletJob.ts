@@ -193,7 +193,15 @@ async function runWalletPass(input: {
   let kept = active.length;
   let replaced = 0;
   let added = 0;
-  if (!mayApplyV3List({ paperOpen, rankedCount: ranked.length, testClosed })) {
+  const listFrozen = input.env.WALLET_LIST_FROZEN !== "false";
+  if (
+    !mayApplyV3List({
+      paperOpen,
+      rankedCount: ranked.length,
+      testClosed,
+      listFrozen,
+    })
+  ) {
     input.logger.info(
       { wallets: active.length, shadowRanked: ranked.length, paperOpen, testClosed },
       "v3 score is a dry run; the tracked list stays as it is",

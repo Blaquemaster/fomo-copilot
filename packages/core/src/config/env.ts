@@ -139,6 +139,10 @@ export const envSchema = z.object({
   /** Minimum seconds between those answers. Default 60. */
   DEAD_NO_ROUTE_GAP_SEC: z.coerce.number().int().min(1).max(86_400).optional(),
   WALLET_SCORE_CUTOFF: z.string().datetime().optional(),
+  /** true freezes the tracked list. Unset is frozen for the test window. "false" allows v3. */
+  WALLET_LIST_FROZEN: z.enum(["true", "false"]).optional(),
+  /** Active tracked_wallet rows selected after this time do not count. */
+  WALLET_LIST_FREEZE_AT: z.string().datetime().optional(),
   SECOND_WAVE_MIN_CHANGE_PCT: z.coerce.number().min(0).max(10_000).optional(),
   /**
    * Screener paper loop. Unset or anything other than "true" means the process

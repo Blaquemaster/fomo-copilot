@@ -93,6 +93,7 @@ export async function runPhaseCCycle(input: {
   const coins = await input.store.coins(200, {
     maxMintsPerDay: rules.walletMaxMintsPerDay ?? DEFAULT_WALLET_SIGNAL.maxMintsPerDay,
     freshMinutes: rules.walletBuyFreshMinutes ?? DEFAULT_WALLET_SIGNAL.freshMinutes,
+    freezeAt: input.env.WALLET_LIST_FREEZE_AT ? new Date(input.env.WALLET_LIST_FREEZE_AT) : null,
   });
   if (config.xEnabled) {
     const counts = await input.store.mentionCounts(coins.map((coin) => coin.mint));

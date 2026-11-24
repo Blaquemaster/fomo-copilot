@@ -372,6 +372,14 @@ describe("proven wallets", () => {
     expect(mayApplyV3List({ paperOpen: true, rankedCount: 4, testClosed: true })).toBe(false);
     expect(mayApplyV3List({ paperOpen: false, rankedCount: 4, testClosed: false })).toBe(false);
     expect(mayApplyV3List({ paperOpen: false, rankedCount: 4, testClosed: true })).toBe(true);
+    expect(
+      mayApplyV3List({
+        paperOpen: false,
+        rankedCount: 4,
+        testClosed: true,
+        listFrozen: true,
+      }),
+    ).toBe(false);
     const rows: EarlyBuy[] = [];
     for (let index = 0; index < 8; index += 1) {
       rows.push({

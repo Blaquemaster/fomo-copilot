@@ -14,9 +14,15 @@ export interface WalletSignalRules {
   maxMintsPerDay: number;
   /** A tracked buy counts only if the wallet is still a net buyer and bought this recently. */
   freshMinutes: number;
+  /** Wallets selected after this time are not on the frozen list. Null uses every active row. */
+  freezeAt?: Date | null;
 }
 
-export const DEFAULT_WALLET_SIGNAL: WalletSignalRules = { maxMintsPerDay: 40, freshMinutes: 60 };
+export const DEFAULT_WALLET_SIGNAL: WalletSignalRules = {
+  maxMintsPerDay: 40,
+  freshMinutes: 60,
+  freezeAt: null,
+};
 
 export interface PhaseCStore {
   protocol(): Promise<{ fingerprint: string; body: string; registeredAt: Date } | null>;

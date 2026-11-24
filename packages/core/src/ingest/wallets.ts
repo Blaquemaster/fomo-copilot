@@ -228,7 +228,10 @@ export function mayApplyV3List(input: {
   paperOpen: boolean;
   rankedCount: number;
   testClosed: boolean;
+  /** When true, the list stays frozen for the whole test window. Default off means frozen. */
+  listFrozen?: boolean;
 }): boolean {
+  if (input.listFrozen) return false;
   if (input.paperOpen) return false;
   if (input.rankedCount <= 0) return false;
   return input.testClosed;

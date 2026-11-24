@@ -97,8 +97,11 @@ export class PhaseCRepository implements PhaseCStore {
        -- Tracked wallets that are selective. A wallet that touched more distinct mints than the
        -- cap in the last day is a flip bot, and its buys say nothing about a coin.
        selective as (
-         select f.wallet from wallet_fill f, win
+         select f.wallet from wallet_fill f
+         join tracked_wallet t on t.address = f.wallet and t.active
+         cross join win
          where f.slot > win.day_from
+           and ($4::timestamptz is null or t.selected_at <= $4::timestamptz)
          group by f.wallet
          having count(distinct f.mint) <= $2
        ),
@@ -181,7 +184,9 @@ export class PhaseCRepository implements PhaseCStore {
        left join phasec_mint_cache cache on cache.mint = n.mint
        left join lateral (
          select count(*)::int as tracked_sells from wallet_fill f
+         join tracked_wallet t on t.address = f.wallet and t.active
          where f.mint = n.mint and f.side = 'sell'
+           and ($4::timestamptz is null or t.selected_at <= $4::timestamptz)
        ) sells on true
        left join lateral (
          select count(*) filter (where t.side = 'buy') as buys,
@@ -201,7 +206,12 @@ export class PhaseCRepository implements PhaseCStore {
          limit 1
        ) snap on true
        order by n.first_seen_at desc`,
-      [limit, signal.maxMintsPerDay, signal.freshMinutes],
+      [
+        limit,
+        signal.maxMintsPerDay,
+        signal.freshMinutes,
+        signal.freezeAt ? signal.freezeAt.toISOString() : null,
+      ],
     );
     return result.rows.map((row) => ({
       mint: row.mint,

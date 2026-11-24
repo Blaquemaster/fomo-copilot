@@ -347,4 +347,80 @@ describe.skipIf(!databaseUrl)("phasec closedBetween against postgres", () => {
       await pool.end();
     }
   }, 30_000);
+
+  it("counts a tracked buyer only for an active listed wallet selected before the freeze", async () => {
+    const pool = createPool(databaseUrl ?? "");
+    try {
+      await migrate(pool);
+      const repo = new PhaseCRepository(pool);
+      const freeze = new Date("2026-11-21T14:30:00.000Z");
+      const now = new Date();
+      const slot = 500_000_000;
+      const rows = [
+        {
+          mint: "ListedMint111111111111111111111111111111",
+          wallet: "listed-wallet",
+          active: true,
+          selected: "2026-11-21T14:00:00.000Z",
+        },
+        {
+          mint: "UnlistedMint11111111111111111111111111111",
+          wallet: "unlisted-wallet",
+          active: false,
+          selected: null,
+        },
+        {
+          mint: "InactiveMint11111111111111111111111111111",
+          wallet: "inactive-wallet",
+          active: false,
+          selected: "2026-11-21T14:00:00.000Z",
+        },
+        {
+          mint: "LateMint111111111111111111111111111111111",
+          wallet: "late-wallet",
+          active: true,
+          selected: "2026-11-22T00:00:00.000Z",
+        },
+      ];
+      for (const [index, row] of rows.entries()) {
+        await pool.query(
+          `insert into candidates
+            (mint, pool, pool_type, first_seen_slot, first_seen_at, source_signature, source)
+           values ($1, $2, 'pump', $3, $4, $5, 'stream')`,
+          [
+            row.mint,
+            `pool-${index.toString()}`,
+            slot,
+            now.toISOString(),
+            `sig-${index.toString()}`,
+          ],
+        );
+        if (row.selected) {
+          await pool.query(
+            `insert into tracked_wallet
+              (address, hit_rate, early_entries, early_wins, derivation, active, selected_at, scoring_version)
+             values ($1, 0.7, 10, 7, 'test', $2, $3, 3)`,
+            [row.wallet, row.active, row.selected],
+          );
+        }
+        await pool.query(
+          `insert into wallet_fill (signature, event_index, slot, mint, wallet, side, venue)
+           values ($1, 0, $2, $3, $4, 'buy', 'pump')`,
+          [`fill-${index.toString()}`, slot, row.mint, row.wallet],
+        );
+      }
+      const coins = await repo.coins(50, {
+        maxMintsPerDay: 40,
+        freshMinutes: 60,
+        freezeAt: freeze,
+      });
+      const buyers = new Map(coins.map((coin) => [coin.mint, coin.trackedBuyers]));
+      expect(buyers.get("ListedMint111111111111111111111111111111")).toBe(1);
+      expect(buyers.get("UnlistedMint11111111111111111111111111111") ?? 0).toBe(0);
+      expect(buyers.get("InactiveMint11111111111111111111111111111") ?? 0).toBe(0);
+      expect(buyers.get("LateMint111111111111111111111111111111111") ?? 0).toBe(0);
+    } finally {
+      await pool.end();
+    }
+  }, 30_000);
 });
