@@ -106,9 +106,9 @@ if [[ "$oneshot" == "1" ]]; then
   compose run --rm --no-deps --entrypoint node ingestor \
     apps/ingestor/dist/main.js --spot-check
 elif [[ "$live" == "1" ]]; then
+  set +e
   compose up -d --no-deps --no-build ingestor
   healthy=0
-  set +e
   for _ in $(seq 1 40); do
     status=$(docker inspect -f '{{.State.Status}}' "${project}-ingestor-1" 2>/dev/null || echo missing)
     if [[ "$status" == "exited" ]]; then
