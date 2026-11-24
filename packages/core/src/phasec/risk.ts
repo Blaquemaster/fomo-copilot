@@ -7,7 +7,8 @@ export function capSizeToLiquidity(
   share: number,
 ): number | null {
   if (sizeUsd === null) return null;
-  if (!(sizeUsd > 0) || !(share > 0) || liquidityUsd === null || !(liquidityUsd > 0)) return sizeUsd;
+  if (!(sizeUsd > 0) || !(share > 0) || liquidityUsd === null || !(liquidityUsd > 0))
+    return sizeUsd;
   return Math.min(sizeUsd, liquidityUsd * share);
 }
 
