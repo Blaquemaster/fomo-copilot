@@ -92,17 +92,18 @@ export async function priceDueObservations(input: {
   for (const row of due) {
     const latenessMs = input.now.getTime() - row.dueAt.getTime();
     const isLate = latenessMs > EXPERIMENT_LATENESS_MS;
-    const claimed = await input.store.claimObservation(row.mint, row.label, input.now);
-    if (!claimed) continue;
+    const claimToken = await input.store.claimObservation(row.mint, row.label, input.now);
+    if (!claimToken) continue;
     const entryGate =
       row.role === "entry"
-        ? acceptEntryObservation({ entryAt: row.dueAt, observedAt: input.now, valid: true })
+        ? acceptEntryObservation({ entryDueAt: row.dueAt, observedAt: input.now, valid: true })
         : null;
     if (entryGate && !entryGate.usable) {
       late += 1;
       await input.store.saveObservation({
         mint: row.mint,
         label: row.label,
+        claimToken,
         observedAt: input.now,
         late: true,
         priceUsd: null,
@@ -115,6 +116,7 @@ export async function priceDueObservations(input: {
       await input.store.saveObservation({
         mint: row.mint,
         label: row.label,
+        claimToken,
         observedAt: input.now,
         late: true,
         priceUsd: null,
@@ -133,6 +135,7 @@ export async function priceDueObservations(input: {
       await input.store.saveObservation({
         mint: row.mint,
         label: row.label,
+        claimToken,
         observedAt: input.now,
         late: isLate,
         priceUsd: null,
@@ -149,6 +152,7 @@ export async function priceDueObservations(input: {
       await input.store.saveObservation({
         mint: row.mint,
         label: row.label,
+        claimToken,
         observedAt: input.now,
         late: isLate,
         priceUsd: null,
@@ -165,6 +169,7 @@ export async function priceDueObservations(input: {
         await input.store.saveObservation({
           mint: row.mint,
           label: row.label,
+          claimToken,
           observedAt: input.now,
           late: isLate,
           priceUsd: null,
@@ -182,6 +187,7 @@ export async function priceDueObservations(input: {
       await input.store.saveObservation({
         mint: row.mint,
         label: row.label,
+        claimToken,
         observedAt: input.now,
         late: isLate,
         priceUsd: price,
@@ -196,6 +202,7 @@ export async function priceDueObservations(input: {
       await input.store.saveObservation({
         mint: row.mint,
         label: row.label,
+        claimToken,
         observedAt: input.now,
         late: isLate,
         priceUsd: null,

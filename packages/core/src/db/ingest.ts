@@ -631,6 +631,14 @@ create table if not exists phasec_observation (
 create index if not exists phasec_observation_due_idx
   on phasec_observation (due_at) where status = 'pending';
 alter table phasec_observation add column if not exists claimed_at timestamptz;
+alter table phasec_observation add column if not exists claim_token text;
+alter table phasec_execution add column if not exists entry_due_at timestamptz;
+alter table phasec_execution add column if not exists latest_entry_at timestamptz;
+alter table phasec_execution add column if not exists chain text not null default 'solana';
+alter table phasec_execution add column if not exists process_instance_id text;
+create unique index if not exists phasec_execution_run_chain_mint_idx
+  on phasec_execution (run_id, chain, mint)
+  where run_id is not null;
 
 alter table phasec_execution add column if not exists enrollment_id text;
 alter table phasec_execution add column if not exists run_id text;
@@ -988,6 +996,10 @@ export async function migrate(pool: pg.Pool): Promise<void> {
     await client.query(
       "insert into schema_migrations (id) values ($1) on conflict (id) do nothing",
       ["030_observation_claim"],
+    );
+    await client.query(
+      "insert into schema_migrations (id) values ($1) on conflict (id) do nothing",
+      ["031_run_identity"],
     );
     await client.query(
       `update ingest_recall_audit a

@@ -88,25 +88,85 @@ describe.skipIf(!databaseUrl)("enrollment/outcome restart integration test", () 
     try {
       await migrate(pool);
       const store = new PhaseCRepository(pool);
+      const mint = "RestartMint1111111111111111111111111111111";
       const now = new Date("2026-11-24T13:00:00.000Z");
-      const first = await store.claimObservation(
-        "RestartMint1111111111111111111111111111111",
-        "15m",
-        now,
-      );
-      const again = await store.claimObservation(
-        "RestartMint1111111111111111111111111111111",
-        "15m",
-        new Date(now.getTime() + 1000),
-      );
-      const retaken = await store.claimObservation(
-        "RestartMint1111111111111111111111111111111",
+      const tokenA = await store.claimObservation(mint, "15m", now);
+      const blocked = await store.claimObservation(mint, "15m", new Date(now.getTime() + 1000));
+      const tokenB = await store.claimObservation(
+        mint,
         "15m",
         new Date(now.getTime() + 3 * 60 * 1000),
       );
-      expect(first).toBe(true);
-      expect(again).toBe(false);
-      expect(retaken).toBe(true);
+      expect(tokenA).toEqual(expect.any(String));
+      expect(blocked).toBeNull();
+      expect(tokenB).toEqual(expect.any(String));
+      expect(tokenB).not.toBe(tokenA);
+      const stale = await store.saveObservation({
+        mint,
+        label: "15m",
+        observedAt: now,
+        late: false,
+        priceUsd: 9,
+        status: "priced",
+        claimToken: tokenA ?? "",
+      });
+      const current = await store.saveObservation({
+        mint,
+        label: "15m",
+        observedAt: new Date(now.getTime() + 3 * 60 * 1000),
+        late: false,
+        priceUsd: 1,
+        status: "priced",
+        claimToken: tokenB ?? "",
+      });
+      const attempts = await pool.query<{ n: string }>(
+        "select count(*)::text as n from phasec_quote_attempt where mint = $1 and label = '15m'",
+        [mint],
+      );
+      const stored = await pool.query<{ price_usd: number }>(
+        "select price_usd from phasec_observation where mint = $1 and label = '15m'",
+        [mint],
+      );
+      await store.insertCandidates(
+        [
+          {
+            mint,
+            stage: "post_graduation",
+            group: "wallet",
+            verdict: "pass",
+            reason: "second worker",
+            recordedOnly: true,
+            duringPause: false,
+            alertPriceUsd: 1,
+            outcomeDueAt: now,
+            execution: {
+              enrolledAt: new Date("2026-11-24T18:00:00.000Z"),
+              entryAt: new Date("2026-11-24T18:03:00.000Z"),
+              eventAt: now,
+              venue: "pump",
+              intendedSpendUsd: 20,
+              route: "unknown",
+              feeHighUsd: 1.9,
+              feeLowUsd: 0.8,
+              acquiredQtyHigh: 19.05,
+              acquiredQtyLow: 19.6,
+              entryQuoteUsd: 1,
+              decisionLatencyMs: 1_000,
+              facts: { group: "wallet" },
+            },
+          },
+        ],
+        now,
+      );
+      const enrollments = await pool.query<{ n: string }>(
+        "select count(*)::text as n from phasec_execution where mint = $1",
+        [mint],
+      );
+      expect(enrollments.rows[0]?.n).toBe("1");
+      expect(stale).toBe(false);
+      expect(current).toBe(true);
+      expect(Number(attempts.rows[0]?.n)).toBe(2);
+      expect(Number(stored.rows[0]?.price_usd)).toBe(1);
     } finally {
       await pool.end();
     }

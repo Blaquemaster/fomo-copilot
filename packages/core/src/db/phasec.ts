@@ -540,8 +540,8 @@ export class PhaseCRepository implements PhaseCStore {
         `insert into phasec_execution
           (mint, group_name, enrolled_at, entry_at, event_at, venue, intended_spend_usd, route,
            fee_high_usd, fee_low_usd, acquired_qty_high, acquired_qty_low, entry_quote_usd,
-           decision_latency_ms, decision_facts, enrollment_id, run_id)
-         values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,'draft')
+           decision_latency_ms,           decision_facts, enrollment_id, run_id, process_instance_id, entry_due_at, latest_entry_at)
+         values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,null,$17,$4,$18)
          on conflict (mint) do nothing`,
         [
           row.mint,
@@ -560,6 +560,8 @@ export class PhaseCRepository implements PhaseCStore {
           execution.decisionLatencyMs,
           JSON.stringify(execution.facts),
           enrollmentId(row.mint, execution.enrolledAt),
+          crypto.randomUUID(),
+          new Date(execution.entryAt.getTime() + 60_000).toISOString(),
         ],
       );
       const observations = [
@@ -628,16 +630,17 @@ export class PhaseCRepository implements PhaseCStore {
     }));
   }
 
-  async claimObservation(mint: string, label: string, now: Date): Promise<boolean> {
-    const result = await this.pool.query(
+  async claimObservation(mint: string, label: string, now: Date): Promise<string | null> {
+    const token = crypto.randomUUID();
+    const result = await this.pool.query<{ claim_token: string }>(
       `update phasec_observation
-       set claimed_at = $3
+       set claimed_at = $3, claim_token = $4
        where mint = $1 and label = $2 and status = 'pending'
          and (claimed_at is null or claimed_at < $3::timestamptz - interval '2 minutes')
-       returning mint`,
-      [mint, label, now.toISOString()],
+       returning claim_token`,
+      [mint, label, now.toISOString(), token],
     );
-    return (result.rowCount ?? 0) > 0;
+    return result.rows[0]?.claim_token ?? null;
   }
 
   async observationBacklog(now: Date): Promise<{ due: number; pending: number }> {
@@ -662,7 +665,8 @@ export class PhaseCRepository implements PhaseCStore {
     priceUsd: number | null;
     status: "priced" | "missing" | "late";
     outAmount?: string | null;
-  }): Promise<void> {
+    claimToken: string;
+  }): Promise<boolean> {
     await this.pool.query(
       `insert into phasec_quote_attempt
         (mint, label, requested_at, responded_at, qty, status, evidence)
@@ -676,10 +680,10 @@ export class PhaseCRepository implements PhaseCStore {
         input.late ? "late" : "on_time",
       ],
     );
-    await this.pool.query(
+    const finalizedResult = await this.pool.query(
       `update phasec_observation
        set observed_at = $3, late = $4, price_usd = $5, status = $6
-       where mint = $1 and label = $2 and status = 'pending'`,
+       where mint = $1 and label = $2 and status = 'pending' and claim_token = $7`,
       [
         input.mint,
         input.label,
@@ -687,8 +691,11 @@ export class PhaseCRepository implements PhaseCStore {
         input.late,
         input.priceUsd,
         input.status,
+        input.claimToken,
       ],
     );
+    const finalized = (finalizedResult.rowCount ?? 0) > 0;
+    if (!finalized) return false;
     if (input.label === "entry_high" && input.outAmount) {
       await this.pool.query(
         `update phasec_execution
@@ -705,6 +712,7 @@ export class PhaseCRepository implements PhaseCStore {
         [input.mint, input.priceUsd, input.observedAt.toISOString(), input.outAmount ?? null],
       );
     }
+    return true;
   }
 
   async dueCandidates(

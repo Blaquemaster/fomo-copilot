@@ -11,7 +11,8 @@ GRANT CONNECT ON DATABASE <POSTGRES_DB> TO fomo_shadow;
 GRANT USAGE ON SCHEMA public TO fomo_shadow;
 
 GRANT SELECT ON TABLE
-  raw_events, candidates, wallet_fill, tracked_wallet, ingest_backfill, ingest_coin
+  raw_events, candidates, wallet_fill, tracked_wallet, ingest_backfill, ingest_coin,
+  autobuy_intent, phasec_position, phasec_alert
   TO fomo_shadow;
 
 GRANT SELECT, INSERT, UPDATE ON TABLE

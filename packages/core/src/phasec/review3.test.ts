@@ -5,7 +5,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { reconstructActivity } from "../ingest/fillCheck.js";
-import { referenceCheckPlan } from "../ingest/referenceSchedule.js";
+import { reconciliationWindow, referenceCheckPlan } from "../ingest/referenceSchedule.js";
 import { exitStateFor } from "./quoteState.js";
 import { buildCandidateLog } from "./outcomes.js";
 import type { ScreenRules } from "./screen.js";
@@ -16,6 +16,8 @@ import {
   chooseFirstValidExit,
   classifyFill,
   enrollmentEstimate,
+  entryDeadline,
+  exitDeadline,
   isExcludedProtocol,
   labeledPairMeans,
   measureBootstrapCalibration,
@@ -25,10 +27,12 @@ import {
   missingnessChangesDecision,
   poolCanHoldNotional,
   qualificationGate,
+  qualificationRunId,
   REQUIRED_MIGRATIONS,
   recallWalletSwaps,
   scenarioFills,
   simulateEqualBankrolls,
+  valueUnresolvedFill,
   validateExperimentConfig,
   type MatchCoin,
 } from "./review3.js";
@@ -172,6 +176,17 @@ describe("review 3", () => {
     expect(swap.venues).toEqual(["pump", "meteora"]);
     expect(swap.status).toBe("net_buyer");
     expect(referenceCheckPlan().walletFeedRecall.enabled).toBe(false);
+    const cursor = new Date("2026-11-24T00:00:00.000Z");
+    const window = reconciliationWindow({
+      now: new Date("2026-11-24T18:00:00.000Z"),
+      cursorAt: cursor,
+      everyMs: referenceCheckPlan().venueRecall.everyMs,
+    });
+    expect(window.from.toISOString()).toBe(cursor.toISOString());
+    expect(window.missedRuns).toBe(2);
+    expect(qualificationRunId({ commit: null, walletListVersion: null, venueAllowlist: [] })).toBe(
+      null,
+    );
     expect(
       exitStateFor({
         bid: {
@@ -232,14 +247,24 @@ describe("review 3", () => {
     ).toBe("scale_out_refused");
     expect(poolCanHoldNotional(1000, 20)).toBe(false);
     expect(poolCanHoldNotional(5_000, 20)).toBe(true);
-    const entryAt = new Date("2026-11-24T12:05:00.000Z");
+    const due = entryDeadline(new Date("2026-11-24T12:02:00.000Z"));
+    expect(due.entryDueAt.toISOString()).toBe("2026-11-24T12:05:00.000Z");
+    expect(due.latestEntryAt.toISOString()).toBe("2026-11-24T12:06:00.000Z");
     expect(
       acceptEntryObservation({
-        entryAt,
-        observedAt: new Date("2026-11-24T12:15:00.000Z"),
+        entryDueAt: due.entryDueAt,
+        observedAt: new Date("2026-11-24T12:06:00.000Z"),
+        valid: true,
+      }).usable,
+    ).toBe(true);
+    expect(
+      acceptEntryObservation({
+        entryDueAt: due.entryDueAt,
+        observedAt: new Date("2026-11-24T12:06:01.000Z"),
         valid: true,
       }).usable,
     ).toBe(false);
+    expect(exitDeadline(due.entryDueAt).toISOString()).toBe("2026-11-24T13:05:00.000Z");
     const exit = chooseFirstValidExit(
       [
         { at: new Date("2026-11-24T13:07:00.000Z"), valid: true, price: 9 },
@@ -276,9 +301,16 @@ describe("review 3", () => {
       notional: 20,
       maxConcurrent: 1,
     });
-    expect(books.walletCash).toBeCloseTo(82);
-    expect(books.reserved).toBe(20);
+    expect(books.spendableCash).toBeCloseTo(82);
+    expect(books.capitalUnavailable).toBe(20);
+    expect(books.equity).toBe("unknown");
     expect(books.skipped).toBe(1);
+    const valued = valueUnresolvedFill({ bankroll: 1000, notional: 20, tokenQty: 100 });
+    expect(valued.spendableCash).toBe(980);
+    expect(valued.zeroRecoveryStressEquity).toBe(980);
+    expect(valued.equity).toBe("unknown");
+    expect(valued.opportunityReturn).toBe("unknown");
+    expect(valued.controlsShadowEnrollment).toBe(false);
   });
 
   it("does not count shadow days until the qualification gate passes", () => {
@@ -291,6 +323,8 @@ describe("review 3", () => {
         horizonRecordsHonest: true,
         venueRecallScheduled: false,
         configChangedDuringShadow: false,
+        venueScopeSet: false,
+        walletListVersionSet: false,
       }).countDays,
     ).toBe(false);
     const loop = readFileSync(
@@ -367,18 +401,47 @@ describe("review 3", () => {
   });
 
   it("measures bootstrap false positives, coverage, and power", () => {
-    const measured = measureBootstrapCalibration(11);
-    expect(measured).toEqual({
-      sims: 1000,
-      falsePositiveRate: 0.019,
-      falsePositiveLow: 0.012196885750790904,
-      falsePositiveHigh: 0.02948445591231312,
-      intervalCoverage: 0.798,
-      coverageLow: 0.771996830196033,
-      coverageHigh: 0.8217224217465763,
-      powerAt15pp: 0.769,
-      powerLow: 0.7418776678486424,
-      powerHigh: 0.7940635360861289,
+    expect(measureBootstrapCalibration(11)).toEqual({
+      inferentialGoEnabled: false,
+      scenarios: [
+        {
+          name: "complete_coverage_at_0",
+          sims: 2000,
+          estimand: "generating effect 0, complete pairs, cluster interval",
+          rate: 0.9645,
+          low: 0.95545893930598,
+          high: 0.971760123769736,
+          inferentialGoEnabled: false,
+        },
+        {
+          name: "complete_false_go_at_5pp_boundary",
+          sims: 2000,
+          estimand: "generating effect +5pp, false claim that the lower bound exceeds +5pp",
+          rate: 0.0185,
+          low: 0.013451349814109871,
+          high: 0.025394766717736703,
+          inferentialGoEnabled: false,
+        },
+        {
+          name: "complete_power_at_15pp",
+          sims: 2000,
+          estimand: "generating effect +15pp, lower bound above +5pp on complete data only",
+          rate: 0.532,
+          low: 0.5100914000331974,
+          high: 0.5537859089408025,
+          inferentialGoEnabled: false,
+        },
+        {
+          name: "missing_primary_inconclusive",
+          sims: 2000,
+          estimand:
+            "any unresolved pair makes the primary mean UNKNOWN, so the call is inconclusive",
+          rate: 1,
+          low: 0.9980829527187469,
+          high: 0.9999999999999998,
+          inferentialGoEnabled: false,
+        },
+      ],
     });
   });
 });

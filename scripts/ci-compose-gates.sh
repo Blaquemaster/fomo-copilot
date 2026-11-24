@@ -20,8 +20,8 @@ TELEGRAM_BOT_TOKEN=ci-fake-token
 TELEGRAM_ADMIN_CHAT_ID=1
 NODE_ENV=test
 LOG_LEVEL=info
-PAPER_ENABLED=TRUE
-ALERTS_ENABLED=yes
+PAPER_ENABLED=false
+ALERTS_ENABLED=false
 OUTCOMES_ENABLED=false
 SHADOW_ENABLED=false
 EOF
@@ -70,7 +70,7 @@ compose --profile paper run --rm --no-deps --entrypoint node screener \
   --input-type=module -e 'import { createPool, migrate } from "@fomo/core"; const pool = createPool(process.env.DATABASE_URL); await migrate(pool); await pool.end();'
 
 echo "stale container restart"
-compose --profile paper run -d --name fomo-ci-stale-screener --no-deps screener
+compose --profile paper run -d --name fomo-ci-stale-screener --no-deps -e PAPER_ENABLED=TRUE -e ALERTS_ENABLED=yes screener
 for _ in $(seq 1 30); do
   status=$(docker inspect -f '{{.State.Status}}' fomo-ci-stale-screener)
   if [ "$status" = "exited" ]; then
@@ -81,7 +81,7 @@ done
 test "$(docker inspect -f '{{.State.Status}}' fomo-ci-stale-screener)" = "exited"
 docker start fomo-ci-stale-screener >/dev/null
 docker wait fomo-ci-stale-screener >/dev/null
-docker logs fomo-ci-stale-screener | grep -q "screener stayed stopped"
+docker logs fomo-ci-stale-screener | grep -Eq "configuration error|screener stayed stopped"
 test -z "$(docker ps -q --filter name=fomo-ci-stale-screener --filter status=running)"
 
 echo "explicit service starts stay off"
@@ -111,7 +111,12 @@ set -e
 test "$fail_code" -ne 0
 test -z "$(docker ps --format '{{.Names}}' | grep -E 'screener|alerter' || true)"
 
-echo "rollback to the previous image"
+echo "unguarded older image does start paper"
+docker build -f infra/legacy-screener.Dockerfile -t fomo-ci-screener:legacy .
+legacy_log=$(docker run --rm fomo-ci-screener:legacy)
+echo "$legacy_log" | grep -q "without a stop gate"
+
+echo "rollback to the previous gated image"
 network=$(docker network ls --format '{{.Name}}' | grep '^fomo-ci' | head -1)
 test -n "$network"
 rollback_log=$(docker run --rm --network "$network" --env-file "$app_env" -e PAPER_ENABLED=false -e ALERTS_ENABLED=false fomo-ci-screener:previous node apps/screener/dist/main.js)

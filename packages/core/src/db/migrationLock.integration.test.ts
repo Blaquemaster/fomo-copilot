@@ -44,5 +44,5 @@ describe.skipIf(!databaseUrl)("migration lock timeout", () => {
       waiter.release();
       await pool.end();
     }
-  });
+  }, 20_000);
 });

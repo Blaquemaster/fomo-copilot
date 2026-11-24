@@ -1,5 +1,5 @@
 import {
-  blockBootstrapDelta,
+  EXPERIMENT_ENTRY_DELAY_MS,
   EXPERIMENT_MIN_ADVANTAGE,
   experimentCall,
 } from "./experimentProtocol.js";
@@ -8,7 +8,11 @@ export const EXPERIMENT_MATCH_SEED = "experiment-v2-match-seed";
 export const MIN_BUY_SOL = 0.002;
 export const EXCLUDED_PROTOCOL_PREFIX = "c1d34366";
 export const VOIDED_POSITIONS = 79;
-export const ENTRY_LATENESS_MS = 3 * 60 * 1000;
+/** Frozen entry lateness. A quote later than this after the due time is not a fill. */
+export const ENTRY_LATENESS_S = 60;
+export const ENTRY_LATENESS_MS = ENTRY_LATENESS_S * 1000;
+/** Scored inference stays off until a calibration is accepted. Shadow collection is unaffected. */
+export const INFERENTIAL_GO_ENABLED = false;
 
 export interface EnrollmentPair {
   wallet: number | null;
@@ -450,16 +454,31 @@ export function poolCanHoldNotional(
   return liquidityUsd * share + 1e-9 >= notionalUsd;
 }
 
+export function entryDeadline(decisionAt: Date): { entryDueAt: Date; latestEntryAt: Date } {
+  const entryDueAt = new Date(decisionAt.getTime() + EXPERIMENT_ENTRY_DELAY_MS);
+  return {
+    entryDueAt,
+    latestEntryAt: new Date(entryDueAt.getTime() + ENTRY_LATENESS_MS),
+  };
+}
+
+/** The exit clock starts at the hypothetical fill, not at the decision. */
+export function exitDeadline(fillAt: Date): Date {
+  return new Date(fillAt.getTime() + 60 * 60 * 1000);
+}
+
 export function acceptEntryObservation(input: {
-  entryAt: Date;
+  entryDueAt: Date;
   observedAt: Date;
   valid: boolean;
 }): {
   usable: boolean;
   late: boolean;
 } {
-  const late = input.observedAt.getTime() - input.entryAt.getTime() > ENTRY_LATENESS_MS;
-  return { usable: input.valid && !late, late };
+  const latest = input.entryDueAt.getTime() + ENTRY_LATENESS_MS;
+  const late = input.observedAt.getTime() > latest;
+  const early = input.observedAt.getTime() < input.entryDueAt.getTime();
+  return { usable: input.valid && !late && !early, late };
 }
 
 export function chooseFirstValidExit<T extends { at: Date; valid: boolean; price: number }>(
@@ -512,41 +531,84 @@ export function scenarioFills(input: {
   }));
 }
 
+/**
+ * An unresolved fill is not equity. The $20 is unavailable for a new entry.
+ * Recoverable value and opportunity return stay unknown. Loss-pause does not
+ * treat that unknown as a realized loss. This does not admit or reject a shadow enrollment.
+ */
+export function valueUnresolvedFill(input: {
+  bankroll: number;
+  notional: number;
+  tokenQty: number;
+}): {
+  spendableCash: number;
+  capitalUnavailable: number;
+  tokenQty: number;
+  recoverableValue: "unknown";
+  equity: "unknown";
+  zeroRecoveryStressEquity: number;
+  opportunityReturn: "unknown";
+  admitsFromSpendableCashOnly: true;
+  lossPauseIgnoresUnresolved: true;
+  controlsShadowEnrollment: false;
+} {
+  return {
+    spendableCash: input.bankroll - input.notional,
+    capitalUnavailable: input.notional,
+    tokenQty: input.tokenQty,
+    recoverableValue: "unknown",
+    equity: "unknown",
+    zeroRecoveryStressEquity: input.bankroll - input.notional,
+    opportunityReturn: "unknown",
+    admitsFromSpendableCashOnly: true,
+    lossPauseIgnoresUnresolved: true,
+    controlsShadowEnrollment: false,
+  };
+}
+
 export function simulateEqualBankrolls(input: {
   wallet: readonly (number | null)[];
   control: readonly (number | null)[];
   bankroll: number;
   notional: number;
   maxConcurrent: number;
-}): { walletCash: number; controlCash: number; reserved: number; skipped: number } {
+}): {
+  spendableCash: number;
+  capitalUnavailable: number;
+  skipped: number;
+  equity: "unknown" | number;
+} {
   const step = (returns: readonly (number | null)[]) => {
-    let cash = input.bankroll;
+    let spendable = input.bankroll;
     let open = 0;
-    let reserved = 0;
+    let unavailable = 0;
     let skipped = 0;
+    let unresolved = false;
     for (const value of returns) {
-      if (open >= input.maxConcurrent || cash < input.notional) {
+      if (open >= input.maxConcurrent || spendable < input.notional) {
         skipped += 1;
         continue;
       }
       if (value === null) {
-        reserved += input.notional;
-        cash -= input.notional;
+        spendable -= input.notional;
+        unavailable += input.notional;
         open += 1;
+        unresolved = true;
         continue;
       }
-      cash -= input.notional;
-      cash += input.notional * (1 + value);
+      spendable -= input.notional;
+      spendable += input.notional * (1 + value);
     }
-    return { cash, reserved, skipped };
+    return { spendable, unavailable, skipped, unresolved };
   };
   const wallet = step(input.wallet);
   const control = step(input.control);
+  const unresolved = wallet.unresolved || control.unresolved;
   return {
-    walletCash: wallet.cash,
-    controlCash: control.cash,
-    reserved: wallet.reserved + control.reserved,
+    spendableCash: wallet.spendable,
+    capitalUnavailable: wallet.unavailable + control.unavailable,
     skipped: wallet.skipped + control.skipped,
+    equity: unresolved ? "unknown" : wallet.spendable,
   };
 }
 
@@ -572,8 +634,45 @@ function normalDraw(random: () => number): number {
 }
 
 /**
- * Measured on clustered days, a rare large return, and one missing pair per sim.
- * Not a promise about a future window. The report quotes the returned numbers.
+ * Cluster-robust interval for a complete-data mean. The target is the
+ * generating effect. This is not a substitute for the full-population mean,
+ * which stays UNKNOWN when any pair is unresolved.
+ */
+export function clusterRobustInterval(diffsByDay: readonly (readonly number[])[]): {
+  mean: number | null;
+  low: number | null;
+  high: number | null;
+} {
+  const days = diffsByDay.filter((day) => day.length > 0);
+  const flat = days.flat();
+  if (flat.length === 0 || days.length < 2) return { mean: null, low: null, high: null };
+  const mean = flat.reduce((sum, value) => sum + value, 0) / flat.length;
+  let score2 = 0;
+  for (const day of days) {
+    const score = day.reduce((sum, value) => sum + (value - mean), 0);
+    score2 += score * score;
+  }
+  const g = days.length;
+  const se = Math.sqrt((g / (g - 1)) * score2) / flat.length;
+  const t = g - 1 >= 7 ? 2.364624 : 2.570582;
+  return { mean, low: mean - t * se, high: mean + t * se };
+}
+
+export interface CalibrationScenario {
+  name: string;
+  sims: number;
+  estimand: string;
+  rate: number;
+  low: number;
+  high: number;
+  inferentialGoEnabled: false;
+}
+
+/**
+ * Predeclared scenarios. 2,000 draws each. Coverage and power are reported
+ * only for the complete-data cluster interval. A sample with missing exits
+ * has an UNKNOWN primary mean, so that scenario reports the inconclusive rate
+ * and does not report coverage of an imputed mean.
  */
 function wilsonInterval(successes: number, sims: number): { low: number; high: number } {
   const z = 1.959963984540054;
@@ -585,69 +684,87 @@ function wilsonInterval(successes: number, sims: number): { low: number; high: n
   return { low: Math.max(0, center - margin), high: Math.min(1, center + margin) };
 }
 
-export function measureBootstrapCalibration(seed = 11): {
-  sims: number;
-  falsePositiveRate: number;
-  falsePositiveLow: number;
-  falsePositiveHigh: number;
-  intervalCoverage: number;
-  coverageLow: number;
-  coverageHigh: number;
-  powerAt15pp: number;
-  powerLow: number;
-  powerHigh: number;
-} {
-  const sims = 1000;
-  const random = unitRandom(seed);
-  const oneSim = (trueDelta: number) => {
-    const pairs: Array<{ day: string; wallet: number; control: number }> = [];
-    for (let day = 0; day < 6; day += 1) {
-      const shock = random() < 0.08 ? 1.5 : 0;
-      for (let index = 0; index < 4; index += 1) {
-        if (day === 0 && index === 0) continue;
-        const diff = trueDelta + normalDraw(random) * 0.2 + (index === 0 ? shock : 0);
-        pairs.push({ day: `d${day.toString()}`, wallet: diff, control: 0 });
-      }
+function clusteredSample(random: () => number, trueDelta: number, missingRate: number): number[][] {
+  const days: number[][] = [];
+  for (let day = 0; day < 8; day += 1) {
+    const shock = random() < 0.05 ? 1.5 : 0;
+    const row: number[] = [];
+    for (let index = 0; index < 8; index += 1) {
+      if (random() < missingRate) continue;
+      row.push(trueDelta + shock + normalDraw(random) * 0.25);
     }
-    const interval = blockBootstrapDelta({
-      pairs,
-      replicates: 30,
-      seed: Math.floor(random() * 1_000_000) + 1,
-    });
-    return interval;
-  };
-  let falsePositives = 0;
-  let covered = 0;
-  let powered = 0;
-  for (let sim = 0; sim < sims; sim += 1) {
-    const none = oneSim(0);
-    if (none.low !== null && none.low > EXPERIMENT_MIN_ADVANTAGE) falsePositives += 1;
-    const modest = oneSim(0.08);
-    if (
-      modest.low !== null &&
-      modest.high !== null &&
-      modest.low - 1e-9 <= 0.08 &&
-      modest.high + 1e-9 >= 0.08
-    ) {
-      covered += 1;
-    }
-    const large = oneSim(0.15);
-    if (large.low !== null && large.low > EXPERIMENT_MIN_ADVANTAGE) powered += 1;
+    days.push(row);
   }
-  const falsePositive = wilsonInterval(falsePositives, sims);
-  const coverage = wilsonInterval(covered, sims);
-  const power = wilsonInterval(powered, sims);
+  return days;
+}
+
+export function measureBootstrapCalibration(seed = 11): {
+  inferentialGoEnabled: false;
+  scenarios: CalibrationScenario[];
+} {
+  const sims = 2000;
+  const random = unitRandom(seed);
+  const run = (
+    name: string,
+    estimand: string,
+    trueDelta: number,
+    missingRate: number,
+    score: (interval: { low: number | null; high: number | null }, unresolved: boolean) => boolean,
+  ): CalibrationScenario => {
+    let hits = 0;
+    for (let sim = 0; sim < sims; sim += 1) {
+      const days = clusteredSample(random, trueDelta, missingRate);
+      const unresolved = days.some((day) => day.length < 8);
+      const interval = unresolved ? { low: null, high: null } : clusterRobustInterval(days);
+      if (score(interval, unresolved)) hits += 1;
+    }
+    const band = wilsonInterval(hits, sims);
+    return {
+      name,
+      sims,
+      estimand,
+      rate: hits / sims,
+      low: band.low,
+      high: band.high,
+      inferentialGoEnabled: false,
+    };
+  };
   return {
-    sims,
-    falsePositiveRate: falsePositives / sims,
-    falsePositiveLow: falsePositive.low,
-    falsePositiveHigh: falsePositive.high,
-    intervalCoverage: covered / sims,
-    coverageLow: coverage.low,
-    coverageHigh: coverage.high,
-    powerAt15pp: powered / sims,
-    powerLow: power.low,
-    powerHigh: power.high,
+    inferentialGoEnabled: false,
+    scenarios: [
+      run(
+        "complete_coverage_at_0",
+        "generating effect 0, complete pairs, cluster interval",
+        0,
+        0,
+        (interval) =>
+          interval.low !== null &&
+          interval.high !== null &&
+          interval.low <= 0 &&
+          interval.high >= 0,
+      ),
+      run(
+        "complete_false_go_at_5pp_boundary",
+        "generating effect +5pp, false claim that the lower bound exceeds +5pp",
+        0.05,
+        0,
+        (interval) => interval.low !== null && interval.low > EXPERIMENT_MIN_ADVANTAGE,
+      ),
+      run(
+        "complete_power_at_15pp",
+        "generating effect +15pp, lower bound above +5pp on complete data only",
+        0.15,
+        0,
+        (interval) => interval.low !== null && interval.low > EXPERIMENT_MIN_ADVANTAGE,
+      ),
+      run(
+        "missing_primary_inconclusive",
+        "any unresolved pair makes the primary mean UNKNOWN, so the call is inconclusive",
+        0.15,
+        0.15,
+        (_interval, unresolved) => unresolved,
+      ),
+    ],
   };
 }
 
@@ -660,7 +777,19 @@ export const REQUIRED_MIGRATIONS = [
   "028_wide_recovery",
   "029_review3_records",
   "030_observation_claim",
+  "031_run_identity",
 ] as const;
+
+export function qualificationRunId(input: {
+  commit: string | null;
+  walletListVersion: string | null;
+  venueAllowlist: readonly string[];
+}): string | null {
+  if (!input.commit || !input.walletListVersion || input.venueAllowlist.length === 0) return null;
+  return drawKey(input.commit, input.walletListVersion, input.venueAllowlist.join(",")).toString(
+    16,
+  );
+}
 
 export function qualificationGate(input: {
   ciGreenOnCommit: boolean;
@@ -670,6 +799,8 @@ export function qualificationGate(input: {
   horizonRecordsHonest: boolean;
   venueRecallScheduled: boolean;
   configChangedDuringShadow: boolean;
+  venueScopeSet: boolean;
+  walletListVersionSet: boolean;
 }): { countDays: boolean; reasons: string[] } {
   const reasons: string[] = [];
   if (!input.ciGreenOnCommit) reasons.push("ci");
@@ -679,5 +810,7 @@ export function qualificationGate(input: {
   if (!input.horizonRecordsHonest) reasons.push("horizons");
   if (!input.venueRecallScheduled) reasons.push("venue_recall");
   if (input.configChangedDuringShadow) reasons.push("config_changed");
+  if (!input.venueScopeSet) reasons.push("venue_scope_unset");
+  if (!input.walletListVersionSet) reasons.push("wallet_list_unset");
   return { countDays: reasons.length === 0, reasons };
 }
