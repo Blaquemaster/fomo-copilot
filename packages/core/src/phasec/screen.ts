@@ -33,6 +33,11 @@ export interface ScreenFacts {
   /** Entry quote price impact in percent. Null is unmeasured (WATCH). Omitted is not yet wired. */
   entryQuoteImpactPct?: number | null;
   /**
+   * Token-2022 extension check. classic/clear may pass. dangerous fails.
+   * unknown, null, or omitted is not a pass.
+   */
+  tokenExtension?: "classic" | "clear" | "dangerous" | "unknown" | null;
+  /**
    * True when a launch pool and create slot are known, so a sniper share can be fetched.
    * Unset keeps the default: a null sniper value is WATCH (unmeasured).
    */
@@ -52,7 +57,6 @@ const REQUIRED: Array<[keyof ScreenFacts, string]> = [
   ["freezeAuthorityActive", "freeze authority"],
   ["exitQuoteImpactPct", "exit impact"],
   ["top10HoldersPct", "holders"],
-  ["sniperBundlePct", "snipers"],
   ["liquidityUsd", "liquidity"],
   ["entryQuoteImpactPct", "entry impact"],
 ];
@@ -187,19 +191,18 @@ export function screenCoin(facts: ScreenFacts, rules: ScreenRules): ScreenResult
   ) {
     hard.push(`entry impact ${facts.entryQuoteImpactPct.toString()}%`);
   }
+  if (facts.tokenExtension === "dangerous") hard.push("token extension");
   if (
     rules.top10FailAbove !== undefined &&
     facts.top10HoldersPct !== null &&
     facts.top10HoldersPct > rules.top10FailAbove
   ) {
-    hard.push(`top 10 holders ${facts.top10HoldersPct.toFixed(1)}%`);
+    hard.push(
+      `top 10 holders ${facts.top10HoldersPct.toFixed(1)}% of total supply, excluding bonding curve and pool vaults`,
+    );
   }
-  if (
-    rules.sniperFailAbove !== undefined &&
-    facts.sniperBundlePct !== null &&
-    facts.sniperBundlePct > rules.sniperFailAbove
-  ) {
-    hard.push(`sniper bundle ${facts.sniperBundlePct.toFixed(1)}%`);
+  if (facts.tokenExtension === "unknown" || facts.tokenExtension === null) {
+    missing.push("token extensions");
   }
   const sniperUnmeasured = isSniperUnmeasured(facts);
   for (const [key, label] of REQUIRED) {

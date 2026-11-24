@@ -154,6 +154,12 @@ export const envSchema = z.object({
    * exits without polling Telegram.
    */
   ALERTS_ENABLED: z.enum(["true", "false"]).optional(),
+  /** Outcome worker. Unset means the process exits without quoting. */
+  OUTCOMES_ENABLED: z.enum(["true", "false"]).optional(),
+  /** Exact true enables the scale-out treatment. Unset keeps it off. */
+  EXPERIMENT_SCALE_OUT: z.enum(["true", "false"]).optional(),
+  /** One dollar size for every stage. Unset keeps the stage table. */
+  EXPERIMENT_FIXED_NOTIONAL_USD: z.coerce.number().positive().max(1_000_000).optional(),
   /** off, dry_run, or live. Default off. Live cannot start in this build. */
   AUTOBUY_MODE: z.enum(["off", "dry_run", "live"]).optional(),
   /** Must be the exact word yes, and a signer must exist. Neither is configured here. */

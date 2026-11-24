@@ -122,9 +122,12 @@ function pass(overrides: Partial<PassInput> = {}): PassInput {
 }
 
 describe("pick quality screen", () => {
-  it("fails extreme wallet concentration and bundled launches", () => {
+  it("fails extreme wallet concentration and keeps a high sniper share as a warning", () => {
     expect(screenCoin(facts({ top10HoldersPct: 51 }), rules).verdict).toBe("fail");
-    expect(screenCoin(facts({ sniperBundlePct: 87.5 }), rules).verdict).toBe("fail");
+    expect(screenCoin(facts({ sniperBundlePct: 87.5 }), rules).verdict).toBe("pass");
+    expect(screenCoin(facts({ sniperBundlePct: 87.5 }), rules).warnings.join(" ")).toContain(
+      "sniper bundle",
+    );
     expect(screenCoin(facts({ sniperBundlePct: 50 }), rules).verdict).toBe("pass");
     expect(screenCoin(facts({ top10HoldersPct: 40 }), rules).warnings).toContain(
       "top 10 holders 40.0%",
@@ -139,25 +142,24 @@ describe("pick quality screen", () => {
     );
   });
 
-  it("WATCH-blocks an unmeasured sniper on every venue, and still fails a measured bundle", () => {
+  it("keeps an unmeasured sniper as a raw warning and does not fail a high measured share", () => {
     const missing = facts({ sniperBundlePct: null });
-    expect(screenCoin(missing, rules).verdict).toBe("watch");
+    expect(screenCoin(missing, rules).verdict).toBe("pass");
     expect(screenCoin(missing, rules).sniperUnmeasured).toBe(true);
     const unmeasured = facts({ sniperBundlePct: null, sniperFetchable: false });
     const blocked = screenCoin(unmeasured, rules);
-    expect(blocked.verdict).toBe("watch");
+    expect(blocked.verdict).toBe("pass");
     expect(blocked.sniperUnmeasured).toBe(true);
     expect(blocked.warnings).toContain("sniper unmeasured");
-    expect(blocked.warnings).toContain("snipers missing");
     expect(
       screenCoin(facts({ sniperBundlePct: 87.5, sniperFetchable: false }), rules).verdict,
-    ).toBe("fail");
+    ).toBe("pass");
     const pending = facts({ sniperBundlePct: null, sniperFetchable: true });
-    expect(screenCoin(pending, rules).verdict).toBe("watch");
+    expect(screenCoin(pending, rules).verdict).toBe("pass");
     expect(screenCoin(pending, rules).sniperUnmeasured).toBe(true);
   });
 
-  it("does not enter a launchlab wallet pick until sniper is measured", () => {
+  it("can enter a launchlab wallet pick while the sniper share is still raw", () => {
     const backed = mintFor(2, "wallets_x_screen", "LabSniper");
     const result = runPhaseCPass(
       pass({
@@ -172,7 +174,8 @@ describe("pick quality screen", () => {
         ],
       }),
     );
-    expect(result.entries).toHaveLength(0);
+    expect(result.entries).toHaveLength(1);
+    expect(result.entries[0]?.sniperUnmeasured).toBe(true);
   });
 
   it("lets a control enter while sniper is unmeasured, and tags the record", () => {
@@ -195,7 +198,7 @@ describe("pick quality screen", () => {
     expect(result.entries[0]?.sniperUnmeasured).toBe(true);
   });
 
-  it("keeps a fetchable but still-unknown sniper in WATCH", () => {
+  it("keeps a fetchable but still-unknown sniper as a raw field and still enters", () => {
     const backed = mintFor(2, "wallets_x_screen", "PumpSniper");
     const result = runPhaseCPass(
       pass({
@@ -210,7 +213,8 @@ describe("pick quality screen", () => {
         ],
       }),
     );
-    expect(result.entries).toHaveLength(0);
+    expect(result.entries).toHaveLength(1);
+    expect(result.entries[0]?.sniperUnmeasured).toBe(true);
   });
 
   it("needs a tracked buyer for a trench strategy entry but keeps the control", () => {

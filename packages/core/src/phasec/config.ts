@@ -57,5 +57,7 @@ export function phaseCConfigFromEnv(env: Env, thresholds: Thresholds): PhaseCCon
     deadNoRouteGapMs: (env.DEAD_NO_ROUTE_GAP_SEC ?? 60) * 1000,
     maxRoundTripImpactPct: thresholds.screen.hard_fail.round_trip_impact_pct_above,
     maxSizePoolShare: thresholds.screen.entries.max_size_pool_share,
+    scaleOutEnabled: env.EXPERIMENT_SCALE_OUT === "true",
+    fixedNotionalUsd: env.EXPERIMENT_FIXED_NOTIONAL_USD,
   };
 }

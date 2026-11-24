@@ -139,6 +139,39 @@ services:
         max-size: "10m"
         max-file: "3"
 
+  # Scheduled exit quotes. Off unless this profile is requested. It does not send alerts.
+  outcomes:
+    profiles: ["outcomes"]
+    build:
+      context: ..
+      dockerfile: apps/screener/Dockerfile
+    command: ["node", "apps/screener/dist/outcomeWorker.js"]
+    restart: "no"
+    env_file:
+      - path: ../.env
+        required: false
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks:
+      - internal
+    init: true
+    read_only: true
+    tmpfs:
+      - /tmp:size=32m
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    deploy:
+      resources:
+        limits:
+          memory: 96M
+    logging:
+      options:
+        max-size: "10m"
+        max-file: "3"
+
   alerter:
     profiles: ["paper"]
     build:

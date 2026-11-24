@@ -190,9 +190,18 @@ describe.skipIf(!databaseUrl)("phasec live wallet signal against postgres", () =
       const fill = async (wallet: string, mint: string, side: string, slot: number) => {
         index += 1;
         await pool.query(
-          `insert into wallet_fill (signature, event_index, slot, mint, wallet, side, venue)
-           values ($1, 0, $2, $3, $4, $5, 'pump')`,
-          [`sig-${index.toString()}`, slot, mint, wallet, side],
+          `insert into wallet_fill
+             (signature, event_index, slot, mint, wallet, side, venue, sol_amount, token_amount)
+           values ($1, 0, $2, $3, $4, $5, 'pump', $6, $7)`,
+          [
+            `sig-${index.toString()}`,
+            slot,
+            mint,
+            wallet,
+            side,
+            side === "sell" ? 0.05 : -0.05,
+            side === "sell" ? -1000 : 1000,
+          ],
         );
       };
       // A flip bot that touched 41 mints today, including the bot-only coin.
@@ -413,8 +422,9 @@ describe.skipIf(!databaseUrl)("phasec closedBetween against postgres", () => {
           );
         }
         await pool.query(
-          `insert into wallet_fill (signature, event_index, slot, mint, wallet, side, venue)
-           values ($1, 0, $2, $3, $4, 'buy', 'pump')`,
+          `insert into wallet_fill
+             (signature, event_index, slot, mint, wallet, side, venue, sol_amount, token_amount)
+           values ($1, 0, $2, $3, $4, 'buy', 'pump', -0.05, 1000)`,
           [`fill-${index.toString()}`, slot, row.mint, row.wallet],
         );
       }

@@ -64,6 +64,7 @@ function config(): PhaseCConfig {
     xEnabled: false,
     destination: "test",
     fomoFeeSchedule: "solana_lowest_fee",
+    scaleOutEnabled: true,
   };
 }
 

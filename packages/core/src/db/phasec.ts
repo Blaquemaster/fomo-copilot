@@ -51,6 +51,12 @@ export class PhaseCRepository implements PhaseCStore {
        on conflict (id) do nothing`,
       [fingerprint, body, at.toISOString()],
     );
+    await this.pool.query(
+      `insert into phasec_config_history (fingerprint, body, recorded_at)
+       values ($1, $2, $3)
+       on conflict (fingerprint) do nothing`,
+      [fingerprint, body, at.toISOString()],
+    );
   }
 
   async coins(
@@ -111,16 +117,19 @@ export class PhaseCRepository implements PhaseCStore {
        live_signal as (
          select x.mint, count(*)::int as tracked_buyers from (
            select f.mint, f.wallet,
-             count(*) filter (where f.side in ('buy', 'swap')) as buys,
-             count(*) filter (where f.side = 'sell') as sells,
+             coalesce(sum(f.token_amount), 0) as net_tokens,
              max(f.slot) filter (where f.side in ('buy', 'swap')) as last_buy
            from wallet_fill f
            join selective s on s.wallet = f.wallet
            cross join win
            where f.slot > win.day_from
+             and f.token_amount is not null
+             and f.sol_amount is not null
+             and abs(f.sol_amount) >= 0.002
+             and f.mint <> 'So11111111111111111111111111111111111111112'
            group by f.mint, f.wallet
          ) x, win
-         where x.buys > x.sells and x.last_buy > win.fresh_from
+         where x.net_tokens > 0 and x.last_buy > win.fresh_from
          group by x.mint
        ),
        newest as (
@@ -227,6 +236,7 @@ export class PhaseCRepository implements PhaseCStore {
       freezeAuthorityActive: row.freeze_authority_active,
       exitQuoteImpactPct: row.exit_impact_pct === null ? null : Number(row.exit_impact_pct),
       entryQuoteImpactPct: row.entry_impact_pct === null ? null : Number(row.entry_impact_pct),
+      tokenExtension: null,
       top10HoldersPct: row.top10_pct === null ? null : Number(row.top10_pct),
       sniperBundlePct: row.sniper_pct === null ? null : Number(row.sniper_pct),
       trackedSells: Number(row.tracked_sells),
@@ -497,7 +507,8 @@ export class PhaseCRepository implements PhaseCStore {
              where b.unrecovered
                and b.observed_at <= $1::timestamptz
                and b.observed_at >= $1::timestamptz - interval '6 hours'
-           ))`,
+           ))
+         on conflict (mint) do nothing`,
         [
           at.toISOString(),
           row.mint,
@@ -815,8 +826,8 @@ export class PhaseCRepository implements PhaseCStore {
   async closePosition(input: {
     id: string;
     quote: number;
-    net: number;
-    net2x: number;
+    net: number | null;
+    net2x: number | null;
     reason: string;
     impactPct: number | null;
     feeUsd: number | null;

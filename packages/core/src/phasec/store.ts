@@ -138,8 +138,8 @@ export interface PhaseCStore {
   closePosition(input: {
     id: string;
     quote: number;
-    net: number;
-    net2x: number;
+    net: number | null;
+    net2x: number | null;
     reason: string;
     impactPct: number | null;
     feeUsd: number | null;

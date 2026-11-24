@@ -584,6 +584,14 @@ create table if not exists phasec_candidate (
 create index if not exists phasec_candidate_due_idx
   on phasec_candidate (outcome_due_at) where outcome_status = 'pending';
 alter table phasec_candidate add column if not exists ingest_gap boolean not null default false;
+alter table phasec_candidate add column if not exists decision_facts jsonb;
+create unique index if not exists phasec_candidate_mint_idx on phasec_candidate (mint);
+
+create table if not exists phasec_config_history (
+  fingerprint text primary key,
+  body text not null,
+  recorded_at timestamptz not null
+);
 
 create or replace view phasec_gap_period as
 select id, program_id, observed_at, gap_from_slot, gap_to_slot, reason

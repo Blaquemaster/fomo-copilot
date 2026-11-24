@@ -75,6 +75,10 @@ export interface PhaseCConfig {
   maxRoundTripImpactPct?: number;
   /** Position size may not exceed this share of pool liquidity. Default 0.01. */
   maxSizePoolShare?: number;
+  /** Scale-out is off unless this is exactly true. The accounting function stays. */
+  scaleOutEnabled?: boolean;
+  /** When set, every stage uses this dollar size. Graduated coins are not sized larger. */
+  fixedNotionalUsd?: number;
 }
 
 export function defaultSizePct(): Record<Stage, number> {
@@ -117,6 +121,9 @@ export function protocolBody(config: PhaseCConfig, rules?: unknown): string {
     deadNoRouteGapMs: config.deadNoRouteGapMs ?? 60_000,
     maxRoundTripImpactPct: config.maxRoundTripImpactPct ?? 10,
     maxSizePoolShare: config.maxSizePoolShare ?? 0.01,
+    scaleOutEnabled: config.scaleOutEnabled === true,
+    fixedNotionalUsd: config.fixedNotionalUsd ?? null,
+    walletCohort: "exploratory_activity_graduation_selected",
     scoringVersion: SCORING_VERSION,
     walletMinEntries: PROVEN_WALLET_RULE.minEntries,
     sniperUnmeasured: "watch_until_measured",

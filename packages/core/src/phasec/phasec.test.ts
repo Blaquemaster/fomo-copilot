@@ -189,7 +189,7 @@ describe("phase C", () => {
     expect(screenCoin({ ...plain, quoteError: true }, rules).verdict).toBe("watch");
     expect(screenCoin({ ...plain, mintAuthorityActive: null }, rules).verdict).toBe("watch");
     expect(screenCoin({ ...plain, liquidityUsd: null }, rules).verdict).toBe("watch");
-    expect(screenCoin({ ...plain, sniperBundlePct: null }, rules).verdict).toBe("watch");
+    expect(screenCoin({ ...plain, sniperBundlePct: null }, rules).verdict).toBe("pass");
     expect(
       entryDecision({
         openCount: 0,
@@ -899,6 +899,7 @@ describe("phase C", () => {
     const peakPass = runPhaseCPass(
       pass({
         now: new Date("2026-11-19T16:40:00.000Z"),
+        config: { ...config(), scaleOutEnabled: true },
         positions: [position],
         bids: {
           [quoteKey(mint, "scale", "1x")]: peak,

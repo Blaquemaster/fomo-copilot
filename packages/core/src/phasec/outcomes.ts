@@ -3,8 +3,43 @@ import { screenCoin, type ScreenFacts, type ScreenRules } from "./screen.js";
 import type { Stage } from "./protocol.js";
 import type { PlannedEntry } from "./pass.js";
 
+/** Scheduled executable observations. A quote taken later is not labeled as if it were on time. */
+export const OBSERVATION_DELAYS_MS = [15 * 60 * 1000, 30 * 60 * 1000, 60 * 60 * 1000] as const;
+export const LATENESS_GRACE_MS = 3 * 60 * 1000;
+
+export function scheduleObservations(t0: Date): Array<{ dueAt: Date; label: string }> {
+  return [
+    { dueAt: new Date(t0.getTime() + OBSERVATION_DELAYS_MS[0]), label: "15m" },
+    { dueAt: new Date(t0.getTime() + OBSERVATION_DELAYS_MS[1]), label: "30m" },
+    { dueAt: new Date(t0.getTime() + OBSERVATION_DELAYS_MS[2]), label: "60m" },
+  ];
+}
+
+export function observationLabel(input: {
+  scheduledLabel: string;
+  dueAt: Date;
+  observedAt: Date;
+}): {
+  label: string;
+  late: boolean;
+} {
+  const late = input.observedAt.getTime() - input.dueAt.getTime() > LATENESS_GRACE_MS;
+  return { label: late ? "late" : input.scheduledLabel, late };
+}
+
 /** The outcome job prices a candidate one hour after it was logged. */
 export const OUTCOME_DELAY_MS = 60 * 60 * 1000;
+
+/** Reproducible draw that is not alphabetical in the mint. */
+export function rankKey(mint: string, now: Date): number {
+  const text = `${now.toISOString()}:${mint}`;
+  let hash = 2166136261;
+  for (let index = 0; index < text.length; index += 1) {
+    hash ^= text.charCodeAt(index);
+    hash = Math.imul(hash, 16777619);
+  }
+  return hash >>> 0;
+}
 
 export interface CandidateLogRow {
   mint: string;
@@ -108,7 +143,7 @@ export function buildCandidateLog(input: {
     return stage === "trench" && !walletMints.has(coin.mint) && !isFlapMint(coin.mint);
   });
   const draw = [...pool]
-    .sort((left, right) => (left.mint < right.mint ? -1 : 1))
+    .sort((left, right) => rankKey(left.mint, input.now) - rankKey(right.mint, input.now))
     .slice(0, Math.max(walletCount, 0));
   for (const coin of draw) {
     const stage = stageForCoin(coin, input.now);

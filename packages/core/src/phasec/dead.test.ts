@@ -211,10 +211,9 @@ describe("dead and unpriced quotes", () => {
       now: horizon,
       poolState: { [mint]: "tradable" },
     });
-    expect(unpriced.closes[0]?.reason).toBe("unpriced");
-    expect(unpriced.closes[0]?.net).toBe(-1);
-    expect(unpriced.paper.alerts).toBe(1);
-    expect(unpriced.paper.medianNet).toBe(-1);
+    expect(unpriced.closes[0]?.reason).toBe("routing_failure");
+    expect(unpriced.closes[0]?.net).toBeNull();
+    expect(unpriced.paper.alerts).toBe(0);
   });
 
   it("stores an HTTP 400 body and does not treat it as a no-route", () => {

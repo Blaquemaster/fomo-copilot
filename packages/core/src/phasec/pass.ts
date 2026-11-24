@@ -54,6 +54,7 @@ import {
   type ScreenFacts,
   type ScreenRules,
 } from "./screen.js";
+import { exitStateFor } from "./quoteState.js";
 import { buildCandidateLog, type CandidateLogRow } from "./outcomes.js";
 import { inQuietHours, nextEtMidnight } from "./time.js";
 
@@ -73,6 +74,7 @@ export interface PassCoin extends ScoreCoin {
   createdSlot?: number | null;
   quoteSource?: "jupiter" | "curve_modeled";
   entryQuoteImpactPct?: number | null;
+  tokenExtension?: "classic" | "clear" | "dangerous" | "unknown" | null;
 }
 
 export interface PassPosition {
@@ -186,11 +188,16 @@ export interface PlannedClose {
     | "horizon"
     | "dead"
     | "unpriced"
+    | "unresolved"
+    | "provider_failure"
+    | "routing_failure"
+    | "near_zero_recovery"
+    | "transfer_restriction"
     | "skipped_impact"
     | "skipped_exit_impact";
   quote: number;
-  net: number;
-  net2x: number;
+  net: number | null;
+  net2x: number | null;
   impactPct: number | null;
   feeUsd: number | null;
   failure: string | null;
@@ -288,6 +295,7 @@ function screenOf(coin: PassCoin, liquidity: number | null, rules: ScreenRules) 
     creatorSells: coin.creatorSells,
     quoteError: coin.quoteError,
     entryQuoteImpactPct: coin.entryQuoteImpactPct,
+    tokenExtension: coin.tokenExtension,
     sniperFetchable: sniperIsFetchable(coin),
   };
   return screenCoin(facts, rules);
@@ -527,7 +535,12 @@ export function runPhaseCPass(input: PassInput): PassResult {
       position.scaleProceedsUsd !== null && position.scaleProceedsUsd !== undefined
         ? { proceedsUsd: position.scaleProceedsUsd }
         : null;
-    if (treatment === "scale_out" && !position.scaledAt && entry.ok) {
+    if (
+      config.scaleOutEnabled === true &&
+      treatment === "scale_out" &&
+      !position.scaledAt &&
+      entry.ok
+    ) {
       const halfBid = input.bids?.[quoteKey(position.mint, "scale", "1x")];
       const trigger =
         halfBid?.ok === true && halfBid.execPriceUsd >= entry.execPriceUsd * 1.5
@@ -578,17 +591,24 @@ export function runPhaseCPass(input: PassInput): PassResult {
       continue;
     }
     if (!exitOne.ok && horizonReached) {
+      const state = exitStateFor({
+        bid: exitOne,
+        horizonReached: true,
+        onChainUntradable: false,
+        transferRestricted: false,
+        netIfPriced: null,
+      });
       const net = storedHalf
         ? scaleOutRoundTrip(entry, exitOne, feeInput(config), storedHalf)
-        : FULL_LOSS;
+        : state.net;
       closes.push({
         id: position.id,
-        reason: "unpriced",
+        reason: storedHalf ? "unpriced" : state.state === "priced" ? "unpriced" : state.state,
         quote: 0,
         net,
         net2x: storedHalf
           ? scaleOutRoundTrip(entry, exitTwo, feeInput(config), storedHalf)
-          : FULL_LOSS,
+          : state.net,
         impactPct: null,
         feeUsd: null,
         failure: exitOne.reason,
@@ -596,7 +616,7 @@ export function runPhaseCPass(input: PassInput): PassResult {
         quoteSource: null,
         text: storedHalf
           ? `unpriced ${position.mint} unsold half, scaled half kept`
-          : `unpriced ${position.mint} counted as full loss`,
+          : `${state.state} ${position.mint}`,
       });
       closedIds.add(position.id);
       continue;
@@ -611,14 +631,14 @@ export function runPhaseCPass(input: PassInput): PassResult {
       screenFailed: position.screenFailed || failedMints.has(position.mint),
     });
     if (!decision.exit || latest === null) continue;
-    const net =
-      treatment === "scale_out"
-        ? scaleOutRoundTrip(entry, exitOne, feeInput(config), storedHalf)
-        : quotedRoundTrip(entry, exitOne, feeInput(config));
-    const net2x =
-      treatment === "scale_out"
-        ? scaleOutRoundTrip(entry, exitTwo, feeInput(config), storedHalf)
-        : quotedRoundTrip(entry, exitTwo, feeInput(config));
+    const useScale =
+      storedHalf !== null || (config.scaleOutEnabled === true && treatment === "scale_out");
+    const net = useScale
+      ? scaleOutRoundTrip(entry, exitOne, feeInput(config), storedHalf)
+      : quotedRoundTrip(entry, exitOne, feeInput(config));
+    const net2x = useScale
+      ? scaleOutRoundTrip(entry, exitTwo, feeInput(config), storedHalf)
+      : quotedRoundTrip(entry, exitTwo, feeInput(config));
     const text = `exit ${decision.reason} ${position.mint} ${treatment} net1x ${net.toFixed(4)} net2x ${net2x.toFixed(4)}`;
     closes.push({
       id: position.id,
@@ -651,7 +671,7 @@ export function runPhaseCPass(input: PassInput): PassResult {
     ...input.closedToday,
     ...closes.flatMap((row) => {
       const position = input.positions.find((item) => item.id === row.id);
-      if (position?.arm === "random_pass") return [];
+      if (position?.arm === "random_pass" || row.net === null) return [];
       return [{ sizePct: position?.sizePct ?? 0, netReturn: row.net }];
     }),
   ]);
@@ -691,7 +711,16 @@ export function runPhaseCPass(input: PassInput): PassResult {
         continue;
       }
       const strength = scoreStrength(stage, coin);
-      const stageSize = sizeForStage(stage, config.sizePct, config.bankroll);
+      const stageSize =
+        config.fixedNotionalUsd !== undefined && config.fixedNotionalUsd > 0
+          ? {
+              amount: config.fixedNotionalUsd,
+              pct:
+                config.bankroll && config.bankroll > 0
+                  ? (config.fixedNotionalUsd / config.bankroll) * 100
+                  : config.sizePct[stage],
+            }
+          : sizeForStage(stage, config.sizePct, config.bankroll);
       const capped = capSizeToLiquidity(
         stageSize.amount,
         coin.liquidityUsd,
@@ -816,7 +845,7 @@ export function runPhaseCPass(input: PassInput): PassResult {
     returns: [
       ...input.resolved,
       ...closes.flatMap((row) => {
-        if (row.reason.startsWith("skipped")) return [];
+        if (row.reason.startsWith("skipped") || row.net === null) return [];
         const position = input.positions.find((item) => item.id === row.id);
         return [
           {

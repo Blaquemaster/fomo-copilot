@@ -1,6 +1,11 @@
 import { describe, expect, it } from "vitest";
 
-import { buildCandidateLog, outcomeFromPrices } from "./outcomes.js";
+import {
+  buildCandidateLog,
+  observationLabel,
+  outcomeFromPrices,
+  scheduleObservations,
+} from "./outcomes.js";
 import type { ScreenFacts, ScreenRules } from "./screen.js";
 import type { ScoreCoin } from "./score.js";
 
@@ -78,6 +83,15 @@ describe("candidate log", () => {
   });
 
   it("stores a failed one-hour quote as missing and a priced quote as a return", () => {
+    const scheduled = scheduleObservations(new Date("2026-11-24T12:00:00.000Z"));
+    expect(scheduled.map((row) => row.label)).toEqual(["15m", "30m", "60m"]);
+    expect(
+      observationLabel({
+        scheduledLabel: "60m",
+        dueAt: scheduled[2]?.dueAt ?? new Date(),
+        observedAt: new Date("2026-11-24T13:10:00.000Z"),
+      }).label,
+    ).toBe("late");
     expect(outcomeFromPrices(0.01, null)).toEqual({ status: "missing", priceUsd: null, net: null });
     const priced = outcomeFromPrices(0.01, 0.012);
     expect(priced.status).toBe("priced");
