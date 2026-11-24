@@ -3,7 +3,7 @@
   "files": {
     "infra/docker-compose.yml": "741c1b6cd2e628b125358d126f0d55c1cd99561f0f9c353e55d2c2638f4d01d4",
     ".github/workflows/deploy.yml": "6301790f4854d406dfde883669514f70b2f0e42c1bbe7df2b06b853b9e9579dd",
-    "scripts/replace-ingestor.sh": "6253ac3a3365de27653d71a1e261e324d7558fa23782ca520cc11e5b776c575b",
+    "scripts/replace-ingestor.sh": "510252c8ecfdadebd7b72dbdbd102c5dae774ba62b3db7b83477a607718d658c",
     "scripts/approved-rollback.sh": "68df6c025d31720e1c66dba2578cd403ae05676bd8c8f95105ad055cbfaa58ec",
     "scripts/install-rollback-controller.sh": "fccf8188be7fb52837524bd5f2dbd6a512c4ee9e665665f9b5fbb1a156c94fc7",
     "scripts/preflight.sh": "62c568620a836b1994be156c4cd4a6537d8cdb0eaa2f266630c87f9552885b99",

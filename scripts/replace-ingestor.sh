@@ -56,7 +56,7 @@ compose() {
     -f infra/docker-compose.yml -f infra/docker-compose.ci.yml "$@"
 }
 
-postgres_id=$(docker ps -q --filter "name=${project}" --filter name=postgres --filter status=running | head -1)
+postgres_id=$(docker ps -q --filter "name=${project}-postgres-" --filter status=running)
 test -n "$postgres_id"
 before=$(compose exec -T postgres psql -U fomo -d fomo -At -c "select count(*) from ingest_checkpoint" || echo 0)
 interrupted_at=$(date -u +%Y-%m-%dT%H:%M:%SZ)
@@ -82,7 +82,7 @@ EOF
   done
   set -e
   status=$(docker inspect -f '{{.State.Status}}' "${project}-ingestor-1" 2>/dev/null || echo missing)
-  after_id=$(docker ps -q --filter "name=${project}" --filter name=postgres --filter status=running | head -1)
+  after_id=$(docker ps -q --filter "name=${project}-postgres-" --filter status=running)
   after_marker=$(compose exec -T postgres psql -U fomo -d fomo -At -c "select count(*) from raw_events" || echo 0)
   cat >"$record" <<EOF
 result=failed
@@ -149,7 +149,8 @@ else
   compose up -d --no-deps --no-build ingestor
 fi
 
-after_id=$(docker ps -q --filter "name=${project}" --filter name=postgres --filter status=running | head -1)
+after_id=$(docker ps -q --filter "name=${project}-postgres-" --filter status=running)
+echo "postgres before ${postgres_id} after ${after_id}"
 test "$after_id" = "$postgres_id"
 after=$(compose exec -T postgres psql -U fomo -d fomo -At -c "select count(*) from ingest_checkpoint" || echo 0)
 cat >"$record" <<EOF
