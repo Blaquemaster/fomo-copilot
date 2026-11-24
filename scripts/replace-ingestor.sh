@@ -108,9 +108,15 @@ if [[ "$oneshot" == "1" ]]; then
 elif [[ "$live" == "1" ]]; then
   compose up -d --no-deps --no-build ingestor
   healthy=0
+  set +e
   for _ in $(seq 1 40); do
+    status=$(docker inspect -f '{{.State.Status}}' "${project}-ingestor-1" 2>/dev/null || echo missing)
+    if [[ "$status" == "exited" ]]; then
+      break
+    fi
     if compose logs ingestor 2>/dev/null | grep -q "starting helius ingest"; then
-      rows=$(compose exec -T postgres psql -U fomo -d fomo -At -c "select count(*) from raw_events")
+      rows=$(compose exec -T postgres psql -U fomo -d fomo -At -c "select count(*) from raw_events" 2>/dev/null || echo 0)
+      rows=${rows//$'\n'/}
       if [[ "$rows" -gt "$marker" ]]; then
         healthy=1
         break
@@ -118,7 +124,12 @@ elif [[ "$live" == "1" ]]; then
     fi
     sleep 1
   done
-  test "$healthy" = "1"
+  set -e
+  if [[ "$healthy" != "1" ]]; then
+    compose logs ingestor >&2 || true
+    echo "ingestor did not persist a mock event" >&2
+    exit 1
+  fi
   test "$(docker inspect -f '{{.State.Status}}' "${project}-ingestor-1")" = "running"
   docker inspect -f '{{range .Config.Env}}{{println .}}{{end}}' "${project}-ingestor-1" | grep -q '^AUTOBUY_MODE=dry_run$'
   running=$(docker ps --format '{{.Names}}' | grep -E 'screener|alerter|outcome|shadow' || true)

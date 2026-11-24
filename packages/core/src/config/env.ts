@@ -34,7 +34,12 @@ export const envSchema = z.object({
   /** Diagnostic hard stop. A larger value is rejected. Unset uses the code ceiling. */
   DIAGNOSTIC_MAX_HELIUS_CREDITS: z.coerce.number().int().positive().max(50_000).optional(),
   DIAGNOSTIC_MAX_JUPITER_QUOTES_PER_DAY: z.coerce.number().int().positive().max(2_000).optional(),
-  DIAGNOSTIC_MAX_PUBLIC_RPC_CALLS_PER_DAY: z.coerce.number().int().positive().max(20_000).optional(),
+  DIAGNOSTIC_MAX_PUBLIC_RPC_CALLS_PER_DAY: z.coerce
+    .number()
+    .int()
+    .positive()
+    .max(20_000)
+    .optional(),
   THRESHOLDS_PATH: z.string().min(1).max(512).optional(),
   // Developer until the owner switches this to free (planned 2026-12-07).
   HELIUS_PLAN: z.enum(["developer", "free"]).default("developer"),
