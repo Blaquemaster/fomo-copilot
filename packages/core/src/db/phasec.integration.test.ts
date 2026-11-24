@@ -92,8 +92,8 @@ describe.skipIf(!databaseUrl)("phasec positions against postgres", () => {
       await repo.closePosition({
         id: ids[1] ?? "",
         quote: 0,
-        net: 0,
-        net2x: 0,
+        net: -1,
+        net2x: -1,
         reason: "unpriced",
         impactPct: null,
         feeUsd: null,
@@ -111,9 +111,10 @@ describe.skipIf(!databaseUrl)("phasec positions against postgres", () => {
       );
       expect(rows.rows.map((row) => row.status)).toEqual(["closed", "unpriced"]);
       expect(Number(rows.rows[0]?.net_return)).toBeCloseTo(0.8);
-      expect(rows.rows[1]?.net_return).toBeNull();
+      expect(Number(rows.rows[1]?.net_return)).toBeCloseTo(-1);
       const resolved = await repo.resolvedReturns();
       expect(resolved.some((row) => Math.abs(row.net - 0.8) < 1e-9)).toBe(true);
+      expect(resolved.some((row) => row.net === -1)).toBe(true);
     } finally {
       await pool.end();
     }

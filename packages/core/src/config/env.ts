@@ -132,6 +132,10 @@ export const envSchema = z.object({
   PAPER_WINDOW_DAYS: z.coerce.number().int().min(1).max(365).optional(),
   PAPER_ENTRY_DELAY_SEC: z.coerce.number().int().min(0).max(86_400).optional(),
   FOMO_FEE_SCHEDULE: z.enum(["solana_lowest_fee", "solana_other"]).optional(),
+  /** True no-route answers required before a dead -100% close. Default 3. */
+  DEAD_NO_ROUTE_STREAK: z.coerce.number().int().min(1).max(20).optional(),
+  /** Minimum seconds between those answers. Default 60. */
+  DEAD_NO_ROUTE_GAP_SEC: z.coerce.number().int().min(1).max(86_400).optional(),
   WALLET_SCORE_CUTOFF: z.string().datetime().optional(),
   SECOND_WAVE_MIN_CHANGE_PCT: z.coerce.number().min(0).max(10_000).optional(),
   /**

@@ -6,6 +6,7 @@ import {
   jupiterRatePerMin,
   parseJupiterQuote,
   quoteBackoffMs,
+  quoteErrorBody,
   quoteKey,
   quoteUrlAllowed,
   takeTokens,
@@ -114,16 +115,36 @@ export async function collectJupiterBids(input: {
           await sleep(quoteBackoffMs(attempt));
           continue;
         }
-        if (kind === "no_route") {
-          outcome = { ok: false, reason: "no_route" };
+        const raw = await readQuoteBody(response);
+        if (kind !== "ok") {
+          outcome = {
+            ok: false,
+            reason: kind,
+            httpStatus: response.status,
+            errorBody: quoteErrorBody(raw),
+          };
           break;
         }
-        const body = await response.json();
-        outcome = parseJupiterQuote(body, {
+        let parsed: unknown;
+        try {
+          parsed = JSON.parse(raw);
+        } catch {
+          outcome = {
+            ok: false,
+            reason: "transient",
+            httpStatus: response.status,
+            errorBody: quoteErrorBody(raw),
+          };
+          break;
+        }
+        const quote = parseJupiterQuote(parsed, {
           sizeUsd: request.sizeUsd,
           side: request.side,
           solPriceUsd: request.solPriceUsd,
         });
+        outcome = quote.ok
+          ? quote
+          : { ...quote, httpStatus: response.status, errorBody: quoteErrorBody(raw) };
         break;
       } catch {
         outcome = { ok: false, reason: "transient" };
@@ -133,4 +154,26 @@ export async function collectJupiterBids(input: {
     bids[key] = outcome;
   }
   return { bids, bucket, requests, throttled };
+}
+
+/** Prefer text() so the raw body is kept. Test doubles often only implement json(). */
+async function readQuoteBody(response: {
+  text?: () => Promise<string>;
+  json?: () => Promise<unknown>;
+}): Promise<string> {
+  if (typeof response.text === "function") {
+    try {
+      return await response.text();
+    } catch {
+      return "";
+    }
+  }
+  if (typeof response.json === "function") {
+    try {
+      return JSON.stringify(await response.json());
+    } catch {
+      return "";
+    }
+  }
+  return "";
 }

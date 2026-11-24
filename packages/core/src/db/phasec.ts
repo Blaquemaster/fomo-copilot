@@ -1,6 +1,12 @@
 import pg from "pg";
 
-import type { PassCoin, PassPosition, PlannedScale } from "../phasec/pass.js";
+import type {
+  PassCoin,
+  PassPosition,
+  PlannedQuoteFailure,
+  PlannedScale,
+  PlannedStreak,
+} from "../phasec/pass.js";
 import type { ResolvedReturn } from "../phasec/paper.js";
 import type { PaperArm, Stage } from "../phasec/protocol.js";
 import {
@@ -248,6 +254,9 @@ export class PhaseCRepository implements PhaseCStore {
       entry_out_amount: string | null;
       sell_warned: boolean;
       scaled_at: Date | null;
+      no_route_streak: number | null;
+      no_route_first_at: Date | null;
+      no_route_last_at: Date | null;
       scale_quote: number | null;
       scale_impact_pct: number | null;
       scale_proceeds_usd: number | null;
@@ -258,7 +267,8 @@ export class PhaseCRepository implements PhaseCStore {
     }>(
       `select id, mint, stage, arm, status, alert_at, entry_after, opened_at, entry_quote,
               entry_size_usd, entry_fee_usd, entry_out_amount, size_pct, exit_plan,
-              screen_failed, sell_warned, scaled_at, scale_quote, scale_impact_pct,
+              screen_failed, sell_warned, scaled_at, no_route_streak, no_route_first_at,
+              no_route_last_at, scale_quote, scale_impact_pct,
               scale_proceeds_usd, scale_fee_usd
        from phasec_position
        where status in ('pending', 'open')
@@ -279,6 +289,9 @@ export class PhaseCRepository implements PhaseCStore {
       entryOutAmount: row.entry_out_amount,
       sellWarned: row.sell_warned,
       scaledAt: row.scaled_at ? date(row.scaled_at) : null,
+      noRouteStreak: Number(row.no_route_streak ?? 0),
+      noRouteFirstAt: row.no_route_first_at ? date(row.no_route_first_at) : null,
+      noRouteLastAt: row.no_route_last_at ? date(row.no_route_last_at) : null,
       scaleQuote: row.scale_quote === null ? null : Number(row.scale_quote),
       scaleImpactPct: row.scale_impact_pct === null ? null : Number(row.scale_impact_pct),
       scaleProceedsUsd: row.scale_proceeds_usd === null ? null : Number(row.scale_proceeds_usd),
@@ -295,7 +308,8 @@ export class PhaseCRepository implements PhaseCStore {
   ): Promise<Array<{ sizePct: number; netReturn: number }>> {
     const result = await this.pool.query<{ size_pct: number; net_return: number }>(
       `select size_pct, net_return from phasec_position
-       where status = 'closed' and closed_at >= $1 and closed_at < $2 and net_return is not null
+       where status in ('closed', 'unpriced') and closed_at >= $1 and closed_at < $2
+         and net_return is not null
          and arm <> 'random_pass' and restarted_at is null`,
       [start.toISOString(), end.toISOString()],
     );
@@ -432,6 +446,61 @@ export class PhaseCRepository implements PhaseCStore {
        where id = $1 and status = 'pending'`,
       [id, quote, impactPct, feeUsd, sizeUsd, outAmount, fomoFeeUsd, quoteSource, at.toISOString()],
     );
+  }
+
+  async saveQuoteFailures(rows: readonly PlannedQuoteFailure[], at: Date): Promise<void> {
+    for (const row of rows) {
+      await this.pool.query(
+        `insert into phasec_quote_failure
+          (position_id, mint, purpose, observed_at, http_status, reason, body, source)
+         values ($1::bigint, $2, $3, $4, $5, $6, $7, $8)`,
+        [
+          row.positionId,
+          row.mint,
+          row.purpose,
+          at.toISOString(),
+          row.httpStatus,
+          row.reason,
+          row.body,
+          row.source,
+        ],
+      );
+    }
+  }
+
+  async saveNoRouteStreaks(rows: readonly PlannedStreak[]): Promise<void> {
+    const latest = new Map<string, PlannedStreak>();
+    for (const row of rows) latest.set(row.id, row);
+    for (const row of latest.values()) {
+      await this.pool.query(
+        `update phasec_position
+         set no_route_streak = $2, no_route_first_at = $3, no_route_last_at = $4
+         where id = $1::bigint and status in ('pending', 'open')`,
+        [row.id, row.streak, row.firstAt?.toISOString() ?? null, row.lastAt?.toISOString() ?? null],
+      );
+    }
+  }
+
+  async openPools(
+    mints: readonly string[],
+  ): Promise<Array<{ mint: string; pool: string; poolType: string | null }>> {
+    if (mints.length === 0) return [];
+    const result = await this.pool.query<{
+      mint: string;
+      pool: string;
+      pool_type: string | null;
+    }>(
+      `select distinct on (mint) mint, pool, pool_type
+       from candidates
+       where mint = any($1::text[]) and pool is not null
+       order by mint, graduated_at desc nulls last, first_seen_at desc`,
+      [mints],
+    );
+    return result.rows.map((row) => ({
+      mint: row.mint,
+      pool: row.pool,
+      poolType: row.pool_type,
+    }));
   }
 
   async markSellWarned(ids: readonly string[]): Promise<void> {
@@ -669,8 +738,8 @@ export class PhaseCRepository implements PhaseCStore {
       `update phasec_position
        set status = case when $5::text = 'unpriced' then 'unpriced' else 'closed' end,
            exit_quote = $2::double precision,
-           net_return = case when $5::text = 'unpriced' then null else $3::double precision end,
-           net_return_2x = case when $5::text = 'unpriced' then null else $4::double precision end,
+           net_return = $3::double precision,
+           net_return_2x = $4::double precision,
            exit_reason = $5::text, exit_impact_pct = $6::double precision,
            exit_fee_usd = $7::double precision, quote_failure = $8::text, closed_at = $9::timestamptz,
            fomo_fee_usd = coalesce(fomo_fee_usd, 0) + coalesce($10::double precision, 0),
@@ -848,7 +917,7 @@ export class PhaseCRepository implements PhaseCStore {
       size_pct: number;
     }>(
       `select closed_at, arm, net_return, size_pct from phasec_position
-       where status = 'closed' and net_return is not null and closed_at is not null
+       where status in ('closed', 'unpriced') and net_return is not null and closed_at is not null
          and restarted_at is null
        order by closed_at`,
     );

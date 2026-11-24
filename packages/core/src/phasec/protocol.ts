@@ -63,6 +63,10 @@ export interface PhaseCConfig {
   xEnabled: boolean;
   destination: "test" | "admin";
   fomoFeeSchedule: "solana_lowest_fee" | "solana_other";
+  /** Consecutive true no-route answers required before a -100% dead close. Default 3. */
+  deadNoRouteStreak?: number;
+  /** Minimum spacing between those answers. Default 60 seconds. */
+  deadNoRouteGapMs?: number;
 }
 
 export function defaultSizePct(): Record<Stage, number> {
@@ -98,6 +102,8 @@ export function protocolBody(config: PhaseCConfig, rules?: unknown): string {
     weights: SCORE_WEIGHTS,
     exitTreatments: EXIT_TREATMENTS,
     fomoFeeSchedule: config.fomoFeeSchedule,
+    deadNoRouteStreak: config.deadNoRouteStreak ?? 3,
+    deadNoRouteGapMs: config.deadNoRouteGapMs ?? 60_000,
     scoringVersion: SCORING_VERSION,
     walletMinEntries: PROVEN_WALLET_RULE.minEntries,
     sniperUnmeasured: "watch_until_measured",

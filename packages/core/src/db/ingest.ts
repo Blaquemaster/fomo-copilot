@@ -545,6 +545,23 @@ alter table phasec_position add column if not exists scale_quote double precisio
 alter table phasec_position add column if not exists scale_impact_pct double precision;
 alter table phasec_position add column if not exists scale_proceeds_usd double precision;
 alter table phasec_position add column if not exists scale_fee_usd double precision;
+alter table phasec_position add column if not exists no_route_streak integer not null default 0;
+alter table phasec_position add column if not exists no_route_first_at timestamptz;
+alter table phasec_position add column if not exists no_route_last_at timestamptz;
+
+create table if not exists phasec_quote_failure (
+  id bigserial primary key,
+  position_id bigint,
+  mint text not null,
+  purpose text not null,
+  observed_at timestamptz not null,
+  http_status integer,
+  reason text not null,
+  body text,
+  source text
+);
+create index if not exists phasec_quote_failure_position_idx
+  on phasec_quote_failure (position_id, observed_at desc);
 alter table phasec_position add column if not exists quote_source text;
 alter table phasec_position add column if not exists restarted_at timestamptz;
 alter table phasec_alert add column if not exists fingerprint text;
@@ -830,6 +847,10 @@ export async function migrate(pool: pg.Pool): Promise<void> {
     await client.query(
       "insert into schema_migrations (id) values ($1) on conflict (id) do nothing",
       ["023_scale_booking"],
+    );
+    await client.query(
+      "insert into schema_migrations (id) values ($1) on conflict (id) do nothing",
+      ["024_quote_failure"],
     );
     await client.query(
       `update ingest_recall_audit a

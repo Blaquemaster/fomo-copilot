@@ -17,7 +17,19 @@ export interface SizeBidOk {
 
 export interface SizeBidFail {
   ok: false;
-  reason: "no_liquidity" | "no_route" | "no_quote" | "rate_limited" | "transient";
+  reason:
+    | "no_liquidity"
+    | "no_route"
+    | "no_quote"
+    | "rate_limited"
+    | "transient"
+    | "http_400"
+    | "http_404"
+    | "api_error";
+  /** Raw Jupiter status. Absent when the request never got an HTTP response. */
+  httpStatus?: number | null;
+  /** Truncated, redacted response body. Absent on a transport failure. */
+  errorBody?: string | null;
 }
 
 export type SizeBid = SizeBidOk | SizeBidFail;
@@ -63,9 +75,17 @@ export function impactPercent(raw: number): number {
 export function classifyJupiterHttp(status: number): SizeBidFail["reason"] | "ok" {
   if (status === 429) return "rate_limited";
   if (status >= 500) return "transient";
-  if (status === 400 || status === 404) return "no_route";
+  if (status === 400) return "http_400";
+  if (status === 404) return "http_404";
+  if (status >= 400 && status < 500) return "api_error";
   if (status >= 200 && status < 300) return "ok";
   return "transient";
+}
+
+/** Keep a failed quote body small and free of credentials. */
+export function quoteErrorBody(body: string, limit = 512): string {
+  const trimmed = body.replace(/\s+/g, " ").trim();
+  return trimmed.length <= limit ? trimmed : trimmed.slice(0, limit);
 }
 
 /** Jupiter /swap/v1/quote body. The request is quote-only. */

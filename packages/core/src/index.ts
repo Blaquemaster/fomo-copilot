@@ -308,6 +308,11 @@ export {
   protocolFingerprint,
   type PhaseCConfig,
 } from "./phasec/protocol.js";
-export { classifyJupiterHttp } from "./phasec/quote.js";
+export { classifyJupiterHttp, quoteErrorBody } from "./phasec/quote.js";
+export {
+  DRAINED_SOL_LAMPORTS,
+  tradabilityFromReserves,
+  type PoolTradability,
+} from "./phasec/dead.js";
 export type { PhaseCStore } from "./phasec/store.js";
 export { etDay, etDayRange, etWeekStart, inQuietHours, nextEtMidnight } from "./phasec/time.js";

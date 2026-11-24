@@ -49,5 +49,7 @@ export function phaseCConfigFromEnv(env: Env, thresholds: Thresholds): PhaseCCon
     xEnabled: env.X_MENTION_SOURCE === "fixture",
     destination: env.ALERT_DESTINATION ?? "test",
     fomoFeeSchedule: env.FOMO_FEE_SCHEDULE ?? "solana_lowest_fee",
+    deadNoRouteStreak: env.DEAD_NO_ROUTE_STREAK ?? 3,
+    deadNoRouteGapMs: (env.DEAD_NO_ROUTE_GAP_SEC ?? 60) * 1000,
   };
 }

@@ -42,6 +42,7 @@ import {
   screenCreditProjection,
 } from "./accounts.js";
 import { collectJupiterBids, fetchSolPriceUsd, type JupiterRequest } from "./jupiter.js";
+import { readPoolStates } from "./poolRead.js";
 
 const ENRICH_PER_PASS = 16;
 
@@ -490,6 +491,29 @@ export async function runPhaseCCycle(input: {
     await input.store.recordScreenCredits(spent, input.now);
   }
   Object.assign(quoted.bids, sold.bids);
+  const pools = await input.store.openPools(positions.map((position) => position.mint));
+  const poolByMint = new Map(pools.map((row) => [row.mint, row]));
+  const poolState = await readPoolStates({
+    rows: positions.flatMap((position) => {
+      const pool = poolByMint.get(position.mint);
+      if (!pool) return [];
+      let sellAmountRaw = 1n;
+      try {
+        if (position.entryOutAmount) sellAmountRaw = BigInt(position.entryOutAmount);
+      } catch {
+        sellAmountRaw = 1n;
+      }
+      return [
+        {
+          mint: position.mint,
+          pool: pool.pool,
+          poolType: pool.poolType,
+          sellAmountRaw,
+        },
+      ];
+    }),
+    fetchImpl: input.fetchImpl,
+  });
   const entriesStart = stored ? readEntriesStart(stored.body) : nextEtMidnight(input.now);
   const result = runPhaseCPass({
     now: input.now,
@@ -501,6 +525,7 @@ export async function runPhaseCCycle(input: {
     coins,
     quotes: [...input.quotes],
     bids: quoted.bids,
+    poolState,
     positions,
     closedToday: await input.store.closedBetween(day.start, day.end),
     paused: await input.store.isPaused(day.day),
@@ -575,6 +600,8 @@ export async function runPhaseCCycle(input: {
   });
   await input.store.markSellWarned(result.sellWarnings);
   await input.store.markScaled(result.scaled, input.now);
+  await input.store.saveQuoteFailures(result.quoteFailures, input.now);
+  await input.store.saveNoRouteStreaks(result.streaks);
   let autobuyMode: "off" | "dry_run" = "off";
   try {
     autobuyMode = resolveAutobuyMode({
