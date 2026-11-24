@@ -167,3 +167,29 @@ export function selectDiagnosticVenue(input: {
   if (second && second.recallTrials === best.recallTrials) return { status: "tie", venue: null };
   return { status: "selected", venue: best.id };
 }
+
+/**
+ * The 90% Helius account-usage guard is separate from the diagnostic allowance.
+ * A pause invalidates coverage for that period. Remaining diagnostic credits do not repair it.
+ */
+export function coverageReadiness(input: {
+  accountUsagePaused: boolean;
+  diagnosticCreditsRemaining: number;
+}): {
+  ready: boolean;
+  failure: "integrity" | null;
+  diagnosticCreditsRemaining: number;
+} {
+  if (input.accountUsagePaused) {
+    return {
+      ready: false,
+      failure: "integrity",
+      diagnosticCreditsRemaining: input.diagnosticCreditsRemaining,
+    };
+  }
+  return {
+    ready: true,
+    failure: null,
+    diagnosticCreditsRemaining: input.diagnosticCreditsRemaining,
+  };
+}

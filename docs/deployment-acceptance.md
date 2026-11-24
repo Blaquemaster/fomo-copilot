@@ -86,6 +86,8 @@ bash scripts/pre-merge-deploy-check.sh
 
 Dispatch only after the publish check prints `replacement may start`. `confirm` must be `promote-tested-digest`. The workflow pulls that same reference. It writes `AUTOBUY_MODE=dry_run` before the container starts. `live` is refused. It stops the screener and the alerter, leaves Postgres running, and starts only that pulled image.
 
+The reference `ghcr.io/blaquemaster/fomo-copilot/ingestor@sha256:766502c8029cded0d35ac946f6da35bbc46b5f3676fed0a7a5a0ee50e21aeec6` is not approvable. `verify-published-image.sh` and the deploy workflow refuse it before a pull or SSH. Approve only the push-run `ingestorImage` whose `commit` equals the head of this revision.
+
 **Stop: schema drift.** Before those migrations, read production `schema_migrations` with SELECT only and compare it to `infra/db/production-baseline.txt`.
 
 ```bash
@@ -116,7 +118,18 @@ bash scripts/preflight.sh --live \
   --shadow-user fomo_shadow
 ```
 
-8. Start the diagnostic phase only after that probe passes. Do not start paper, alerts, or the qualification clock.
+8. Start the diagnostic phase only after that probe passes. The command is the ingestor image entrypoint under the restricted role, not a manual scan or a standalone quote script:
+
+```bash
+docker run --rm --network fomo-copilot_internal \
+  --env-file /opt/fomo-copilot/.env \
+  -e DATABASE_URL='postgres://fomo_shadow:<password>@postgres:5432/fomo' \
+  --entrypoint node \
+  ghcr.io/blaquemaster/fomo-copilot/ingestor@sha256:THE_PUSH_RUN_DIGEST \
+  apps/ingestor/dist/diagnostic.js
+```
+
+That process charges the shared Postgres budget before every parsed-events scan page, every public-RPC reconciliation request, and every Jupiter quote attempt, including a retry. If the budget database errors, or the charge is denied, the request is not sent. Exhaustion stops those three jobs. The existing ingestor keeps running. The qualification clock stays inhibited. A 90 percent Helius account-usage pause is an integrity failure for coverage even when diagnostic credits remain. Do not start paper or alerts.
 
 ## Migrations
 
@@ -174,11 +187,11 @@ Candidate sources, none selected. PumpSwap is the destination of a Pump graduati
 
 Each candidate needs at least 300 unique reference events in every critical class, including graduation or migration; at least 300 independently referenced wallet buys and 300 sells for the frozen cohort, counted across venues; and completed reference scans of the whole window on the 6-hour interval. The recall rule is only the exact-binomial one-sided 95 percent lower limit, and it has to be at least 99 percent. 300 of 300 is about 0.99006. 999 of 1000 is about 0.995265 and passes. 299 of 300 fails. Gap coverage and integrity are separate checks, named `gap` and `integrity`. A recall miss is `recall_below_99`. A tie among passers is `tie`. Do not treat every miss as one insufficient-evidence result. The tie-breaker runs only among venues that pass the recall bar and the gap check. Do not loosen a bar.
 
-Hard ceilings, rejected by config if set higher: 50,000 Helius credits, 2,000 Jupiter quotes a day, 20,000 public-RPC calls a day, and the $25 ceiling. The 50,000 credits are diagnostic additions only. They do not include the ingestor's existing stream. The weights are the documented Helius method costs: 1 credit for `getSlot`, `getTransaction`, and `getSignaturesForAddress`, 1 credit for a parsed event, and 10 credits plus 1 per scanned page for a parsed-events scan. Hitting a ceiling stops reference scans, reconciliation, and quote collection. It does not stop the existing ingestor. The counters are rows in Postgres, shared by every diagnostic process, and they remain after a restart. A denied retry does not add another unit.
+Hard ceilings, rejected by config if set higher: 50,000 Helius credits, 2,000 Jupiter quotes a day, 20,000 public-RPC calls a day, and the $25 ceiling. The 50,000 credits are diagnostic additions only. They do not include the ingestor's existing stream. Helius weights, by endpoint: a Parsed Events REST request (`GET https://api.helius.xyz/v0/addresses/{address}/transactions`) is 10 credits and the diagnostic does not call it; a Parsed Events scan (`POST https://mainnet.helius-rpc.com/v1/parsed-events/scan`) is 10 credits plus 1 per history page and is what the reference scan sends; a Parsed Streams delivery (`parsedTransactionSubscribe`) is 1 credit per delivered event and belongs to the ingestor, not the diagnostic. Public RPC reconciliation is `getSignaturesForAddress` and is not a Helius credit. Hitting a ceiling stops reference scans, reconciliation, and quote collection. It does not stop the existing ingestor. The counters are rows in Postgres, shared by every diagnostic process, and they remain after a restart. A denied retry does not send another request. If the separate 90 percent account-usage guard pauses ingestion, that period is an integrity failure for coverage readiness, whatever diagnostic credits remain.
 
 ## External APIs and the cost ceiling
 
-- Helius parsed websocket and HTTPS RPC (`mainnet.helius-rpc.com`, `beta.helius-rpc.com`): the running ingestor. Parsed events are 1 credit. `getSlot`, `getTransaction`, and `getSignaturesForAddress` are 1 credit. A parsed-events scan is 10 credits plus 1 per page. The existing plan pauses at 90 percent of 10,000,000 credits. The diagnostic ceiling is the tighter 50,000 credits.
+- Helius parsed websocket and HTTPS RPC (`mainnet.helius-rpc.com`, `beta.helius-rpc.com`): the running ingestor. A Parsed Streams delivery is 1 credit per event. `getSlot`, `getTransaction`, and `getSignaturesForAddress` are 1 credit. A Parsed Events scan is 10 credits plus 1 per history page. A Parsed Events REST request is 10 credits and is not used by the diagnostic. The existing plan pauses at 90 percent of 10,000,000 credits, and that pause invalidates coverage readiness. The diagnostic ceiling is the tighter 50,000 credits on scan requests only.
 - Public Solana RPC `https://api.mainnet-beta.solana.com`: venue reference scans. No Helius charge. Ceiling 20,000 calls a day.
 - Jupiter `https://api.jup.ag/swap/v1/quote`: quote collection. Keyless limit is 30 requests a minute; the code stays at 24. Ceiling 2,000 quotes a day.
 - DexScreener and GeckoTerminal are used by the screener market poll. The screener stays stopped, so the diagnostic does not call them.

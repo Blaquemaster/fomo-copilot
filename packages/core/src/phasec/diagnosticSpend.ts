@@ -1,6 +1,6 @@
 import type { Pool } from "pg";
 
-import { parsedScanCredits, rpcCredits } from "../ingest/budget.js";
+import { rpcCredits } from "../ingest/budget.js";
 import { DIAGNOSTIC_BUDGET } from "./diagnosticSpec.js";
 
 /** The 50,000 Helius credits count diagnostic additions only, not the running ingestor. */
@@ -10,15 +10,64 @@ export const DIAGNOSTIC_ALLOWANCE = "diagnostic_additions_only" as const;
 export const HELIUS_USD_MICROS_PER_CREDIT = 5n;
 export const DOLLAR_CEILING_MICROS = BigInt(DIAGNOSTIC_BUDGET.incrementalCeilingUsd) * 1_000_000n;
 
+/**
+ * Helius prices named by the endpoint the credit buys.
+ * The diagnostic runner sends only the scan. Parsed Streams are the ingestor's
+ * parsedTransactionSubscribe deliveries. This repository does not call the REST history route.
+ */
+export const HELIUS_DIAGNOSTIC_ENDPOINTS = {
+  parsedEventsRest: {
+    name: "Parsed Events REST",
+    endpoint: "GET https://api.helius.xyz/v0/addresses/{address}/transactions",
+    credits: 10,
+  },
+  parsedEventsScan: {
+    name: "Parsed Events scan",
+    endpoint: "POST https://mainnet.helius-rpc.com/v1/parsed-events/scan",
+    requestCredits: 10,
+    creditsPerHistoryPage: 1,
+    transactionsPerPage: 1000,
+  },
+  parsedStreamDelivery: {
+    name: "Parsed Streams delivery",
+    endpoint: "parsedTransactionSubscribe delivery",
+    creditsPerDeliveredEvent: 1,
+  },
+} as const;
+
+/** Helius methods the diagnostic entrypoint actually charges. */
+export const DIAGNOSTIC_HELIUS_METHODS = ["parsedEventsScan"] as const;
+
 export const EXHAUSTION_EFFECT = {
   allowance: DIAGNOSTIC_ALLOWANCE,
   stops: ["reference_scan", "reconciliation", "quote_collection"] as const,
   ingestor: "keeps_running" as const,
 } as const;
 
-export function heliusDiagnosticCredits(method: string, transactionsScanned?: number): number {
-  if (method === "parsedScan") return parsedScanCredits(transactionsScanned ?? 0);
-  if (method === "parsedEvent") return 1;
+export function heliusDiagnosticCredits(
+  method: string,
+  detail?: { transactionsScanned?: number; historyPages?: number; deliveredEvents?: number },
+): number {
+  if (method === "parsedEventsRest") return HELIUS_DIAGNOSTIC_ENDPOINTS.parsedEventsRest.credits;
+  if (method === "parsedEventsScan") {
+    const pageSize = HELIUS_DIAGNOSTIC_ENDPOINTS.parsedEventsScan.transactionsPerPage;
+    const scanned = Number.isFinite(detail?.transactionsScanned)
+      ? Math.max(0, Math.floor(detail?.transactionsScanned ?? 0))
+      : 0;
+    const pages = detail?.historyPages ?? Math.ceil(scanned / pageSize);
+    return (
+      HELIUS_DIAGNOSTIC_ENDPOINTS.parsedEventsScan.requestCredits +
+      Math.max(0, Math.floor(pages)) *
+        HELIUS_DIAGNOSTIC_ENDPOINTS.parsedEventsScan.creditsPerHistoryPage
+    );
+  }
+  if (method === "parsedStreamDelivery") {
+    const events = detail?.deliveredEvents ?? 1;
+    return (
+      Math.max(0, Math.floor(events)) *
+      HELIUS_DIAGNOSTIC_ENDPOINTS.parsedStreamDelivery.creditsPerDeliveredEvent
+    );
+  }
   return rpcCredits(method);
 }
 
@@ -66,6 +115,8 @@ export async function chargeDiagnostic(
     method: string;
     processId: string;
     transactionsScanned?: number;
+    historyPages?: number;
+    deliveredEvents?: number;
     caps?: Partial<SpendCaps>;
   },
 ): Promise<{
@@ -80,7 +131,11 @@ export async function chargeDiagnostic(
   const caps = { ...productionSpendCaps(), ...input.caps };
   const units =
     input.provider === "helius"
-      ? heliusDiagnosticCredits(input.method, input.transactionsScanned)
+      ? heliusDiagnosticCredits(input.method, {
+          transactionsScanned: input.transactionsScanned,
+          historyPages: input.historyPages,
+          deliveredEvents: input.deliveredEvents,
+        })
       : 1;
   const usdAdd = input.provider === "helius" ? BigInt(units) * HELIUS_USD_MICROS_PER_CREDIT : 0n;
   const client = await pool.connect();

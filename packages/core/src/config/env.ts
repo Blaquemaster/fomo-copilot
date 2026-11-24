@@ -40,6 +40,10 @@ export const envSchema = z.object({
     .positive()
     .max(20_000)
     .optional(),
+  /** Unset uses https://api.mainnet-beta.solana.com. A CI mock may set an http origin. */
+  PUBLIC_RPC_URL: z.string().min(8).max(2048).optional(),
+  /** Unset uses the public Jupiter quote URL. A CI mock may set that path on another origin. */
+  JUPITER_QUOTE_BASE: z.string().min(8).max(2048).optional(),
   THRESHOLDS_PATH: z.string().min(1).max(512).optional(),
   // Developer until the owner switches this to free (planned 2026-12-07).
   HELIUS_PLAN: z.enum(["developer", "free"]).default("developer"),

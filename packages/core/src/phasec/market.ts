@@ -13,7 +13,7 @@ export interface MarketQuote {
   source: "dexscreener" | "geckoterminal" | "fixture";
 }
 
-export function quoteUrlAllowed(url: string): boolean {
+export function quoteUrlAllowed(url: string, quoteBase?: string): boolean {
   let parsed: URL;
   try {
     parsed = new URL(url);
@@ -29,6 +29,14 @@ export function quoteUrlAllowed(url: string): boolean {
     lower.includes("swap-instructions")
   ) {
     return false;
+  }
+  if (quoteBase) {
+    try {
+      const allowed = new URL(quoteBase);
+      if (parsed.origin === allowed.origin && path === allowed.pathname) return true;
+    } catch {
+      // A bad override does not change the public host check.
+    }
   }
   if (parsed.hostname === "api.jup.ag") {
     return path === "/swap/v1/quote" || path === "/swap/v1/swap";

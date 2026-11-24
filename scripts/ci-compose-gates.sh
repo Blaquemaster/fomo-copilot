@@ -411,6 +411,114 @@ cat /tmp/fomo-live-trace 2>/dev/null || true
 docker logs fomo-ci-ingestor-1 2>&1 || true
 test "$live_code" = "0"
 grep -q 'result=ok' /tmp/fomo-live-replacement.txt
+
+echo "diagnostic entrypoint shares the budget and leaves the ingestor running"
+compose exec -T postgres psql -v ON_ERROR_STOP=1 -U fomo -d fomo <<'SQL'
+create table if not exists diagnostic_spend (
+  scope text primary key,
+  helius_credits bigint not null default 0,
+  jupiter_quotes bigint not null default 0,
+  public_rpc_calls bigint not null default 0,
+  spent_usd_micros bigint not null default 0
+);
+create table if not exists diagnostic_spend_event (
+  id bigserial primary key,
+  scope text not null,
+  provider text not null,
+  method text not null,
+  units bigint not null,
+  process_id text not null,
+  accepted boolean not null,
+  created_at timestamptz not null default now()
+);
+grant select on ingest_month to fomo_shadow_ci;
+grant select, insert, update on diagnostic_spend to fomo_shadow_ci;
+grant select, insert on diagnostic_spend_event to fomo_shadow_ci;
+grant usage, select on sequence diagnostic_spend_event_id_seq to fomo_shadow_ci;
+SQL
+mock_counts() {
+  docker exec fomo-ci-mock node -e "fetch('http://127.0.0.1:8787/counts').then(async (response) => process.stdout.write(await response.text()))"
+}
+run_diag() {
+  docker run --rm --network "$network" \
+    --env-file "$app_env" \
+    -e DATABASE_URL="$1" \
+    -e DIAGNOSTIC_SCOPE="$2" \
+    -e DIAGNOSTIC_PROCESS_ID="$3" \
+    -e DIAGNOSTIC_MAX_HELIUS_CREDITS="$4" \
+    -e DIAGNOSTIC_MAX_JUPITER_QUOTES_PER_DAY="$5" \
+    -e DIAGNOSTIC_MAX_PUBLIC_RPC_CALLS_PER_DAY="$6" \
+    -e HELIUS_HTTP_BASE=http://fomo-ci-mock:8787 \
+    -e PUBLIC_RPC_URL=http://fomo-ci-mock:8787 \
+    -e JUPITER_QUOTE_BASE=http://fomo-ci-mock:8787/swap/v1/quote \
+    --entrypoint node \
+    fomo-ci-ingestor apps/ingestor/dist/diagnostic.js
+}
+shadow_url="postgres://fomo_shadow_ci:password1@postgres:5432/fomo"
+run_diag "$shadow_url" shared a 11 2 1 >/tmp/fomo-diag-a.txt &
+diag_a=$!
+run_diag "$shadow_url" shared b 11 2 1 >/tmp/fomo-diag-b.txt &
+diag_b=$!
+set +e
+wait "$diag_a"
+diag_a_code=$?
+wait "$diag_b"
+diag_b_code=$?
+set -e
+cat /tmp/fomo-diag-a.txt
+cat /tmp/fomo-diag-b.txt
+test "$diag_a_code" = "0"
+test "$diag_b_code" = "0"
+grep -q 'fomo_shadow_ci' /tmp/fomo-diag-a.txt
+grep -q 'apps/ingestor/dist/diagnostic.js' /tmp/fomo-diag-a.txt
+grep -q '"ingestor":"keeps_running"' /tmp/fomo-diag-a.txt
+grep -q '"countDays":false' /tmp/fomo-diag-a.txt
+shared_counts=$(mock_counts)
+echo "shared counts $shared_counts"
+node --input-type=module -e "
+const counts = JSON.parse(process.argv[1]);
+if (counts.scan !== 1 || counts.publicRpc !== 1 || counts.jupiter !== 2) {
+  console.error(counts);
+  process.exit(1);
+}
+" "$shared_counts"
+compose exec -T postgres psql -v ON_ERROR_STOP=1 -U fomo -d fomo -At -c \
+  "select helius_credits::text || ',' || jupiter_quotes::text || ',' || public_rpc_calls::text from diagnostic_spend where scope = 'shared'" \
+  | grep -qx '11,2,1'
+compose exec -T postgres psql -v ON_ERROR_STOP=1 -U fomo -d fomo -At -c \
+  "select string_agg(distinct method, ',' order by method) from diagnostic_spend_event where scope = 'shared' and accepted" \
+  | grep -qx 'getSignaturesForAddress,parsedEventsScan,quote'
+run_diag "$shadow_url" shared c 11 2 1 >/tmp/fomo-diag-c.txt
+cat /tmp/fomo-diag-c.txt
+grep -q '"denied":3' /tmp/fomo-diag-c.txt
+test "$(mock_counts)" = "$shared_counts"
+compose exec -T postgres psql -v ON_ERROR_STOP=1 -U fomo -d fomo -c \
+  "insert into diagnostic_spend (scope, helius_credits, jupiter_quotes, public_rpc_calls, spent_usd_micros) values ('denied', 11, 2, 1, 0)"
+run_diag "$shadow_url" denied d 11 2 1 >/tmp/fomo-diag-d.txt
+cat /tmp/fomo-diag-d.txt
+grep -q '"sent":{"scan":0,"reconciliation":0,"quote":0}' /tmp/fomo-diag-d.txt
+test "$(mock_counts)" = "$shared_counts"
+run_diag "postgres://fomo_shadow_ci:password1@postgres:5432/fomo_missing" missing e 11 2 1 >/tmp/fomo-diag-e.txt
+cat /tmp/fomo-diag-e.txt
+grep -q '"budgetDbFailed":true' /tmp/fomo-diag-e.txt
+test "$(mock_counts)" = "$shared_counts"
+compose exec -T postgres psql -v ON_ERROR_STOP=1 -U fomo -d fomo -c \
+  "insert into ingest_month (month, credit_micros, paused) values (to_char(now() at time zone 'utc', 'YYYY-MM'), 9000000000000, true) on conflict (month) do update set credit_micros = excluded.credit_micros, paused = true"
+run_diag "$shadow_url" pause f 100 5 5 >/tmp/fomo-diag-f.txt
+cat /tmp/fomo-diag-f.txt
+grep -q '"failure":"integrity"' /tmp/fomo-diag-f.txt
+grep -q '"diagnosticCreditsRemaining":89' /tmp/fomo-diag-f.txt
+grep -q '"countDays":false' /tmp/fomo-diag-f.txt
+test "$(docker inspect -f '{{.State.Running}}' fomo-ci-ingestor-1)" = "true"
+pause_counts=$(mock_counts)
+node --input-type=module -e "
+const before = JSON.parse(process.argv[1]);
+const after = JSON.parse(process.argv[2]);
+if (after.baselineWs < 1) process.exit(1);
+if (after.scan <= before.scan) process.exit(1);
+" "$shared_counts" "$pause_counts"
+echo "diagnostic budget held; ingestor still running"
+
 compose stop ingestor
 docker rm -f fomo-ci-mock >/dev/null 2>&1 || true
 

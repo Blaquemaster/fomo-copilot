@@ -1,5 +1,5 @@
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -334,6 +334,30 @@ describe("schema drift halt", () => {
         encoding: "utf8",
       }),
     ).toThrow(/schema drift/);
+  });
+});
+
+describe("rejected release reference", () => {
+  it("refuses the previous registry digest before any pull", () => {
+    const script = path.join(root, "scripts/verify-published-image.sh");
+    const deploy = readFileSync(path.join(root, ".github/workflows/deploy.yml"), "utf8");
+    expect(deploy).toContain(
+      "sha256:766502c8029cded0d35ac946f6da35bbc46b5f3676fed0a7a5a0ee50e21aeec6",
+    );
+    expect(deploy).toContain("not approvable");
+    expect(() =>
+      execFileSync(
+        "bash",
+        [
+          script,
+          "--reference",
+          "ghcr.io/blaquemaster/fomo-copilot/ingestor@sha256:766502c8029cded0d35ac946f6da35bbc46b5f3676fed0a7a5a0ee50e21aeec6",
+          "--expected-image-id",
+          "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+        ],
+        { encoding: "utf8" },
+      ),
+    ).toThrow(/not approvable/);
   });
 });
 

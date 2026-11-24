@@ -59,14 +59,19 @@ export function lamportsForUsd(sizeUsd: number, solPriceUsd: number): string | n
   return Math.round((sizeUsd / solPriceUsd) * 1_000_000_000).toString();
 }
 
-export function jupiterQuoteUrl(inputMint: string, outputMint: string, amount: string): string {
+export function jupiterQuoteUrl(
+  inputMint: string,
+  outputMint: string,
+  amount: string,
+  base: string = JUPITER_QUOTE_URL,
+): string {
   const params = new URLSearchParams({
     inputMint,
     outputMint,
     amount,
     swapMode: "ExactIn",
   });
-  return `${JUPITER_QUOTE_URL}?${params.toString()}`;
+  return `${base}?${params.toString()}`;
 }
 
 export function impactPercent(raw: number): number {

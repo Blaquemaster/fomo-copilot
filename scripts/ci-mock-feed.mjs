@@ -45,16 +45,57 @@ function sendText(socket, text) {
   socket.write(Buffer.concat([Buffer.from(header), payload]));
 }
 
+const counts = { scan: 0, publicRpc: 0, jupiter: 0, baselineHttp: 0, baselineWs: 0 };
+let jupiterSeen = 0;
+
 const server = http.createServer((request, response) => {
+  const url = request.url ?? "/";
+  if (request.method === "GET" && url.startsWith("/counts")) {
+    response.setHeader("content-type", "application/json");
+    response.end(JSON.stringify(counts));
+    return;
+  }
   const chunks = [];
   request.on("data", (chunk) => chunks.push(chunk));
   request.on("end", () => {
+    if (url.startsWith("/v1/parsed-events/scan")) {
+      counts.scan += 1;
+      response.setHeader("content-type", "application/json");
+      response.end(
+        JSON.stringify({
+          data: [],
+          scan: { scannedTransactions: 1000, creditsCharged: 11, stoppedOn: "windowEnd" },
+        }),
+      );
+      return;
+    }
+    if (url.startsWith("/swap/v1/quote")) {
+      counts.jupiter += 1;
+      jupiterSeen += 1;
+      response.setHeader("content-type", "application/json");
+      if (jupiterSeen === 1) {
+        response.statusCode = 429;
+        response.end("{}");
+        return;
+      }
+      response.end(
+        JSON.stringify({
+          inAmount: "1000000",
+          outAmount: "2000000",
+          priceImpactPct: "0",
+          routePlan: [{}],
+        }),
+      );
+      return;
+    }
     let body;
     try {
       body = JSON.parse(Buffer.concat(chunks).toString("utf8") || "{}");
     } catch {
       body = {};
     }
+    if (url.includes("api-key")) counts.baselineHttp += 1;
+    else if (body.method === "getSignaturesForAddress") counts.publicRpc += 1;
     let result = null;
     if (body.method === "getSlot") result = 100;
     else if (body.method === "getSignaturesForAddress") {
@@ -66,6 +107,7 @@ const server = http.createServer((request, response) => {
 });
 
 server.on("upgrade", (request, socket) => {
+  counts.baselineWs += 1;
   const key = request.headers["sec-websocket-key"];
   const accept = crypto
     .createHash("sha1")

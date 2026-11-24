@@ -6,6 +6,8 @@ import {
   PUMP_PROGRAM_ID,
 } from "@fomo/core";
 
+import { diagnosticGateAllows } from "./helius.js";
+
 /** Public Solana JSON-RPC. This recall does not call Helius. */
 export const PUBLIC_SOLANA_RPC = "https://api.mainnet-beta.solana.com";
 
@@ -25,7 +27,12 @@ export async function recallProgramFromPublicRpc(input: {
   fetchImpl?: typeof fetch;
   rpcUrl?: string;
   limit?: number;
+  /** Diagnostic gate. A false result or a throw does not send the request. */
+  gate?: () => Promise<boolean>;
 }): Promise<PumpRecall> {
+  if (input.gate && !(await diagnosticGateAllows(input.gate))) {
+    return { checked: 0, missing: [], source: "public-rpc" };
+  }
   const fetchImpl = input.fetchImpl ?? fetch;
   const response = await fetchImpl(input.rpcUrl ?? PUBLIC_SOLANA_RPC, {
     method: "POST",

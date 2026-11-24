@@ -44,8 +44,8 @@ describe.skipIf(!databaseUrl)("diagnostic spend is shared and does not stop the 
         const again = await chargeDiagnostic(restarted, {
           scope,
           provider: "helius",
-          method: "parsedScan",
-          transactionsScanned: 0,
+          method: "parsedEventsScan",
+          historyPages: 1,
           processId: "worker-a-restarted",
           caps,
         });

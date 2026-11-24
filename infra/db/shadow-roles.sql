@@ -20,6 +20,13 @@ GRANT SELECT, INSERT, UPDATE ON TABLE
   phasec_wallet_list_version, phasec_config_history
   TO fomo_shadow;
 
+-- After diagnostic_spend and diagnostic_spend_event exist, the same role also needs:
+--   GRANT SELECT ON TABLE ingest_month TO fomo_shadow;
+--   GRANT SELECT, INSERT, UPDATE ON TABLE diagnostic_spend TO fomo_shadow;
+--   GRANT SELECT, INSERT ON TABLE diagnostic_spend_event TO fomo_shadow;
+--   GRANT USAGE, SELECT ON SEQUENCE diagnostic_spend_event_id_seq TO fomo_shadow;
+-- Those tables are not created here. This file stays unapplied.
+
 REVOKE INSERT, UPDATE, DELETE, TRUNCATE ON TABLE
   phasec_position, phasec_alert, autobuy_intent, raw_events
   FROM fomo_shadow;

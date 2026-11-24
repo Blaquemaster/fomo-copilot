@@ -12,6 +12,15 @@ export class HeliusRpcError extends Error {
 
 export type RpcMeter = (method: string) => void;
 
+/** A throwing or refusing diagnostic gate must not be followed by a request. */
+export async function diagnosticGateAllows(gate: () => Promise<boolean>): Promise<boolean> {
+  try {
+    return await gate();
+  } catch {
+    return false;
+  }
+}
+
 export async function heliusRpc(input: {
   apiKey: string;
   method: string;
@@ -131,6 +140,13 @@ export async function scanInstructionHistory(input: {
   slotLte: number | null;
   /** Requests of up to 10,000 transactions. Startup backfill uses 4. */
   maxPages?: number;
+  /** Charged history pages for this HTTP call. Diagnostic passes 1 for a 1,000-transaction budget. */
+  maxScannedTransactions?: number;
+  /**
+   * Diagnostic gate. Called before every page, including a continued page.
+   * A false result or a throw does not send the request. The ingestor omits it.
+   */
+  gate?: (input: { historyPages: number }) => Promise<boolean>;
   fetchImpl?: typeof fetch;
   baseUrl?: string;
 }): Promise<{ matches: ScanMatch[]; creditsCharged: number; complete: boolean }> {
@@ -139,7 +155,14 @@ export async function scanInstructionHistory(input: {
   let paginationToken: string | undefined;
   let complete = false;
   const maxPages = input.maxPages ?? 4;
+  const maxScanned = input.maxScannedTransactions ?? 10_000;
+  const historyPages = Math.max(1, Math.ceil(maxScanned / 1000));
   for (let page = 0; page < maxPages; page += 1) {
+    if (
+      !(await diagnosticGateAllows(() => input.gate?.({ historyPages }) ?? Promise.resolve(true)))
+    ) {
+      break;
+    }
     const slot: Record<string, number> = { gt: input.slotGt };
     if (input.slotLte !== null) slot["lte"] = input.slotLte;
     const body: Record<string, unknown> = {
@@ -157,7 +180,7 @@ export async function scanInstructionHistory(input: {
       sortOrder: "desc",
       commitment: "confirmed",
       slot,
-      budget: { maxScannedTransactions: 10_000 },
+      budget: { maxScannedTransactions: maxScanned },
     };
     if (paginationToken) body["paginationToken"] = paginationToken;
     const root = (input.baseUrl ?? "https://mainnet.helius-rpc.com").replace(/\/$/, "");

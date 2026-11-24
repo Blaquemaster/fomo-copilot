@@ -279,6 +279,17 @@ export {
   stageSizeUsd,
   type SizeBid,
 } from "./phasec/quote.js";
+export { collectJupiterBids, type JupiterRequest } from "./phasec/jupiterCollect.js";
+export {
+  DIAGNOSTIC_HELIUS_METHODS,
+  EXHAUSTION_EFFECT,
+  HELIUS_DIAGNOSTIC_ENDPOINTS,
+  chargeDiagnostic,
+  heliusDiagnosticCredits,
+  type SpendCaps,
+} from "./phasec/diagnosticSpend.js";
+export { coverageReadiness } from "./phasec/diagnosticSpec.js";
+export { qualificationGate } from "./phasec/review3.js";
 export {
   deadCoinObservation,
   mihaoObservation,

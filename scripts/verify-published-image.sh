@@ -46,6 +46,10 @@ if [[ "$digest" != sha256:* || "$repo" == "$reference" ]]; then
   echo "sequence stopped: reference must be repository@sha256:digest" >&2
   exit 1
 fi
+if [[ "$digest" == "sha256:766502c8029cded0d35ac946f6da35bbc46b5f3676fed0a7a5a0ee50e21aeec6" ]]; then
+  echo "sequence stopped: reference is not approvable" >&2
+  exit 1
+fi
 
 if ! docker pull "$reference"; then
   echo "sequence stopped: pull failed" >&2

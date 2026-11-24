@@ -4,6 +4,7 @@ import {
   CANDIDATE_VENUES,
   DIAGNOSTIC_BUDGET,
   DIAGNOSTIC_WALLET_LIST_VERSION,
+  coverageReadiness,
   diagnosticBudgetStop,
   diagnosticWindow,
   exactBinomialLower,
@@ -109,5 +110,18 @@ describe("diagnostic specification", () => {
     expect(CANDIDATE_VENUES.map((venue) => venue.id)).toEqual(["pump", "launchlab", "meteora"]);
     expect(CANDIDATE_VENUES.find((venue) => venue.id === "pump")?.destinationPool).toBe("pumpswap");
     expect(DIAGNOSTIC_WALLET_LIST_VERSION).toBe("diagnostic-cohort-2026-11-24");
+  });
+
+  it("treats a 90% account-usage pause as an integrity failure while diagnostic credits remain", () => {
+    expect(
+      coverageReadiness({ accountUsagePaused: true, diagnosticCreditsRemaining: 50_000 }),
+    ).toEqual({
+      ready: false,
+      failure: "integrity",
+      diagnosticCreditsRemaining: 50_000,
+    });
+    expect(
+      coverageReadiness({ accountUsagePaused: false, diagnosticCreditsRemaining: 50_000 }).ready,
+    ).toBe(true);
   });
 });
