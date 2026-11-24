@@ -80,7 +80,13 @@ if [[ -z "$digest" ]]; then
   fi
 fi
 
-decision=$(node "$root/scripts/rollback-decision.mjs" --manifest "$manifest" --schema "$schema" --digest "$digest")
+script_dir=$(cd "$(dirname "$0")" && pwd)
+if [[ -f "$script_dir/rollback-decision.mjs" ]]; then
+  decision_js=$script_dir/rollback-decision.mjs
+else
+  decision_js=$root/scripts/rollback-decision.mjs
+fi
+decision=$(node "$decision_js" --manifest "$manifest" --schema "$schema" --digest "$digest")
 action=$(node -e 'const value = JSON.parse(process.argv[1]); process.stdout.write(value.action)' "$decision")
 
 if [[ "$action" == "reject" ]]; then

@@ -17,8 +17,13 @@ describe("repository guards", () => {
     expect(screener).toContain('restart: "no"');
     expect(alerter).toContain('restart: "no"');
     expect(deploy).toContain("ENABLE_PAPER");
-    expect(deploy).toContain('PAPER_ENABLED="true"');
+    expect(deploy).toContain('== "true"');
     expect(deploy).toContain("stop screener alerter");
+    expect(deploy).toContain("--no-build ingestor");
+    expect(deploy).toContain("promote-tested-digest");
+    expect(deploy).toContain('return "dry_run"');
+    expect(deploy).not.toContain("\n  push:\n");
+    expect(deploy).not.toContain("--profile paper up");
     expect(deploy).not.toContain("up -d --build\n");
   });
 

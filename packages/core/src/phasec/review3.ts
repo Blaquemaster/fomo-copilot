@@ -1053,6 +1053,7 @@ export function qualificationGate(input: {
   venueScopeSet: boolean;
   walletListVersionSet: boolean;
   preflightPassed: boolean;
+  diagnosticPhase: boolean;
 }): { countDays: boolean; reasons: string[] } {
   const reasons: string[] = [];
   if (!input.ciGreenOnCommit) reasons.push("ci");
@@ -1065,7 +1066,32 @@ export function qualificationGate(input: {
   if (!input.venueScopeSet) reasons.push("venue_scope_unset");
   if (!input.walletListVersionSet) reasons.push("wallet_list_unset");
   if (!input.preflightPassed) reasons.push("preflight");
+  if (input.diagnosticPhase) reasons.push("diagnostic");
   return { countDays: reasons.length === 0, reasons };
+}
+
+/** Operational diagnostic. It does not select a venue and it does not count days. */
+export const DIAGNOSTIC_PHASE = {
+  paper: false,
+  alerts: false,
+  clockInhibited: true,
+  permittedJobs: ["reference_scan", "reconciliation", "quote_collection"] as const,
+  candidateVenues: ["pump", "pumpswap", "launchlab", "meteora"] as const,
+  venueSelected: null,
+  observationWindowDays: 7,
+  walletCohort: "fixed_at_diagnostic_start",
+  selection: "operational_only",
+  tieBreaker: "higher_completed_reference_denominator_else_stop",
+  durationDays: 7,
+  researchCapProposalUsd: 150,
+  estimatedHostUsd: 1.4,
+  estimatedNewServicesUsd: 0,
+  stopIfNonePass: true,
+  doNotLoosen: true,
+} as const;
+
+export function diagnosticAllows(job: string): boolean {
+  return (DIAGNOSTIC_PHASE.permittedJobs as readonly string[]).includes(job);
 }
 
 export function shadowClock(input: { preflightPassed: boolean; startedAt: Date | null }): {

@@ -1,121 +1,90 @@
-# Deployment acceptance plan
+# Owner runbook
 
-This is the plan for the owner. It is not a deployment. Nothing in this branch contacts the server, starts paper, or sends an alert. Merge these pull requests only after reading this plan. Merging to `main` starts `.github/workflows/deploy.yml` when the deploy secrets are present.
+This is the only deployment plan. It is not a deployment. Nothing in this branch contacts the server, merges, or starts paper.
 
-## Owner choices still open
+The release candidate is the branch `cursor/release-candidate-8ff7`. It contains the held stack through this change. CI builds the ingestor image and records its id in `release-digest.json` and in the compose-gates log line `release digest`. That id is the only image a later deploy may start. There is no schema-compatible fallback image. Rollback is forward-fix-only.
 
-These stay unset until the owner decides. The qualification clock and the 7-day shadow clock stay stopped while any of them is open, and while preflight has not passed.
+## What you can approve now
 
-- Venue scope (`EXPERIMENT_VENUES`). Which venue is not known. One validated venue is enough, and the allowlist is empty until it is named.
-- Wallet-list version. Counted qualification has no run id until this is set.
-- Research cap. $150 is a proposal. It needs an explicit yes. This plan adds no paid service.
-- The production image digest that is allowed as a rollback target. That digest is recorded on the host after a stopped deploy, in the rollback manifest. It is not invented here.
+A bounded rollout and a diagnostic collection:
 
-Inferential scoring stays disabled. The full procedure (a 60-day window, variable volume, and heavy tails) is not calibrated. Wide recovery stays off: `INGEST_WIDE_RECOVERY` remains unset, and a gap wider than about 600 slots stays unrecovered.
+- One merge of this release candidate. The merge does not deploy. See below.
+- An off-host backup while the current ingestor is still running.
+- Loading the tested image, installing the rollback controller, and one ingestor replacement.
+- A diagnostic phase: reference scans, reconciliation, and quote collection. Paper and alerts stay off. The 7-day qualification clock stays off. No venue is chosen.
 
-## Merge order
+## What waits for a later yes
 
-Merge from the bottom of the stack upward, one pull request at a time, after CI on that pull request is green. Each merge to `main` deploys. Take the database dump in the next section before the first merge.
+- Freezing a venue.
+- Freezing a wallet-list version.
+- Creating a qualification run.
+- Starting the 7-day clock.
+- Inferential scoring. The 60-day, variable-volume, heavy-tail calibration is still pending.
+- Turning on wide recovery.
+- Any new paid service. The $150 figure stays a proposal.
 
-| Order | Pull request      | Branch                             | What lands                                                                   |
-| ----- | ----------------- | ---------------------------------- | ---------------------------------------------------------------------------- |
-| 1     | #50               | `cursor/durable-stopped-8ff7`      | Screener and alerter stay stopped unless the flags are the exact word `true` |
-| 2     | #51               | `cursor/experiment-v2-prereg-8ff7` | Pre-registered protocol                                                      |
-| 3     | #40               | `cursor/scale-out-booking-8ff7`    | Scale-out accounting. First new migration in this stack, `023_scale_booking` |
-| 4     | #42               | `cursor/dead-unpriced-8ff7`        | Dead and unpriced exits                                                      |
-| 5     | #44               | `cursor/entry-gating-8ff7`         | Entry impact cap                                                             |
-| 6     | #45               | `cursor/cost-model-8ff7`           | Route cost model. The route itself stays unknown                             |
-| 7     | #46               | `cursor/wallet-signal-8ff7`        | Frozen wallet list                                                           |
-| 8     | #47               | `cursor/wallet-fill-amounts-8ff7`  | High risk: wallet fill quantities                                            |
-| 9     | #48               | `cursor/candidate-log-8ff7`        | Candidate log                                                                |
-| 10    | #49               | `cursor/feed-telemetry-8ff7`       | High risk: backfill source, gaps, and feed alerts                            |
-| 11    | #53               | `cursor/experiment-rules-8ff7`     | Measurement rules                                                            |
-| 12    | #54               | `cursor/experiment-complete-8ff7`  | Experiment measurement path                                                  |
-| 13    | #55               | `cursor/wide-recovery-8ff7`        | High risk: ingestor recovery past 600 slots. The flag stays unset            |
-| 14    | #56               | `cursor/review-3-8ff7`             | Measurement, isolation, and the CI shadow role                               |
-| 15    | this pull request | `cursor/review-6-acceptance-8ff7`  | Rollback manifest, identification bounds, preflight                          |
+## Why merging this branch does not deploy
 
-Leave these unmerged. They are not part of this stack:
+`.github/workflows/deploy.yml` has no `push` trigger. GitHub reads the workflow from the commit that was just pushed. The merge commit's workflow only listens for `workflow_dispatch`, so the merge does not start a deploy, and later pushes do not either.
 
-- #41, the production role plan. The shadow role below is `infra/db/shadow-roles.sql`, applied by hand after the dump.
-- #39 and the dependency-update pull requests.
+A dispatch that is already running is not cancelled: `concurrency.group` is `deploy-production` and `cancel-in-progress` is `false`. A second dispatch waits until the first finishes, including a migration.
 
-## Dump first
+The dispatch starts work only when both of these are true:
 
-On the droplet, before merging #50, while the server is still on current `main`:
+- `confirm` is `promote-tested-digest`
+- `image_digest` is the `sha256:` id recorded by the green CI run
 
-1. Confirm the screener and the alerter are stopped.
-2. Write a custom-format dump outside the container and copy it off the droplet. Record the path and the time.
+Anything else exits before SSH. The job does not build from the checkout. It starts the image id that was loaded on the server.
+
+## Server steps that need your yes
+
+Do these yourself, in order, after you approve the bounded rollout. The agent does not run them.
+
+1. Confirm CI on `cursor/release-candidate-8ff7` is green. Copy the ingestor image id from `release digest` in the compose-gates log, and save the CI image tar if you exported one (`docker save` of that id).
+2. On the droplet, while the current ingestor is still running, dump the database and the roles. Copy both files off the machine. A dump is a snapshot: restoring it later discards ingestion that happened after the dump.
 
 ```bash
 cd /opt/fomo-copilot
 docker compose --env-file .env -f infra/docker-compose.yml exec -T postgres \
   pg_dump -U fomo -d fomo -Fc > "/var/backups/fomo-$(date -u +%Y%m%dT%H%M%SZ).dump"
+docker compose --env-file .env -f infra/docker-compose.yml exec -T postgres \
+  pg_dumpall -U fomo --roles-only > "/var/backups/fomo-roles-$(date -u +%Y%m%dT%H%M%SZ).sql"
 ```
 
-Do not start the next merge until that file exists off the machine. Do not drop tables to undo a later migration. A restore from this dump is the way back to the schema from before this stack.
-
-## Deploy in the stopped state
-
-The workflow starts only `postgres` and `ingestor` when `PAPER_ENABLED` and `ALERTS_ENABLED` are not both the exact word `true`. Leave the GitHub variables unset. After every deploy in the list above:
-
-- `docker compose ps` shows the screener and the alerter stopped.
-- The outcome worker and the shadow runner are not started.
-- `INGEST_WIDE_RECOVERY` is unset.
-
-The ingestor is the high-risk process. Its startup runs the migrations. From #40 onward that startup applies the new statements, through `031_run_identity` once this stack is fully merged. The migration sets `lock_timeout` to 3 seconds and `statement_timeout` to 60 seconds. If either fires, that transaction rolls back and the previous schema stays. The statements are idempotent, so one rerun after a timeout is safe. Do not loop on a failure.
-
-`028_wide_recovery` creates checkpoint columns. Applying that schema does not turn the wide path on. With the flag unset, a gap wider than about 600 slots is stored as unrecovered. Leave the flag unset. Do not delete `raw_events` or checkpoint rows.
-
-## Re-apply AUTOBUY_MODE=dry_run
-
-The workflow writes `AUTOBUY_MODE` from the GitHub variable. The default when that variable is unset is `off`. After the env file is installed, and before treating the deploy as finished, set the live value back to dry run:
+3. Merge this release candidate into `main`. Wait and confirm no deploy workflow started.
+4. Install the rollback controller outside the checkout, then load the tested image and confirm the id:
 
 ```bash
-cd /opt/fomo-copilot
-grep '^AUTOBUY_MODE=' .env
-# If the line is not dry_run, replace it and restart only the ingestor.
-sed -i 's/^AUTOBUY_MODE=.*/AUTOBUY_MODE="dry_run"/' .env
-grep '^AUTOBUY_MODE="dry_run"$' .env
-docker compose --env-file .env -f infra/docker-compose.yml up -d --no-deps ingestor
+sudo bash scripts/install-rollback-controller.sh
+docker load < release-ingestor.tar
+docker image inspect sha256:THE_RECORDED_ID >/dev/null
 ```
 
-Confirm the file does not contain `AUTOBUY_MODE="live"`. Leave `AUTOBUY_KILL` off. Do this after every deploy in the merge list, because each deploy rewrites `.env`.
+`sudo` is only for creating `/usr/local/lib/fomo` and `/etc/fomo`. The controller and the preflight command do not need root after that. The installed manifest is forward-fix-only: `targets` is empty. The command stops services and asks for a forward fix. It will not start an older image. The production image from before this release has not been tested against migrations through `031_run_identity`.
 
-## Rollback command
+5. Dispatch the deploy workflow with `image_digest` set to that id and `confirm` set to `promote-tested-digest`. The workflow writes `AUTOBUY_MODE=dry_run` into the env file before it starts the container. It does not fix the mode afterward. `live` is refused. It stops the screener and the alerter, leaves Postgres running, and runs `docker compose up -d --no-deps --no-build ingestor` with the loaded image.
+6. Record the replacement with `scripts/replace-ingestor.sh` if you run the replacement by hand instead of the dispatch. Pull or load the image first. The script records checkpoint counts, the interruption time, and that wide recovery is disabled. An unrecovered gap stays recorded and blocks readiness. Do not delete checkpoint rows.
+7. Start the diagnostic phase only. Do not start paper, alerts, or the qualification clock.
 
-The supported command is the host script `scripts/approved-rollback.sh`. It refuses to run inside a container, so replacing the app image does not remove the check. Age is not a reason to start an image.
+## Migrations
 
-The manifest on the host lists each allowed target with:
+Production `main` at `6555907` has applied `001_ingest` through `022_sniper_created_slot` (`infra/db/production-baseline.txt`). This release's `migrate()` also records `023_scale_booking` through `031_run_identity`.
 
-- the exact image id (`sha256:…` from `docker image inspect`)
-- the migration ids that image can run
-- the services it may start
-- the modes, with `paper`, `alerts`, and `wideRecovery` set to false
-- `gateTestsPassed: true` and evidence `verify` and `compose-gates`
+Read-only inventory, from a file of ids or from a `schema_migrations` listing. It does not write:
 
-After #50 has deployed and the screener has stayed stopped, record that image id as the first approved fallback. Do not list the image from before #50. That older image can lack the stop gate. The command rejects any target that is not an approved entry, and it does that before it runs the target. The CI fixture for this is the unguarded image: the command exits 3, and that image is not started.
+```bash
+node scripts/migration-inventory.mjs \
+  --release-source packages/core/src/db/ingest.ts \
+  --applied infra/db/production-baseline.txt
+```
 
-If the manifest has no approved entry, the command stops the screener, alerter, outcome worker, and shadow runner, prints `forward fix required`, and does not start a replacement. Build a forward image, put its digest in the manifest, and deploy that. Do not start an unlisted image to get the process back.
+`migrate()` uses one transaction. `lock_timeout` is 3 seconds and `statement_timeout` is 60 seconds. If either fires, the catch block rolls that transaction back. None of the new ids are committed. It is not a per-migration commit. The statements are idempotent, so one rerun after a timeout is safe. Do not loop on a failure.
 
-A previous image whose schema requirements do not include migrations that are already applied is not an approved fallback. Leave the new tables in place.
+CI rehearses this on a synthetic copy: a new database whose `schema_migrations` table contains only the production ids, then `migrate()`, then `pg_dump -Fc`, `pg_dumpall --roles-only`, and `pg_restore` into a second database. That rehearsal is not a copy of production data. The production dump in step 2 is the one that matters, and it happens only when you say so.
 
-## Shadow role
+## Live preflight
 
-Apply this after the schema from this stack exists and the dump is stored. Do not apply #41 as part of the merge list.
-
-1. Set the password out of band. Replace `<POSTGRES_DB>` in `infra/db/shadow-roles.sql`.
-2. Apply that file as the database owner.
-3. Point only the shadow env file at `fomo_shadow`. The ingestor, screener, and alerter keep the owner URL.
-4. The preflight probe must show that this role cannot insert into `phasec_position`, `phasec_alert`, or `autobuy_intent`.
-
-The CI role `fomo_shadow_ci` exists only on the CI database. It is not the production role. Applying the role does not start the shadow runner.
-
-## Preflight, then the 7-day clock
-
-The live command is read-only. It uses the local docker socket and `docker compose exec` into postgres. It does not use sudo, and it does not open a remote host. This change does not run it against the server. CI runs it against the CI compose project only.
-
-Exact command, from the checkout, as a user who can already run docker:
+Exact command, on the host, as a user who can already run docker. No sudo. It does not open a remote host.
 
 ```bash
 bash scripts/preflight.sh --live \
@@ -127,28 +96,38 @@ bash scripts/preflight.sh --live \
   --shadow-user fomo_shadow
 ```
 
-The probes gather:
+The accepted file's `imageDigest` and `configFingerprint` must be the digest and config that were just deployed. The probe binds the report to the running image id and the config row. Evidence older than 15 minutes is rejected. The shadow insert runs inside a transaction that is rolled back even when the role is allowed to insert, and the probe mint must be absent afterward. A successful prohibited write still fails the checker, because the role must not be allowed to insert.
 
-- the running image id of the named service, from `docker inspect`
-- the latest `phasec_config_history` fingerprint, its venue allowlist, and its wallet-list version, which must match `phasec_wallet_list_version`
-- the single non-null `phasec_execution.run_id`
-- one `INSERT` into `phasec_position` as the shadow role, inside a transaction that is rolled back, including when the insert is denied
-- the latest `ingest_recall_audit` row and one stored `phasec_observation` joined to `phasec_quote_attempt`
-- `phasec_score_shadow` lookback start and end
-- the age of that recall row and of `ingest_status.updated_at`
-- `INGEST_WIDE_RECOVERY` on the running containers, and any wide checkpoint whose `recovery_completed_at` is set
+The 7-day clock starts only after a later live preflight passes and the later yes items are set. Diagnostic days do not count.
 
-Those facts are passed to the same checker as the file mode. The command exits 0 only when every line matches the accepted file:
+## Diagnostic phase
 
-- the running image digest
-- the config fingerprint
-- the run id
-- the venue scope chosen above
-- the wallet-list version chosen above
-- a permission probe where the prohibited shadow writes fail
-- one reference reconciliation and one stored quote observation through the ingestor and the outcome worker
-- lookback history complete
-- the reference reconciliation schedule and the freshness schedule both running
-- wide recovery disabled, and a wide gap handled as unrecovered
+Permitted jobs: reference scans, reconciliation, and quote collection under the restricted role. Paper and alerts stay off. The qualification clock stays inhibited.
 
-`shadowClock` stays stopped until that exit. It is a 7-day clock. It also stays stopped while the qualification gate sees an empty venue scope, an unset wallet-list version, or a failed preflight. Passing preflight does not enable inferential Go, paper, or alerts.
+Candidate venues, none selected: `pump`, `pumpswap`, `launchlab`, `meteora`.
+
+Observation window: 7 days from diagnostic start. The same wallet cohort is used for every candidate venue. It is the list loaded at the start. It is not rotated during the window. It is not a frozen qualification version yet.
+
+A venue is judged only on operations:
+
+- lifecycle and migration events captured with a completed independent reference scan and an explicit denominator
+- wallet-swap coverage and a complete activity history for the fixed cohort
+- parses that match the stored events
+- usable quotes at the $20 allocation and the 10% round-trip cap
+- enough contemporaneous matched opportunities to fill the strata
+- latency and backlog inside the collection window
+- collection cost inside the cap
+
+Returns, winners, and wallet outperformance are not criteria. If two venues meet every operational bar, the tie-breaker is the larger completed reference-scan denominator. If that is also tied, stop and ask. Do not pick a winner from returns.
+
+Few reference events are weak evidence. If no venue passes, stop. Do not loosen a bar.
+
+Stop the diagnostic if paper or alerts would turn on, if wide recovery would be enabled, if a prohibited write succeeds, or if continuing would need a new paid service or Helius overage.
+
+Cost against the $150 proposal: the droplet is $6 a month, so 7 days of host time is about $1.40. This phase adds no new API subscription. Public-RPC reference scans add no Helius charge. Existing credit caps still pause intake. $150 is not approved as new spend by this runbook.
+
+Activation order, and the clock is not eligible until the last step, which is a later decision:
+
+1. Diagnostic start, after the bounded replacement is up and paper and alerts are stopped.
+2. Live verification with the command above, bound to the deployed digest and config.
+3. Clock eligibility, only after you separately freeze the venue, freeze the wallet-list version, and a fresh live preflight passes. Days collected before that do not count.

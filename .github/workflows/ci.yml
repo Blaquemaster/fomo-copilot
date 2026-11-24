@@ -85,3 +85,6 @@ jobs:
 
       - name: Compose stop-state gates
         run: bash scripts/ci-compose-gates.sh
+
+      - name: Show the recorded release digest
+        run: cat release-digest.json

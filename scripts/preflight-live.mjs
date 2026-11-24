@@ -58,10 +58,18 @@ export function shapeObserved(raw) {
     raw.statusAge !== null && raw.statusAge !== undefined && Number(raw.statusAge) <= freshMax
       ? "running"
       : "stopped";
+  const maxEvidenceAge = raw.maxEvidenceAgeSeconds ?? 900;
+  const ages = [raw.configAge, raw.recall?.age, raw.observationAge, raw.statusAge].filter(
+    (value) => value !== null && value !== undefined,
+  );
+  const evidenceStale = ages.some((value) => Number(value) > maxEvidenceAge);
   return {
     imageDigest: raw.imageId ?? null,
+    boundImageDigest: raw.imageId ?? null,
     imageDigests: raw.imageDigests ?? {},
     configFingerprint: raw.configFingerprint ?? null,
+    boundConfigFingerprint: raw.configFingerprint ?? null,
+    evidenceStale,
     runId: runIds.length === 1 ? runIds[0] : null,
     venueScope: venues,
     walletListVersion,
@@ -126,8 +134,8 @@ function psql(args, user, sql) {
 function shadowWrite(args, user) {
   const sql = [
     "BEGIN;",
-    `INSERT INTO phasec_position (mint, stage, arm, status, alert_at, entry_after)`,
-    `VALUES ('${PROBE_MINT}', 'post_graduation', 'wallets_x_screen', 'pending', now(), now());`,
+    `INSERT INTO phasec_position (mint, stage, arm, status, alert_at, entry_after, size_pct, exit_plan)`,
+    `VALUES ('${PROBE_MINT}', 'post_graduation', 'wallets_x_screen', 'pending', now(), now(), 0, 'none');`,
     "ROLLBACK;",
   ].join("\n");
   let denied = false;
@@ -166,6 +174,14 @@ const FACTS_SQL = `
 select json_build_object(
   'configFingerprint', (select fingerprint from phasec_config_history order by recorded_at desc limit 1),
   'configBody', (select body from phasec_config_history order by recorded_at desc limit 1),
+  'configAge', (select extract(epoch from (now() - recorded_at)) from phasec_config_history order by recorded_at desc limit 1),
+  'observationAge', (
+    select extract(epoch from (now() - observed_at))
+    from phasec_observation
+    where status <> 'pending' and observed_at is not null
+    order by observed_at desc
+    limit 1
+  ),
   'runIds', coalesce((select json_agg(distinct run_id) from phasec_execution where run_id is not null), '[]'::json),
   'walletListHash', (select list_hash from phasec_wallet_list_version order by recorded_at desc limit 1),
   'recall', (

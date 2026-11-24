@@ -1,9 +1,19 @@
 name: Deploy
 
+# No push trigger. GitHub uses the workflow file in the commit being pushed.
+# Merging this file does not start a deploy, and later pushes do not either.
+# A dispatch that is already migrating is not cancelled.
 on:
-  push:
-    branches:
-      - main
+  workflow_dispatch:
+    inputs:
+      image_digest:
+        description: Tested image id recorded by the release-candidate CI artifact
+        required: true
+        type: string
+      confirm:
+        description: Type promote-tested-digest to promote that image
+        required: true
+        type: string
 
 permissions:
   contents: none
@@ -124,8 +134,18 @@ jobs:
           PAPER_ENTRY_DELAY_SEC: ${{ vars.PAPER_ENTRY_DELAY_SEC }}
           SECOND_WAVE_MIN_CHANGE_PCT: ${{ vars.SECOND_WAVE_MIN_CHANGE_PCT }}
           ENABLE_PAPER: ${{ vars.ENABLE_PAPER }}
+          IMAGE_DIGEST: ${{ inputs.image_digest }}
+          DEPLOY_CONFIRM: ${{ inputs.confirm }}
         run: |
           set -euo pipefail
+          if [ "$DEPLOY_CONFIRM" != "promote-tested-digest" ]; then
+            echo "deploy held: production auto-deploy is off"
+            exit 1
+          fi
+          if ! [[ "$IMAGE_DIGEST" =~ ^sha256:[0-9a-f]{64}$ ]]; then
+            echo "deploy held: refusing to build whatever is on main"
+            exit 1
+          fi
           umask 077
           key_file="$(mktemp)"
           known_file="$(mktemp)"
@@ -147,6 +167,12 @@ jobs:
               if value not in allowed:
                   raise SystemExit(f"{name} must be one of: {', '.join(sorted(allowed))}")
               return value
+
+          def autobuy_mode():
+              value = os.environ.get("AUTOBUY_MODE", "").strip()
+              if value == "live":
+                  raise SystemExit("AUTOBUY_MODE live is refused")
+              return "dry_run"
 
           def bsc_url():
               value = os.environ.get("BSC_WSS_URL", "").strip() or "wss://bsc-rpc.publicnode.com"
@@ -366,7 +392,7 @@ jobs:
               line("MARKET_POLL_MINUTES", market_poll()),
               line("THRESHOLDS_PATH", "/app/config/thresholds.yaml"),
               line("PAPER_BANKROLL_USD", paper_bankroll()),
-              line("AUTOBUY_MODE", pick("AUTOBUY_MODE", "off", {"off", "dry_run", "live"})),
+              line("AUTOBUY_MODE", autobuy_mode()),
               line("AUTOBUY_KILL", pick("AUTOBUY_KILL", "off", {"off", "on"})),
               line("AUTOBUY_MAX_TRADE_USD", usd_amount("AUTOBUY_MAX_TRADE_USD", "25")),
               line("AUTOBUY_DAILY_USD_CAP", usd_amount("AUTOBUY_DAILY_USD_CAP", "100")),
@@ -388,6 +414,7 @@ jobs:
           )
           target="${DEPLOY_USER}@${DEPLOY_HOST}"
           "${ssh_base[@]}" "$target" "umask 077; test -d /opt/fomo-copilot/.git; cat > /opt/fomo-copilot/.env.incoming" < "$env_file"
+          printf '%s\n' "$IMAGE_DIGEST" | "${ssh_base[@]}" "$target" "cat > /opt/fomo-copilot/.release-digest"
           "${ssh_base[@]}" "$target" bash -s << 'REMOTE'
           set -euo pipefail
           cd /opt/fomo-copilot
@@ -410,14 +437,17 @@ jobs:
           fi
           mv .env.incoming .env
           chmod 600 .env
-          compose=(docker compose --env-file .env -f infra/docker-compose.yml)
-          # Default deploy keeps the screener and alerter stopped, including a
-          # container left over from an older compose file that had no profile.
-          if grep -q '^PAPER_ENABLED="true"$' .env && grep -q '^ALERTS_ENABLED="true"$' .env; then
-            "${compose[@]}" --profile paper up -d --build postgres ingestor screener alerter
-          else
-            "${compose[@]}" stop screener alerter || true
-            "${compose[@]}" up -d --build postgres ingestor
+          digest=$(tr -d '[:space:]' < /opt/fomo-copilot/.release-digest)
+          if ! [[ "$digest" =~ ^sha256:[0-9a-f]{64}$ ]]; then
+            echo "deploy held: image id missing" >&2
+            exit 1
           fi
-          docker image prune -f
+          docker image inspect "$digest" >/dev/null
+          docker tag "$digest" fomo-release:tested
+          printf 'services:\n  ingestor:\n    image: %s\n    pull_policy: never\n' "$digest" > /opt/fomo-copilot/infra/ingestor-image.yml
+          compose=(docker compose --env-file .env -f infra/docker-compose.yml -f infra/ingestor-image.yml)
+          # Postgres stays up. Only the ingestor container is replaced, and only
+          # with the loaded image. Do not build from the checkout.
+          "${compose[@]}" stop screener alerter || true
+          "${compose[@]}" up -d --no-deps --no-build ingestor
           REMOTE

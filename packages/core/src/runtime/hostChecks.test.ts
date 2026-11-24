@@ -277,6 +277,26 @@ describe("preflight checker", () => {
       const failed = error as { stdout: string };
       expect(failed.stdout).toContain("shadow_permissions");
     }
+    const stale = { ...raw, configAge: 100_000 };
+    writeFileSync(rawPath, JSON.stringify(stale));
+    try {
+      execFileSync(
+        "node",
+        [
+          path.join(root, "scripts/preflight-live.mjs"),
+          "--fixture",
+          rawPath,
+          "--accepted",
+          acceptedPath,
+        ],
+        { encoding: "utf8" },
+      );
+      throw new Error("stale evidence was accepted");
+    } catch (error) {
+      if (error instanceof Error && error.message === "stale evidence was accepted") throw error;
+      const failed = error as { stdout: string };
+      expect(failed.stdout).toContain("stale_evidence");
+    }
   });
 
   it("fails closed when permissions, the cycle, or wide recovery do not match", () => {
@@ -299,5 +319,26 @@ describe("preflight checker", () => {
         schedules: { referenceReconciliation: "stopped", freshness: "running" },
       }).body.shadowClockStarts,
     ).toBe(false);
+  });
+});
+
+describe("migration inventory", () => {
+  it("lists the release ids that production main does not have", () => {
+    const stdout = execFileSync(
+      "node",
+      [
+        path.join(root, "scripts/migration-inventory.mjs"),
+        "--release-source",
+        path.join(root, "packages/core/src/db/ingest.ts"),
+        "--applied",
+        path.join(root, "infra/db/production-baseline.txt"),
+      ],
+      { encoding: "utf8" },
+    );
+    const report = JSON.parse(stdout) as { timeoutRollsBack: string; pending: string[] };
+    expect(report.timeoutRollsBack).toBe("whole_batch");
+    expect(report.pending[0]).toBe("023_scale_booking");
+    expect(report.pending.at(-1)).toBe("031_run_identity");
+    expect(report.pending).toHaveLength(9);
   });
 });

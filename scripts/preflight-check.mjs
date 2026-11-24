@@ -55,6 +55,16 @@ export function evaluatePreflight(accepted, observed) {
   ) {
     reasons.push("wide_recovery_gap");
   }
+  if (observed?.boundImageDigest && observed.boundImageDigest !== observed.imageDigest) {
+    reasons.push("unbound_digest");
+  }
+  if (
+    observed?.boundConfigFingerprint &&
+    observed.boundConfigFingerprint !== observed.configFingerprint
+  ) {
+    reasons.push("unbound_config");
+  }
+  if (observed?.evidenceStale === true) reasons.push("stale_evidence");
   return {
     pass: reasons.length === 0,
     reasons,

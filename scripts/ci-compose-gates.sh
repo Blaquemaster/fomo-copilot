@@ -327,8 +327,62 @@ wrong_code=$?
 set -e
 test "$wrong_code" -ne 0
 echo "$wrong_log" | grep -q "run_id"
+
+echo "a permitted shadow write still leaves no row"
+compose exec -T postgres psql -v ON_ERROR_STOP=1 -U fomo -d fomo \
+  -c "grant insert on phasec_position to fomo_shadow_ci"
+set +e
+permitted_log=$(bash scripts/preflight.sh --live \
+  --accepted "$live_accepted" \
+  --project fomo-ci \
+  --env-file "$app_env" \
+  --file infra/docker-compose.yml \
+  --file infra/docker-compose.ci.yml \
+  --service shadow \
+  --shadow-user fomo_shadow_ci 2>&1)
+permitted_code=$?
+set -e
+test "$permitted_code" -ne 0
+echo "$permitted_log" | grep -q "shadow_permissions"
+probe_rows=$(compose exec -T postgres psql -U fomo -d fomo -At -c "select count(*) from phasec_position where mint = 'preflight-probe-deny'")
+test "$probe_rows" = "0"
+compose exec -T postgres psql -v ON_ERROR_STOP=1 -U fomo -d fomo \
+  -c "revoke insert on phasec_position from fomo_shadow_ci"
 rm -f "$live_accepted" "$wrong_accepted"
 
 compose stop shadow
+
+echo "install the rollback controller outside the checkout"
+controller_lib=$(mktemp -d)
+controller_etc=$(mktemp -d)
+DEST_LIB="$controller_lib" DEST_ETC="$controller_etc" bash scripts/install-rollback-controller.sh
+test -f "$controller_lib/approved-rollback.sh"
+test -f "$controller_lib/rollback-decision.mjs"
+grep -q 'forward-fix-only' "$controller_etc/rollback-manifest.json"
+schema_ids=$(mktemp)
+echo 031_run_identity >"$schema_ids"
+set +e
+forward_install=$(bash "$controller_lib/approved-rollback.sh" \
+  --manifest "$controller_etc/rollback-manifest.json" \
+  --schema "$schema_ids" \
+  --digest "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd" 2>&1)
+forward_install_code=$?
+set -e
+test "$forward_install_code" -eq 2
+echo "$forward_install" | grep -q "forward fix required"
+rm -rf "$controller_lib" "$controller_etc"
+rm -f "$schema_ids"
+
+echo "rehearse restore and upgrade on an isolated database"
+bash scripts/rehearse-upgrade.sh
+
+echo "record the tested ingestor digest"
+bash scripts/record-release-digest.sh "$root/release-digest.json"
+grep -q 'forward-fix-only' "$root/release-digest.json"
+
+echo "replace only the ingestor and keep postgres"
+bash scripts/replace-ingestor.sh --oneshot --project fomo-ci --env-file "$app_env" --record /tmp/fomo-ingestor-replacement.txt
+grep -q 'wide_recovery=disabled' /tmp/fomo-ingestor-replacement.txt
+grep -q 'postgres_id=' /tmp/fomo-ingestor-replacement.txt
 
 echo "compose gates passed"

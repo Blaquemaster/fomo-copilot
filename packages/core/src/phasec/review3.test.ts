@@ -28,6 +28,8 @@ import {
   MIN_BUY_SOL,
   missingnessChangesDecision,
   poolCanHoldNotional,
+  DIAGNOSTIC_PHASE,
+  diagnosticAllows,
   qualificationGate,
   qualificationRunId,
   REQUIRED_MIGRATIONS,
@@ -331,6 +333,7 @@ describe("review 3", () => {
         venueScopeSet: false,
         walletListVersionSet: false,
         preflightPassed: false,
+        diagnosticPhase: false,
       }).countDays,
     ).toBe(false);
     const loop = readFileSync(
@@ -558,10 +561,18 @@ describe("review 3", () => {
       venueScopeSet: true,
       walletListVersionSet: true,
       preflightPassed: false,
+      diagnosticPhase: false,
     };
     expect(qualificationGate(ready).countDays).toBe(false);
     expect(qualificationGate(ready).reasons).toContain("preflight");
     expect(qualificationGate({ ...ready, preflightPassed: true }).countDays).toBe(true);
+    expect(
+      qualificationGate({ ...ready, preflightPassed: true, diagnosticPhase: true }).countDays,
+    ).toBe(false);
+    expect(diagnosticAllows("quote_collection")).toBe(true);
+    expect(diagnosticAllows("paper")).toBe(false);
+    expect(DIAGNOSTIC_PHASE.venueSelected).toBeNull();
+    expect(DIAGNOSTIC_PHASE.selection).toBe("operational_only");
     expect(shadowClock({ preflightPassed: false, startedAt: null }).running).toBe(false);
     expect(
       shadowClock({ preflightPassed: true, startedAt: new Date("2026-11-24T00:00:00Z") }),
