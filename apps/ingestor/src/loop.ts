@@ -16,7 +16,7 @@ import {
   enabledVenues,
   blockLagAlert,
   serviceEnabled,
-  walkSignatureGap,
+  reconcileWideGap,
   fetchSignaturePage,
   venueForProgram,
   venueStaleAlert,
@@ -2064,23 +2064,53 @@ async function recoverOverflow(input: {
     if (tooWide && serviceEnabled(input.env.INGEST_WIDE_RECOVERY)) {
       try {
         const now = new Date();
-        const walked = await walkSignatureGap({
+        const rawBySignature = new Map<string, unknown>();
+        const reconciled = await reconcileWideGap({
           programId: span.programId,
           fromSlot: span.fromSlot,
           toSlot: span.toSlot,
           now,
+          pageSize: 100,
+          alreadyStored: new Set(),
           fetchPage: (before) =>
             fetchSignaturePage({
               programId: span.programId,
               before,
+              limit: 100,
             }),
+          fetchTransaction: async (signature) => {
+            const result = await callRpc(
+              { env: input.env, deps: input.deps, meter: makeMeter(input.repo, input.logger) },
+              "getTransaction",
+              [signature],
+            );
+            if (result == null) return { ok: false };
+            rawBySignature.set(signature, result);
+            return { ok: true, blockTime: null };
+          },
+          persist: async (event) => {
+            const raw = rawBySignature.get(event.signature);
+            if (raw === undefined) throw new Error("missing transaction");
+            const decoded = decodeRpcTransaction(raw, event.signature);
+            if (decoded.observations.length === 0) throw new Error("decode");
+            await persistDecoded(
+              { repo: input.repo, logger: input.logger, seen: input.seen },
+              decoded,
+              0,
+              "backfill",
+            );
+          },
         });
-        for (const checkpoint of walked.checkpoints) {
-          await input.repo.insertRecoveryCheckpoint(checkpoint);
+        for (const checkpoint of reconciled.checkpoints) {
+          await input.repo.insertRecoveryCheckpoint({
+            ...checkpoint,
+            recoveryCompletedAt: reconciled.recoveryCompletedAt,
+          });
         }
-        pagesFetched = walked.checkpoints.length;
-        failed = !walked.finished;
-        recoveryCompletedAt = walked.finished ? now : null;
+        pagesFetched = reconciled.checkpoints.length;
+        recovered = reconciled.stored.length;
+        failed = !reconciled.recoveryComplete;
+        recoveryCompletedAt = reconciled.recoveryCompletedAt;
       } catch (error) {
         failed = true;
         input.logger.warn({ err: error, programId: span.programId }, "wide recovery failed");

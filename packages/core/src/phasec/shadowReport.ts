@@ -26,14 +26,48 @@ export interface ShadowMeasurements {
   integrityFailure: boolean;
   spendLimitHit: boolean;
   unsafeOperation: boolean;
+  servicesRunning: boolean;
+  observations: number;
+  recallRuns: number;
+}
+
+export type AcceptanceStatus = "PASS" | "FAIL" | "NOT_RUNNING" | "INSUFFICIENT_EVIDENCE";
+
+export function shadowDependency(input: { shadowEnabled: boolean; outcomesEnabled: boolean }): {
+  ok: boolean;
+  reason: string | null;
+} {
+  if (input.shadowEnabled && !input.outcomesEnabled) {
+    return { ok: false, reason: "outcome_worker_required" };
+  }
+  return { ok: true, reason: null };
 }
 
 export function shadowAcceptance(input: ShadowMeasurements): {
+  status: AcceptanceStatus;
   pass: boolean;
   checks: Record<string, boolean>;
   enrollmentStopped: boolean;
   statisticalFailure: boolean;
 } {
+  if (!input.servicesRunning && input.observations === 0 && input.recallRuns === 0) {
+    return {
+      status: "NOT_RUNNING",
+      pass: false,
+      checks: {},
+      enrollmentStopped: false,
+      statisticalFailure: false,
+    };
+  }
+  if (input.recallRuns === 0 || input.observations === 0 || input.dispatchAttempts === 0) {
+    return {
+      status: "INSUFFICIENT_EVIDENCE",
+      pass: false,
+      checks: {},
+      enrollmentStopped: false,
+      statisticalFailure: false,
+    };
+  }
   const recallOk =
     input.recall.length > 0 &&
     input.recall.every((row) => row.reference >= 300 && row.observed / row.reference >= 0.99);
@@ -71,8 +105,10 @@ export function shadowAcceptance(input: ShadowMeasurements): {
     cash: input.cashReconciled,
     operationsClear,
   };
+  const pass = Object.values(checks).every(Boolean);
   return {
-    pass: Object.values(checks).every(Boolean),
+    status: pass ? "PASS" : "FAIL",
+    pass,
     checks,
     enrollmentStopped: !operationsClear,
     statisticalFailure: false,

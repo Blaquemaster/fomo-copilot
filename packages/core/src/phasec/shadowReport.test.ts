@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { shadowAcceptance, type ShadowMeasurements } from "./shadowReport.js";
+import { shadowAcceptance, shadowDependency, type ShadowMeasurements } from "./shadowReport.js";
 
 function passing(): ShadowMeasurements {
   return {
@@ -27,14 +27,39 @@ function passing(): ShadowMeasurements {
     integrityFailure: false,
     spendLimitHit: false,
     unsafeOperation: false,
+    servicesRunning: true,
+    observations: 100,
+    recallRuns: 1,
   };
 }
 
 describe("shadow acceptance", () => {
   it("passes the written criteria and has no return field", () => {
     const result = shadowAcceptance(passing());
+    expect(result.status).toBe("PASS");
     expect(result.pass).toBe(true);
     expect(result.checks).not.toHaveProperty("returns");
+  });
+
+  it("does not pass when nothing has run", () => {
+    const idle = shadowAcceptance({
+      ...passing(),
+      servicesRunning: false,
+      observations: 0,
+      recallRuns: 0,
+      recall: [],
+      dispatchAttempts: 0,
+    });
+    expect(idle.status).toBe("NOT_RUNNING");
+    expect(idle.pass).toBe(false);
+  });
+
+  it("refuses a shadow runner that does not have the outcome worker", () => {
+    expect(shadowDependency({ shadowEnabled: true, outcomesEnabled: false })).toEqual({
+      ok: false,
+      reason: "outcome_worker_required",
+    });
+    expect(shadowDependency({ shadowEnabled: true, outcomesEnabled: true }).ok).toBe(true);
   });
 
   it("fails isolation, thin recall, a late scheduler, and a missing-data arm", () => {

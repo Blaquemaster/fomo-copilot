@@ -1,6 +1,6 @@
 # Coverage design
 
-The live backfill still stops at about 600 slots unless `INGEST_WIDE_RECOVERY` is the exact word `true`. That path pages the public Solana RPC, writes a checkpoint per page, and sets `recovery_completed_at` only when the walk finishes inside the gap. It does not write `raw_events` and it does not call Helius. Unset leaves the old unrecovered gap.
+The live backfill still stops at about 600 slots unless `INGEST_WIDE_RECOVERY` is the exact word `true`. That path pages the public Solana RPC, fetches and decodes each transaction, and stores it as a backfill. A finished page walk is only a scan. `recovery_completed_at` is set only after those events are stored. Unset leaves the old unrecovered gap.
 
 ## What a healthy period is
 

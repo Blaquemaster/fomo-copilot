@@ -57,7 +57,7 @@ describe("pump public recall", () => {
     );
     expect(loop).not.toContain("recallPumpSwapFromPublicRpc");
     expect(loop).not.toContain("recallMeteoraFromPublicRpc");
-    expect(loop).toContain("walkSignatureGap");
+    expect(loop).toContain("reconcileWideGap");
     expect(loop).toContain("INGEST_WIDE_RECOVERY");
   });
 });

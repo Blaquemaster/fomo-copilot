@@ -746,6 +746,8 @@ export async function migrate(pool: pg.Pool): Promise<void> {
   const client = await pool.connect();
   try {
     await client.query("begin");
+    await client.query("set local lock_timeout = '3s'");
+    await client.query("set local statement_timeout = '60s'");
     await client.query(MIGRATION);
     await client.query(
       "insert into schema_migrations (id) values ($1) on conflict (id) do nothing",

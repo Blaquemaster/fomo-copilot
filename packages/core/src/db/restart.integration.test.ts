@@ -4,7 +4,7 @@ import { createPool, IngestRepository, migrate, PhaseCRepository } from "../inde
 
 const databaseUrl = process.env["PHASEC_TEST_DATABASE_URL"];
 
-describe.skipIf(!databaseUrl)("collection restart", () => {
+describe.skipIf(!databaseUrl)("enrollment/outcome restart integration test", () => {
   it("keeps one enrollment, its horizon rows, and a recovery checkpoint across a new connection", async () => {
     const mint = "RestartMint1111111111111111111111111111111";
     const first = createPool(databaseUrl ?? "");

@@ -1,7 +1,7 @@
 /**
- * Public-RPC signature pages for a gap wider than the 600-slot cap.
- * This does not write raw_events and does not call Helius.
- * A page is finished only when the walker stops inside the slot bound.
+ * Public-RPC pages for a gap wider than the 600-slot cap. Helius is not used.
+ * A finished page walk is only a scan. recovery_completed_at is set only after
+ * each transaction has been fetched, decoded, and stored in the event pipeline.
  */
 export interface SignatureRow {
   signature: string;
@@ -14,6 +14,8 @@ export interface RecoveryCheckpoint {
   toSlot: number;
   pageBefore: string | null;
   signaturesSeen: number;
+  /** The page walk reached the start of the gap. This is not recovery. */
+  scanComplete: boolean;
   finished: boolean;
   recoveryCompletedAt: Date | null;
   recordedAt: Date;
@@ -59,9 +61,11 @@ export async function walkSignatureGap(input: {
   toSlot: number;
   now: Date;
   maxPages?: number;
+  pageSize?: number;
   fetchPage: (before: string | null) => Promise<SignatureRow[]>;
 }): Promise<{ finished: boolean; checkpoints: RecoveryCheckpoint[]; signatures: SignatureRow[] }> {
   const maxPages = input.maxPages ?? 20;
+  const pageSize = input.pageSize ?? 100;
   const signatures: SignatureRow[] = [];
   const checkpoints: RecoveryCheckpoint[] = [];
   let before: string | null = null;
@@ -74,9 +78,10 @@ export async function walkSignatureGap(input: {
         row.slot === null ? slot : slot === null ? row.slot : Math.min(slot, row.slot),
       null,
     );
-    const reached = oldest !== null && oldest <= input.fromSlot;
-    const short = rows.length === 0;
-    finished = reached || short;
+    const passedBound = oldest !== null && oldest < input.fromSlot;
+    const truncated =
+      rows.length === 0 || (oldest !== null && oldest > input.fromSlot && rows.length < pageSize);
+    finished = passedBound;
     const last: string | null = rows.at(-1)?.signature ?? before;
     checkpoints.push({
       programId: input.programId,
@@ -84,12 +89,139 @@ export async function walkSignatureGap(input: {
       toSlot: input.toSlot,
       pageBefore: before,
       signaturesSeen: rows.length,
+      scanComplete: finished,
       finished,
-      recoveryCompletedAt: finished ? input.now : null,
+      recoveryCompletedAt: null,
       recordedAt: input.now,
     });
-    if (finished || !last) break;
+    if (finished || truncated || !last) break;
     before = last;
   }
   return { finished, checkpoints, signatures };
+}
+
+export interface RecoveredEvent {
+  signature: string;
+  slot: number | null;
+  /** When this process stored the event. Not the block time. */
+  receivedAt: Date;
+  blockTime: Date | null;
+  source: "backfill";
+  /** A backfill must not become a signal a live follower could have taken. */
+  liveSignal: false;
+}
+
+/**
+ * Scan, then fetch, decode, and persist. A crash after persist and before the
+ * completion stamp is resumed from `alreadyStored` without a second economic event.
+ */
+export async function reconcileWideGap(input: {
+  programId: string;
+  fromSlot: number;
+  toSlot: number;
+  now: Date;
+  pageLimit?: number;
+  pageSize?: number;
+  alreadyStored: ReadonlySet<string>;
+  fetchPage: (before: string | null) => Promise<SignatureRow[]>;
+  fetchTransaction: (
+    signature: string,
+  ) => Promise<{ ok: true; blockTime: Date | null } | { ok: false }>;
+  persist: (event: RecoveredEvent) => Promise<void>;
+}): Promise<{
+  scanComplete: boolean;
+  recoveryComplete: boolean;
+  recoveryCompletedAt: Date | null;
+  incompleteReason: string | null;
+  stored: RecoveredEvent[];
+  checkpoints: RecoveryCheckpoint[];
+}> {
+  let walked: { finished: boolean; checkpoints: RecoveryCheckpoint[]; signatures: SignatureRow[] };
+  try {
+    walked = await walkSignatureGap({
+      programId: input.programId,
+      fromSlot: input.fromSlot,
+      toSlot: input.toSlot,
+      now: input.now,
+      maxPages: input.pageLimit,
+      pageSize: input.pageSize,
+      fetchPage: input.fetchPage,
+    });
+  } catch {
+    return {
+      scanComplete: false,
+      recoveryComplete: false,
+      recoveryCompletedAt: null,
+      incompleteReason: "page_failed",
+      stored: [],
+      checkpoints: [],
+    };
+  }
+  const inGap = walked.signatures.filter((row) => row.slot === null || row.slot >= input.fromSlot);
+  if (!walked.finished) {
+    return {
+      scanComplete: false,
+      recoveryComplete: false,
+      recoveryCompletedAt: null,
+      incompleteReason: "scan_incomplete",
+      stored: [],
+      checkpoints: walked.checkpoints,
+    };
+  }
+  const stored: RecoveredEvent[] = [];
+  for (const row of inGap) {
+    if (input.alreadyStored.has(row.signature)) continue;
+    let fetched: { ok: true; blockTime: Date | null } | { ok: false };
+    try {
+      fetched = await input.fetchTransaction(row.signature);
+    } catch {
+      return {
+        scanComplete: true,
+        recoveryComplete: false,
+        recoveryCompletedAt: null,
+        incompleteReason: "tx_fetch_failed",
+        stored,
+        checkpoints: walked.checkpoints,
+      };
+    }
+    if (!fetched.ok) {
+      return {
+        scanComplete: true,
+        recoveryComplete: false,
+        recoveryCompletedAt: null,
+        incompleteReason: "decode_failed",
+        stored,
+        checkpoints: walked.checkpoints,
+      };
+    }
+    const event: RecoveredEvent = {
+      signature: row.signature,
+      slot: row.slot,
+      receivedAt: input.now,
+      blockTime: fetched.blockTime,
+      source: "backfill",
+      liveSignal: false,
+    };
+    try {
+      await input.persist(event);
+    } catch {
+      return {
+        scanComplete: true,
+        recoveryComplete: false,
+        recoveryCompletedAt: null,
+        incompleteReason: "persist_failed",
+        stored,
+        checkpoints: walked.checkpoints,
+      };
+    }
+    stored.push(event);
+  }
+  return {
+    scanComplete: true,
+    recoveryComplete: true,
+    recoveryCompletedAt: input.now,
+    incompleteReason: null,
+    stored,
+    checkpoints: walked.checkpoints,
+  };
 }

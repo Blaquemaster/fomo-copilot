@@ -1,4 +1,8 @@
-import { EXPERIMENT_MIN_ADVANTAGE, experimentCall } from "./experimentProtocol.js";
+import {
+  blockBootstrapDelta,
+  EXPERIMENT_MIN_ADVANTAGE,
+  experimentCall,
+} from "./experimentProtocol.js";
 
 export const EXPERIMENT_MATCH_SEED = "experiment-v2-match-seed";
 export const MIN_BUY_SOL = 0.002;
@@ -50,6 +54,42 @@ export function enrollmentEstimate(pairs: readonly EnrollmentPair[]): {
     unfilled,
     completeCaseMean: known === 0 ? null : sum / known,
     fullPopulation: "not_identifiable",
+  };
+}
+
+/**
+ * The example the review named. 0.095/2 is a labeled sensitivity, not the primary mean.
+ * Unfilled zeros stay in the complete-pair diagnostic. Filled-only is a different set.
+ */
+export function labeledPairMeans(pairs: readonly EnrollmentPair[]): {
+  enrolled: number;
+  resolved: number;
+  unresolved: number;
+  fullPopulationMean: "UNKNOWN";
+  completePairMean: number | null;
+  filledOnlyMean: number | null;
+  zeroImputationMean: number | null;
+} {
+  const estimate = enrollmentEstimate(pairs);
+  const filled = pairs.filter(
+    (pair) =>
+      pair.wallet !== null &&
+      pair.control !== null &&
+      pair.walletUnfilled !== true &&
+      pair.controlUnfilled !== true,
+  );
+  const filledSum = filled.reduce((sum, pair) => sum + (pair.wallet ?? 0) - (pair.control ?? 0), 0);
+  return {
+    enrolled: estimate.enrolled,
+    resolved: estimate.known,
+    unresolved: estimate.unresolved,
+    fullPopulationMean: "UNKNOWN",
+    completePairMean: estimate.completeCaseMean,
+    filledOnlyMean: filled.length === 0 ? null : filledSum / filled.length,
+    zeroImputationMean:
+      estimate.enrolled === 0 || estimate.completeCaseMean === null
+        ? null
+        : (estimate.completeCaseMean * estimate.known) / estimate.enrolled,
   };
 }
 
@@ -499,6 +539,87 @@ export function pooledPairMean(pairs: readonly { day: string; diff: number }[]):
   if (pairs.length === 0) return null;
   return pairs.reduce((sum, pair) => sum + pair.diff, 0) / pairs.length;
 }
+
+function unitRandom(seed: number): () => number {
+  let state = seed >>> 0;
+  return () => {
+    state = (state + 0x6d2b79f5) | 0;
+    let value = Math.imul(state ^ (state >>> 15), 1 | state);
+    value = (value + Math.imul(value ^ (value >>> 7), 61 | value)) ^ value;
+    return ((value ^ (value >>> 14)) >>> 0) / 4294967296;
+  };
+}
+
+function normalDraw(random: () => number): number {
+  const u = Math.max(1e-12, random());
+  const v = Math.max(1e-12, random());
+  return Math.sqrt(-2 * Math.log(u)) * Math.cos(2 * Math.PI * v);
+}
+
+/**
+ * Measured on clustered days, a rare large return, and one missing pair per sim.
+ * Not a promise about a future window. The report quotes the returned numbers.
+ */
+export function measureBootstrapCalibration(seed = 11): {
+  sims: number;
+  falsePositiveRate: number;
+  intervalCoverage: number;
+  powerAt15pp: number;
+} {
+  const sims = 40;
+  const random = unitRandom(seed);
+  const oneSim = (trueDelta: number) => {
+    const pairs: Array<{ day: string; wallet: number; control: number }> = [];
+    for (let day = 0; day < 6; day += 1) {
+      const shock = random() < 0.08 ? 1.5 : 0;
+      for (let index = 0; index < 4; index += 1) {
+        if (day === 0 && index === 0) continue;
+        const diff = trueDelta + normalDraw(random) * 0.2 + (index === 0 ? shock : 0);
+        pairs.push({ day: `d${day.toString()}`, wallet: diff, control: 0 });
+      }
+    }
+    const interval = blockBootstrapDelta({
+      pairs,
+      replicates: 30,
+      seed: Math.floor(random() * 1_000_000) + 1,
+    });
+    return interval;
+  };
+  let falsePositives = 0;
+  let covered = 0;
+  let powered = 0;
+  for (let sim = 0; sim < sims; sim += 1) {
+    const none = oneSim(0);
+    if (none.low !== null && none.low > EXPERIMENT_MIN_ADVANTAGE) falsePositives += 1;
+    const modest = oneSim(0.08);
+    if (
+      modest.low !== null &&
+      modest.high !== null &&
+      modest.low - 1e-9 <= 0.08 &&
+      modest.high + 1e-9 >= 0.08
+    ) {
+      covered += 1;
+    }
+    const large = oneSim(0.15);
+    if (large.low !== null && large.low > EXPERIMENT_MIN_ADVANTAGE) powered += 1;
+  }
+  return {
+    sims,
+    falsePositiveRate: falsePositives / sims,
+    intervalCoverage: covered / sims,
+    powerAt15pp: powered / sims,
+  };
+}
+
+export const REQUIRED_MIGRATIONS = [
+  "023_scale_booking",
+  "024_quote_failure",
+  "025_wallet_fill_amounts",
+  "026_candidate_log",
+  "027_execution_record",
+  "028_wide_recovery",
+  "029_review3_records",
+] as const;
 
 export function qualificationGate(input: {
   ciGreenOnCommit: boolean;

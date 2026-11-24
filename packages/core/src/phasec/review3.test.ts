@@ -4,6 +4,9 @@ import { readFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
+import { buildCandidateLog } from "./outcomes.js";
+import type { ScreenFacts, ScreenRules } from "./screen.js";
+import type { ScoreCoin } from "./score.js";
 import {
   acceptEntryObservation,
   accumulation,
@@ -12,12 +15,15 @@ import {
   classifyFill,
   enrollmentEstimate,
   isExcludedProtocol,
+  labeledPairMeans,
+  measureBootstrapCalibration,
   matchBenchmark,
   matchContemporaneous,
   MIN_BUY_SOL,
   missingnessChangesDecision,
   poolCanHoldNotional,
   qualificationGate,
+  REQUIRED_MIGRATIONS,
   recallWalletSwaps,
   scenarioFills,
   simulateEqualBankrolls,
@@ -40,6 +46,20 @@ function coin(mint: string, overrides: Partial<MatchCoin> = {}): MatchCoin {
 }
 
 describe("review 3", () => {
+  it("labels the 0.095 example without using 0.0475 as the primary mean", () => {
+    const labeled = labeledPairMeans([
+      { wallet: 0, control: -0.095, walletUnfilled: true },
+      { wallet: null, control: 0.1 },
+    ]);
+    expect(labeled.enrolled).toBe(2);
+    expect(labeled.resolved).toBe(1);
+    expect(labeled.unresolved).toBe(1);
+    expect(labeled.fullPopulationMean).toBe("UNKNOWN");
+    expect(labeled.completePairMean).toBeCloseTo(0.095);
+    expect(labeled.filledOnlyMean).toBeNull();
+    expect(labeled.zeroImputationMean).toBeCloseTo(0.0475);
+  });
+
   it("does not impute zero for an unresolved pair", () => {
     const estimate = enrollmentEstimate([
       { wallet: 0, control: -0.095, walletUnfilled: true },
@@ -230,5 +250,75 @@ describe("review 3", () => {
     expect(recallWalletSwaps({ known: new Set(["a"]), reference: ["a", "b"] }).missing).toEqual([
       "b",
     ]);
+  });
+
+  it("can benchmark a coin that failed the screen", () => {
+    const now = new Date("2026-11-24T12:10:00.000Z");
+    const rules: ScreenRules = {
+      failMintAuthority: true,
+      failFreezeAuthority: true,
+      transferFeeBpsAbove: 300,
+      exitImpactPctAbove: 5,
+      entryImpactPctAbove: 10,
+      top10FailAbove: 50,
+      sniperFailAbove: 60,
+      trenchMinTrackedBuyers: 1,
+      top10Warn: 35,
+      sniperWarn: 30,
+      minLiquidityUsd: 15_000,
+      minMakers1h: 50,
+    };
+    const base = {
+      createdAt: new Date("2026-11-24T10:00:00.000Z"),
+      graduatedAt: new Date("2026-11-24T12:00:00.000Z"),
+      curveCompletedAt: null,
+      xMentions: null,
+      liquidityUsd: 20_000,
+      mintAuthorityActive: false,
+      freezeAuthorityActive: false,
+      transferFeeBps: 0,
+      exitQuoteImpactPct: 1,
+      entryQuoteImpactPct: 1,
+      top10HoldersPct: 10,
+      sniperBundlePct: 1,
+      uniqueMakers1h: 80,
+      creatorSells: 0,
+      quoteError: false,
+      poolType: "pump",
+    };
+    const rows = buildCandidateLog({
+      now,
+      rules,
+      paused: false,
+      entries: [],
+      prices: new Map(),
+      experiment: true,
+      venueAllowlist: ["pump"],
+      coins: [
+        { ...base, mint: "backed", trackedBuyers: 2 },
+        { ...base, mint: "failed-screen", trackedBuyers: 0, mintAuthorityActive: true },
+      ],
+    });
+    expect(rows.find((row) => row.mint === "failed-screen")?.group).toBe("pre_screen");
+  });
+
+  it("names the migration set the combined stack requires", () => {
+    const ddl = readFileSync(
+      path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../db/ingest.ts"),
+      "utf8",
+    );
+    for (const id of REQUIRED_MIGRATIONS) expect(ddl).toContain(id);
+    expect(ddl).toContain("set local lock_timeout = '3s'");
+    expect(ddl).toContain("on conflict (id) do nothing");
+  });
+
+  it("measures bootstrap false positives, coverage, and power", () => {
+    const measured = measureBootstrapCalibration(11);
+    expect(measured).toEqual({
+      sims: 40,
+      falsePositiveRate: 0,
+      intervalCoverage: 0.825,
+      powerAt15pp: 0.775,
+    });
   });
 });

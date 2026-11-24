@@ -303,14 +303,18 @@ export {
   reverseNotionalUsd,
   walletListHash,
 } from "./phasec/experimentProtocol.js";
-export { shadowAcceptance, type ShadowMeasurements } from "./phasec/shadowReport.js";
+export {
+  shadowAcceptance,
+  shadowDependency,
+  type ShadowMeasurements,
+} from "./phasec/shadowReport.js";
 export {
   acceptEntryObservation,
   chooseFirstValidExit,
   recallWalletSwaps,
 } from "./phasec/review3.js";
 export { blockLagAlert, inUnrecoveredGap, venueStaleAlert } from "./ingest/feedAlerts.js";
-export { fetchSignaturePage, walkSignatureGap } from "./ingest/wideRecovery.js";
+export { fetchSignaturePage, reconcileWideGap, walkSignatureGap } from "./ingest/wideRecovery.js";
 export { capSizeToLiquidity } from "./phasec/risk.js";
 export { isFlapMint, stageForCoin } from "./phasec/score.js";
 export {

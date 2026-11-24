@@ -1,11 +1,19 @@
-import { createPool, serviceEnabled, shadowAcceptance, startApp } from "@fomo/core";
+import {
+  createPool,
+  serviceEnabled,
+  shadowAcceptance,
+  shadowDependency,
+  startApp,
+} from "@fomo/core";
 
 const POLL_MS = 60_000;
 
 /**
  * Collection-only shadow. Compose does not start it. The process exits unless
- * SHADOW_ENABLED is the exact word true. This file does not send Telegram and
- * does not insert a trade intent. Returns are not read and not logged.
+ * SHADOW_ENABLED is the exact word true. Outcome quotes are executed by the
+ * outcomes process, not by this one. Enabling this runner without
+ * OUTCOMES_ENABLED is a dependency failure. This file does not send Telegram
+ * and does not insert a trade intent. Returns are not read and not logged.
  */
 await startApp({
   app: "shadow",
@@ -17,11 +25,22 @@ await startApp({
       );
       return;
     }
+    const dependency = shadowDependency({
+      shadowEnabled: true,
+      outcomesEnabled: serviceEnabled(env.OUTCOMES_ENABLED),
+    });
+    if (!dependency.ok) {
+      logger.error({ reason: dependency.reason }, "shadow runner dependency failed");
+      return;
+    }
     const pool = createPool(env.DATABASE_URL);
     try {
       for (;;) {
         const trades = await pool.query<{ n: string }>(
           "select count(*)::text as n from autobuy_intent",
+        );
+        const observations = await pool.query<{ n: string }>(
+          "select count(*)::text as n from phasec_observation where status <> 'pending'",
         );
         const report = shadowAcceptance({
           tradesCreated: Number(trades.rows[0]?.n ?? 0),
@@ -47,8 +66,11 @@ await startApp({
           integrityFailure: false,
           spendLimitHit: false,
           unsafeOperation: false,
+          servicesRunning: serviceEnabled(env.OUTCOMES_ENABLED),
+          observations: Number(observations.rows[0]?.n ?? 0),
+          recallRuns: 0,
         });
-        logger.info({ pass: report.pass, checks: report.checks }, "shadow acceptance");
+        logger.info({ status: report.status, pass: report.pass }, "shadow acceptance");
         await new Promise((resolve) => setTimeout(resolve, POLL_MS));
       }
     } finally {
