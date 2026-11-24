@@ -18,16 +18,16 @@ Second wave, auto-buy, signing, Flap trading, and X/social are not part of this 
 
 These are the owner's. Recommended defaults are not a freeze.
 
-| Choice | Recommended default | Status |
-|---|---|---|
-| Fee route | Do not assume a route. Report both the lowest-fee schedule and the other-route schedule ($0.95 minimum). The route stays unknown until confirmation screens are checked. | **OPEN** |
-| Venue | Include a venue only after its ingestion and an independent recall check are accepted. Which venue passes that bar is not known. | **OPEN** |
-| Stage | Trench only. | **OPEN** |
-| Fixed notional | One dollar amount for every arm. $5 matches the old trench cap, and it may be too small if the $0.95 minimum applies. Do not raise the size to dilute that minimum. | **OPEN** |
-| Entry and round-trip cap | Neither 5% nor 10% is validated. Freeze one number before the window and do not relax it to get more trades. The 1% of pool liquidity cap is secondary. | **OPEN** |
-| Minimum worthwhile advantage | The smallest mean-return gap that would be worth a next validation stage. A suggested reading of the power table is 15 points, which this sample can barely see. | **OPEN** |
-| Scored window and stop date | A fixed calendar window, set before the first scored entry. No peeking at the primary result during the window. | **OPEN** |
-| Research budget | Maximum scored entries, and a separate note of hosting and data cost. The budget is not increased after seeing returns. | **OPEN** |
+| Choice                       | Recommended default                                                                                                                                                      | Status   |
+| ---------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | -------- |
+| Fee route                    | Do not assume a route. Report both the lowest-fee schedule and the other-route schedule ($0.95 minimum). The route stays unknown until confirmation screens are checked. | **OPEN** |
+| Venue                        | Include a venue only after its ingestion and an independent recall check are accepted. Which venue passes that bar is not known.                                         | **OPEN** |
+| Stage                        | Trench only.                                                                                                                                                             | **OPEN** |
+| Fixed notional               | One dollar amount for every arm. $5 matches the old trench cap, and it may be too small if the $0.95 minimum applies. Do not raise the size to dilute that minimum.      | **OPEN** |
+| Entry and round-trip cap     | Neither 5% nor 10% is validated. Freeze one number before the window and do not relax it to get more trades. The 1% of pool liquidity cap is secondary.                  | **OPEN** |
+| Minimum worthwhile advantage | The smallest mean-return gap that would be worth a next validation stage. A suggested reading of the power table is 15 points, which this sample can barely see.         | **OPEN** |
+| Scored window and stop date  | A fixed calendar window, set before the first scored entry. No peeking at the primary result during the window.                                                          | **OPEN** |
+| Research budget              | Maximum scored entries, and a separate note of hosting and data cost. The budget is not increased after seeing returns.                                                  | **OPEN** |
 
 ## Groups
 
@@ -64,11 +64,11 @@ The uncertainty is a block over time, and a mint cannot appear twice. A bootstra
 
 Power is approximate, two-sided 5%, for a difference in means. It is not a promise.
 
-| Trades per group | Detectable gap if the spread is 30 points | Detectable gap if the spread is 50 points |
-|---|---|---|
-| 63 | about 15 points | about 25 points |
-| 168 | about 9 points | about 15 points |
-| about 565 to 1,568 | about 5 points | about 5 points |
+| Trades per group   | Detectable gap if the spread is 30 points | Detectable gap if the spread is 50 points |
+| ------------------ | ----------------------------------------- | ----------------------------------------- |
+| 63                 | about 15 points                           | about 25 points                           |
+| 168                | about 9 points                            | about 15 points                           |
+| about 565 to 1,568 | about 5 points                            | about 5 points                            |
 
 A 5-point edge is not detectable at the volume seen so far. Inconclusive is the expected call unless the edge is large.
 
