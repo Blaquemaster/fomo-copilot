@@ -13,10 +13,19 @@ import {
   handlePortalLog,
   logBlockPages,
   portalLogFilter,
+  nextBscAuditDelay,
   runBscIngest,
 } from "./bsc.js";
 
 describe("bsc flap intake", () => {
+  it("keeps the 6 hour recall clock across a reconnect", () => {
+    const every = 6 * 60 * 60 * 1000;
+    expect(nextBscAuditDelay(0, 1_000, every)).toBe(every);
+    const started = 0;
+    const afterThreeHours = 3 * 60 * 60 * 1000;
+    expect(nextBscAuditDelay(started + 1, afterThreeHours, every)).toBe(every - afterThreeHours + 1);
+  });
+
   it("does not open a socket when BSC_WSS_URL is unset", async () => {
     let opened = false;
     await runBscIngest({

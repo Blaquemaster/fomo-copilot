@@ -583,6 +583,12 @@ create table if not exists phasec_candidate (
 );
 create index if not exists phasec_candidate_due_idx
   on phasec_candidate (outcome_due_at) where outcome_status = 'pending';
+alter table phasec_candidate add column if not exists ingest_gap boolean not null default false;
+
+create or replace view phasec_gap_period as
+select id, program_id, observed_at, gap_from_slot, gap_to_slot, reason
+from ingest_backfill
+where unrecovered;
 alter table phasec_position add column if not exists quote_source text;
 alter table phasec_position add column if not exists restarted_at timestamptz;
 alter table phasec_alert add column if not exists fingerprint text;
@@ -913,7 +919,7 @@ export class IngestRepository {
     observation: Observation,
     byteLength: number,
     receivedAt: Date,
-    source: "stream" | "audit" = "stream",
+    source: "stream" | "backfill" | "audit" = "stream",
   ): Promise<boolean> {
     const result = await this.pool.query(
       `insert into raw_events
@@ -946,7 +952,7 @@ export class IngestRepository {
     observation: Observation;
     byteLength: number;
     receivedAt: Date;
-    source: "stream" | "audit";
+    source: "stream" | "backfill" | "audit";
   }): Promise<boolean> {
     const client = await this.pool.connect();
     try {

@@ -26,7 +26,7 @@ export const DROP_REASONS = [
 ] as const;
 export type DropReason = (typeof DROP_REASONS)[number];
 
-export type EventSource = "stream" | "audit";
+export type EventSource = "stream" | "backfill" | "audit";
 
 export function isAlertableSource(source: string): boolean {
   return source !== "audit";

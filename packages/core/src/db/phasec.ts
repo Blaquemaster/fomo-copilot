@@ -152,7 +152,7 @@ export class PhaseCRepository implements PhaseCStore {
               coin.transfer_fee_bps,
               coalesce(stats.creator_sells, 0) as creator_sells,
               coalesce(sells.tracked_sells, 0) as tracked_sells,
-              case when coalesce(snipers.buys, 0) = 0 then cache.sniper_pct else snipers.sniper_pct end as sniper_pct,
+              coalesce(snipers.sniper_pct, cache.sniper_pct) as sniper_pct,
               case when cache.top10_method = '${TOP10_METHOD}' then cache.top10_pct end as top10_pct,
               cache.mint_authority_active,
               cache.freeze_authority_active,
@@ -190,11 +190,11 @@ export class PhaseCRepository implements PhaseCStore {
            and ($4::timestamptz is null or t.selected_at <= $4::timestamptz)
        ) sells on true
        left join lateral (
-         select count(*) filter (where t.side = 'buy') as buys,
-           case when count(*) filter (where t.side = 'buy') = 0 then null
+         select count(*) filter (where t.side = 'buy' and t.is_creator = false) as non_creator_buys,
+           case when count(*) filter (where t.side = 'buy' and t.is_creator = false) = 0 then null
              else count(*) filter (
                where t.side = 'buy' and t.is_creator = false and t.slot = p.created_slot
-             )::float / count(*) filter (where t.side = 'buy') * 100
+             )::float / count(*) filter (where t.side = 'buy' and t.is_creator = false) * 100
            end as sniper_pct
          from pump_trade t
          join pump_coin p on p.mint = t.mint
@@ -490,8 +490,14 @@ export class PhaseCRepository implements PhaseCStore {
       await this.pool.query(
         `insert into phasec_candidate
           (pass_at, mint, stage, group_name, verdict, reason, recorded_only, during_pause,
-           alert_price_usd, outcome_due_at, outcome_status)
-         values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,'pending')`,
+           alert_price_usd, outcome_due_at, outcome_status, ingest_gap)
+         values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,'pending',
+           exists (
+             select 1 from ingest_backfill b
+             where b.unrecovered
+               and b.observed_at <= $1::timestamptz
+               and b.observed_at >= $1::timestamptz - interval '6 hours'
+           ))`,
         [
           at.toISOString(),
           row.mint,

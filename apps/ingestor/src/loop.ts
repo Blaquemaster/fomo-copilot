@@ -14,7 +14,9 @@ import {
   programsForVenues,
   subscribedPrograms,
   enabledVenues,
+  blockLagAlert,
   venueForProgram,
+  venueStaleAlert,
   pumpTradeRetention,
   subscriptionNamesForProgram,
   allowanceCredits,
@@ -196,6 +198,10 @@ export async function runIngestLoop(input: {
     heapMs > 0
       ? setInterval(() => {
           void recordHeapSample(input.repo, input.logger);
+          for (const [venue, last] of venueLastEvent) {
+            const stale = venueStaleAlert({ venue, lastEventAt: last, now: new Date() });
+            if (stale) input.logger.warn({ venue, metric: "venue_stale" }, stale);
+          }
         }, heapMs)
       : null;
   input.signal.addEventListener(
@@ -941,7 +947,7 @@ async function persistDecoded(
   },
   decoded: { observations: Observation[]; failures: DecodeFailure[] },
   byteLength: number,
-  source: "stream" | "audit",
+  source: "stream" | "backfill" | "audit",
 ): Promise<number> {
   for (const failure of decoded.failures) {
     try {
@@ -962,7 +968,16 @@ async function persistDecoded(
       if (!kept) continue;
       stored += 1;
       const venue = venueForProgram(observation.programId);
-      if (venue !== null) input.usage?.add({ venueStored: { [venue]: 1 } });
+      if (venue !== null) {
+        input.usage?.add({ venueStored: { [venue]: 1 } });
+        venueLastEvent.set(venue, receivedAt);
+        const lag = blockLagAlert({
+          venue,
+          blockTimeMs: observation.blockTimeMs,
+          recordedAt: receivedAt,
+        });
+        if (lag && source === "stream") input.logger.warn({ venue, metric: "block_lag" }, lag);
+      }
     } catch (error) {
       input.logger.error({ err: error }, "failed to store ingest event");
       input.overflow?.note(observation.programId, observation.slot);
@@ -1222,7 +1237,7 @@ export async function backfillProgram(input: {
         { repo: input.repo, logger: input.logger, seen },
         decoded,
         0,
-        "stream",
+        "backfill",
       );
     } catch (error) {
       errored = true;
@@ -1380,7 +1395,7 @@ async function backfillByScan(input: {
         { repo: input.repo, logger: input.logger, seen: input.seen },
         decoded,
         0,
-        "stream",
+        "backfill",
       );
     } catch (error) {
       errored = true;
@@ -1909,6 +1924,7 @@ function sleep(ms: number, signal: AbortSignal): Promise<void> {
 }
 
 const notedNotifications = new BoundedSet(NOTED_NOTIFICATIONS);
+const venueLastEvent = new Map<string, Date>();
 
 function noteIgnored(logger: Logger, method: string): void {
   if (!notedNotifications.add(method)) return;
@@ -1933,7 +1949,7 @@ async function storeObservation(
   observation: Observation,
   byteLength: number,
   receivedAt: Date,
-  source: "stream" | "audit",
+  source: "stream" | "backfill" | "audit",
 ): Promise<boolean> {
   const pumpish = isPumpTradeKind(observation.kind) || isPumpLifecycleKind(observation.kind);
   const coin = pumpish && observation.mint ? await input.repo.pumpCoin(observation.mint) : null;
@@ -2074,7 +2090,7 @@ async function recoverOverflow(input: {
             { repo: input.repo, logger: input.logger, seen: input.seen },
             decodeRpcTransaction(result, match.signature),
             0,
-            "stream",
+            "backfill",
           );
         }
         failed = !scanned.complete;

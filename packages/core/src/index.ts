@@ -287,6 +287,7 @@ export {
 } from "./phasec/secondWave.js";
 export { runPhaseCPass, type PassCoin, type PassPosition } from "./phasec/pass.js";
 export { outcomeFromPrices, OUTCOME_DELAY_MS } from "./phasec/outcomes.js";
+export { blockLagAlert, inUnrecoveredGap, venueStaleAlert } from "./ingest/feedAlerts.js";
 export { capSizeToLiquidity } from "./phasec/risk.js";
 export { isFlapMint, stageForCoin } from "./phasec/score.js";
 export {
