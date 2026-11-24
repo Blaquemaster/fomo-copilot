@@ -389,21 +389,21 @@ grep -q 'wide_recovery=disabled' /tmp/fomo-ingestor-replacement.txt
 grep -q 'result=ok' /tmp/fomo-ingestor-replacement.txt
 
 echo "mock feed for the long-running ingestor"
-node scripts/ci-mock-feed.mjs 8787 >/tmp/fomo-mock-feed.log 2>&1 &
-mock_pid=$!
-sleep 1
 network=$(docker network ls --format '{{.Name}}' | grep '^fomo-ci' | head -1)
-gateway=$(docker network inspect "$network" -f '{{(index .IPAM.Config 0).Gateway}}')
+docker run -d --name fomo-ci-mock --network "$network" \
+  -v "$root/scripts/ci-mock-feed.mjs:/mock.mjs:ro" \
+  node:22.23.4-bookworm-slim@sha256:5ec23b7c622b00547753bc6ffd78085dd868a68aeb41c8e0a1418f033e13d96d \
+  node /mock.mjs 8787
 cat >>"$app_env" <<EOF
 AUTOBUY_MODE=dry_run
-HELIUS_HTTP_BASE=http://${gateway}:8787
-HELIUS_WS_BASE=ws://${gateway}:8787
-BSC_WSS_URL=ws://${gateway}:8787
+HELIUS_HTTP_BASE=http://fomo-ci-mock:8787
+HELIUS_WS_BASE=ws://fomo-ci-mock:8787
+BSC_WSS_URL=ws://fomo-ci-mock:8787
 EOF
 bash scripts/replace-ingestor.sh --live --project fomo-ci --env-file "$app_env" --record /tmp/fomo-live-replacement.txt
 grep -q 'result=ok' /tmp/fomo-live-replacement.txt
 compose stop ingestor
-kill "$mock_pid" || true
+docker rm -f fomo-ci-mock >/dev/null 2>&1 || true
 
 echo "startup failure preserves the database"
 rows_before=$(compose exec -T postgres psql -U fomo -d fomo -At -c "select count(*) from raw_events")

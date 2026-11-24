@@ -130,7 +130,12 @@ elif [[ "$live" == "1" ]]; then
     echo "ingestor did not persist a mock event" >&2
     exit 1
   fi
-  test "$(docker inspect -f '{{.State.Status}}' "${project}-ingestor-1")" = "running"
+  status=$(docker inspect -f '{{.State.Status}}' "${project}-ingestor-1")
+  if [[ "$status" != "running" ]]; then
+    docker logs "${project}-ingestor-1" >&2 || true
+    echo "ingestor status $status" >&2
+    exit 1
+  fi
   docker inspect -f '{{range .Config.Env}}{{println .}}{{end}}' "${project}-ingestor-1" | grep -q '^AUTOBUY_MODE=dry_run$'
   running=$(docker ps --format '{{.Names}}' | grep -E 'screener|alerter|outcome|shadow' || true)
   test -z "$running"
