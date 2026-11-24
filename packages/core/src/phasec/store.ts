@@ -70,9 +70,10 @@ export interface PhaseCStore {
   markScaled(rows: readonly PlannedScale[], at: Date): Promise<void>;
   saveQuoteFailures(rows: readonly PlannedQuoteFailure[], at: Date): Promise<void>;
   insertCandidates(rows: readonly CandidateLogRow[], at: Date): Promise<void>;
-  dueCandidates(now: Date, limit: number): Promise<
-    Array<{ id: string; mint: string; alertPriceUsd: number | null }>
-  >;
+  dueCandidates(
+    now: Date,
+    limit: number,
+  ): Promise<Array<{ id: string; mint: string; alertPriceUsd: number | null }>>;
   saveCandidateOutcome(
     id: string,
     status: "priced" | "missing",
