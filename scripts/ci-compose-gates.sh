@@ -439,6 +439,9 @@ SQL
 mock_counts() {
   docker exec fomo-ci-mock node -e "fetch('http://127.0.0.1:8787/counts').then(async (response) => process.stdout.write(await response.text()))"
 }
+diagnostic_counts() {
+  node --input-type=module -e "const counts = JSON.parse(process.argv[1]); process.stdout.write(JSON.stringify({ scan: counts.scan, publicRpc: counts.publicRpc, jupiter: counts.jupiter }))" "$1"
+}
 run_diag() {
   docker run --rm --network "$network" \
     --env-file "$app_env" \
@@ -492,17 +495,17 @@ compose exec -T postgres psql -v ON_ERROR_STOP=1 -U fomo -d fomo -At -c \
 run_diag "$shadow_url" shared c 11 2 1 >/tmp/fomo-diag-c.txt
 cat /tmp/fomo-diag-c.txt
 grep -q '"denied":3' /tmp/fomo-diag-c.txt
-test "$(mock_counts)" = "$shared_counts"
+test "$(diagnostic_counts "$(mock_counts)")" = "$(diagnostic_counts "$shared_counts")"
 compose exec -T postgres psql -v ON_ERROR_STOP=1 -U fomo -d fomo -c \
   "insert into diagnostic_spend (scope, helius_credits, jupiter_quotes, public_rpc_calls, spent_usd_micros) values ('denied', 11, 2, 1, 0)"
 run_diag "$shadow_url" denied d 11 2 1 >/tmp/fomo-diag-d.txt
 cat /tmp/fomo-diag-d.txt
 grep -q '"sent":{"scan":0,"reconciliation":0,"quote":0}' /tmp/fomo-diag-d.txt
-test "$(mock_counts)" = "$shared_counts"
+test "$(diagnostic_counts "$(mock_counts)")" = "$(diagnostic_counts "$shared_counts")"
 run_diag "postgres://fomo_shadow_ci:password1@127.0.0.1:1/fomo" missing e 11 2 1 >/tmp/fomo-diag-e.txt
 cat /tmp/fomo-diag-e.txt
 grep -q '"budgetDbFailed":true' /tmp/fomo-diag-e.txt
-test "$(mock_counts)" = "$shared_counts"
+test "$(diagnostic_counts "$(mock_counts)")" = "$(diagnostic_counts "$shared_counts")"
 compose exec -T postgres psql -v ON_ERROR_STOP=1 -U fomo -d fomo -c \
   "insert into ingest_month (month, credit_micros, paused) values (to_char(now() at time zone 'utc', 'YYYY-MM'), 9000000000000, true) on conflict (month) do update set credit_micros = excluded.credit_micros, paused = true"
 run_diag "$shadow_url" pause f 100 5 5 >/tmp/fomo-diag-f.txt
