@@ -20,12 +20,13 @@ const liveFrame = JSON.stringify({
         },
         instructions: [
           {
-            programId: "dbcij3LWUppWqq96dh6gJWwBifmcGfLSB5D4DuSMaqN",
-            instructionName: "initialize_virtual_pool_with_spl_token",
+            programId: "6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P",
+            instructionName: "create",
             decoded: {
               accounts: [
-                { name: "base_mint", pubkey: "base-mint" },
-                { name: "pool", pubkey: "dbc-pool" },
+                { name: "mint", pubkey: "CiMockMint111111111111111111111111111111111" },
+                { name: "bonding_curve", pubkey: "CiMockCurve11111111111111111111111111111111" },
+                { name: "user", pubkey: "CiMockUser1111111111111111111111111111111111" },
               ],
             },
           },

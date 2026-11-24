@@ -130,7 +130,7 @@ elif [[ "$live" == "1" ]]; then
   set -e
   if [[ "$healthy" != "1" ]]; then
     compose logs ingestor >&2 || true
-    echo "ingestor did not persist a mock event" >&2
+    echo "ingestor did not persist a mock event marker=$marker"
     exit 1
   fi
   status=$(docker inspect -f '{{.State.Status}}' "${project}-ingestor-1")
@@ -139,7 +139,9 @@ elif [[ "$live" == "1" ]]; then
     echo "ingestor status $status" >&2
     exit 1
   fi
-  docker inspect -f '{{range .Config.Env}}{{println .}}{{end}}' "${project}-ingestor-1" | grep -q '^AUTOBUY_MODE=dry_run$'
+  env_text=$(docker inspect -f '{{range .Config.Env}}{{println .}}{{end}}' "${project}-ingestor-1")
+  echo "$env_text" | grep 'AUTOBUY_MODE' || true
+  echo "$env_text" | grep -q 'AUTOBUY_MODE=dry_run'
   running=$(docker ps --format '{{.Names}}' | grep -E 'screener|alerter|outcome|shadow' || true)
   test -z "$running"
 else
