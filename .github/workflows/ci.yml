@@ -84,6 +84,8 @@ jobs:
           persist-credentials: false
 
       - name: Compose stop-state gates
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: bash scripts/ci-compose-gates.sh
 
       - name: Show the recorded release digest
