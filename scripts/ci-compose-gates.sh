@@ -411,6 +411,34 @@ cat /tmp/fomo-live-trace 2>/dev/null || true
 docker logs fomo-ci-ingestor-1 2>&1 || true
 test "$live_code" = "0"
 grep -q 'result=ok' /tmp/fomo-live-replacement.txt
+echo "cutover report while the replacement is up"
+running_image=$(docker inspect -f '{{.Image}}' fomo-ci-ingestor-1)
+bash scripts/cutover-report.sh \
+  --project fomo-ci \
+  --env-file "$app_env" \
+  --file infra/docker-compose.yml \
+  --approved-image "$running_image" \
+  --require-image \
+  --cutover-at "2026-11-24T00:00:00Z" \
+  --diagnostic-start "2026-11-24T00:00:00Z" >/tmp/fomo-cutover.txt
+grep -q 'solana_subscription_acks' /tmp/fomo-cutover.txt
+grep -q 'bsc_checkpoint' /tmp/fomo-cutover.txt
+grep -q 'unrecovered_intervals' /tmp/fomo-cutover.txt
+grep -q 'account_usage' /tmp/fomo-cutover.txt
+grep -q 'diagnostic_ledger' /tmp/fomo-cutover.txt
+grep -q 'warmup 24h' /tmp/fomo-cutover.txt
+grep -q 'image_matches_approved yes' /tmp/fomo-cutover.txt
+set +e
+bash scripts/cutover-report.sh \
+  --project fomo-ci \
+  --env-file "$app_env" \
+  --file infra/docker-compose.yml \
+  --approved-image "sha256:0000000000000000000000000000000000000000000000000000000000000000" \
+  --require-image >/tmp/fomo-cutover-bad.txt
+cutover_bad=$?
+set -e
+test "$cutover_bad" -ne 0
+grep -q 'image_matches_approved no' /tmp/fomo-cutover-bad.txt
 
 echo "diagnostic entrypoint shares the budget and leaves the ingestor running"
 role_sql="$root/infra/sql/fomo-shadow-diagnostic.sql"
@@ -578,6 +606,13 @@ test "$drift_code" -ne 0
 echo "$drift_log" | grep -q "schema drift"
 rm -f "$drifted"
 
+echo "copy the tested OCI archive without rebuilding"
+if ! command -v skopeo >/dev/null 2>&1; then
+  sudo apt-get update -qq
+  sudo apt-get install -y -qq skopeo
+fi
+test -s "$root/release-oci.tar"
+recorded_digest=$(node --input-type=module -e "import {readFileSync} from 'node:fs'; process.stdout.write(JSON.parse(readFileSync(process.argv[1],'utf8')).registryDigest)" "$root/release-digest.json")
 echo "publish the image to a local registry and verify the pulled id"
 docker rm -f fomo-ci-registry >/dev/null 2>&1 || true
 docker run -d --name fomo-ci-registry -p 127.0.0.1:5000:5000 registry:2
@@ -600,6 +635,50 @@ verify_log=$(bash scripts/verify-published-image.sh \
   --expected-image-id "$expected_id")
 echo "$verify_log" | grep -q "platform=linux/amd64"
 echo "$verify_log" | grep -q "replacement may start"
+copy_log=$(bash scripts/copy-tested-oci.sh \
+  --archive "$root/release-oci.tar" \
+  --destination "127.0.0.1:5000/fomo-ingestor:copied" \
+  --expected "$recorded_digest" \
+  --scheme http)
+echo "$copy_log"
+echo "$copy_log" | grep -q "digest unchanged ${recorded_digest}"
+bash scripts/verify-release-handoff.sh \
+  --archive "$root/release-oci.tar" \
+  --handoff "$root/release-handoff.json" \
+  --run-id "${GITHUB_RUN_ID:-local}" \
+  --artifact-id pending-upload
+tampered=$(mktemp)
+printf 'altered' >"$tampered"
+set +e
+tamper_log=$(bash scripts/verify-release-handoff.sh \
+  --archive "$tampered" \
+  --handoff "$root/release-handoff.json" \
+  --run-id "${GITHUB_RUN_ID:-local}" \
+  --artifact-id pending-upload 2>&1)
+tamper_code=$?
+set -e
+test "$tamper_code" -ne 0
+echo "$tamper_log" | grep -q "checksum does not match"
+set +e
+wrong_log=$(bash scripts/verify-release-handoff.sh \
+  --archive "$root/release-oci.tar" \
+  --handoff "$root/release-handoff.json" \
+  --run-id 1 \
+  --artifact-id pending-upload 2>&1)
+wrong_code=$?
+missing_handoff=$(bash scripts/verify-release-handoff.sh \
+  --archive "$root/release-oci.tar" \
+  --handoff "$root/release-oci.tar.missing" \
+  --run-id "${GITHUB_RUN_ID:-local}" \
+  --artifact-id pending-upload 2>&1)
+missing_handoff_code=$?
+set -e
+test "$wrong_code" -ne 0
+test "$missing_handoff_code" -ne 0
+echo "$wrong_log" | grep -q "different run"
+rm -f "$tampered"
+docker pull "127.0.0.1:5000/fomo-ingestor@${recorded_digest}"
+echo "digest-pinned pull matches ${recorded_digest}"
 docker tag node:22.23.4-bookworm-slim@sha256:5ec23b7c622b00547753bc6ffd78085dd868a68aeb41c8e0a1418f033e13d96d \
   127.0.0.1:5000/fomo-ingestor:rebuilt
 docker push 127.0.0.1:5000/fomo-ingestor:rebuilt
@@ -623,6 +702,87 @@ set -e
 test "$missing_code" -ne 0
 echo "$missing_log" | grep -q "pull failed"
 docker rm -f fomo-ci-registry >/dev/null 2>&1 || true
+
+echo "one-time deploy user"
+deploy_key=$(mktemp)
+ssh-keygen -t ed25519 -f "$deploy_key" -N '' -q
+root_before=""
+if [[ -f /root/.ssh/authorized_keys ]]; then
+  root_before=$(sha256sum /root/.ssh/authorized_keys | awk '{print $1}')
+fi
+sudo bash scripts/setup-deploy-user.sh "${deploy_key}.pub"
+sudo bash scripts/setup-deploy-user.sh "${deploy_key}.pub"
+id fomo-deploy | grep -q 'fomo-deploy'
+if id -nG fomo-deploy | tr ' ' '\n' | grep -qx docker; then
+  echo "deploy user must not be in the docker group" >&2
+  exit 1
+fi
+sudo passwd -S fomo-deploy | awk '{ exit ($2 == "L" ? 0 : 1) }'
+grep -Fq 'NOPASSWD: /usr/local/lib/fomo/fomo-deploy-helper' /etc/sudoers.d/fomo-deploy
+cmp -s "${deploy_key}.pub" /home/fomo-deploy/.ssh/authorized_keys
+test "$(stat -c '%U' /usr/local/lib/fomo/fomo-deploy-helper)" = "root"
+sudo -u fomo-deploy test -w /usr/local/lib/fomo/fomo-deploy-helper && exit 1
+sudo -u fomo-deploy test -w /etc/fomo/deploy-authorization.json && exit 1
+set +e
+sudo -u fomo-deploy docker ps >/tmp/fomo-deploy-docker.txt 2>&1
+docker_code=$?
+set -e
+test "$docker_code" -ne 0
+if [[ -n "$root_before" ]]; then
+  test "$(sha256sum /root/.ssh/authorized_keys | awk '{print $1}')" = "$root_before"
+fi
+sudo -n true
+docker volume create fomo-copilot_pgdata >/dev/null
+docker rm -f fomo-rehearse-postgres >/dev/null 2>&1 || true
+docker create --name fomo-rehearse-postgres \
+  --label com.docker.compose.project=fomo-copilot \
+  --label com.docker.compose.service=postgres \
+  postgres:16.14-bookworm@sha256:64154d0babcb1741988719e703419af0382b19953706149f9872fbd0f438efa8 \
+  postgres >/dev/null
+sudo tee /etc/fomo/deploy-authorization.json >/dev/null <<'EOF'
+{
+  "digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "composeProject": "fomo-copilot"
+}
+EOF
+sudo chmod 644 /etc/fomo/deploy-authorization.json
+rehearse=$(sudo -u fomo-deploy bash -lc 'cd /tmp && COMPOSE_PROJECT_NAME=evil DOCKER_HOST=tcp://127.0.0.1:9 sudo -n /usr/local/lib/fomo/fomo-deploy-helper rehearse')
+echo "$rehearse"
+echo "$rehearse" | grep -qx 'docker_context=default' || echo "$rehearse" | grep -q 'docker_context=default'
+echo "$rehearse" | grep -q 'compose_project=fomo-copilot'
+echo "$rehearse" | grep -q 'postgres_volume=fomo-copilot_pgdata'
+echo "$rehearse" | grep -q 'postgres_container=present'
+echo "$rehearse" | grep -q 'postgres_volume_present=yes'
+echo "$rehearse" | grep -q 'rehearse targets the existing postgres stack'
+set +e
+sudo -u fomo-deploy sudo -n /usr/local/lib/fomo/fomo-deploy-helper rehearse extra >/tmp/fomo-helper-extra.txt 2>&1
+extra_code=$?
+sudo -u fomo-deploy sudo -n /usr/local/lib/fomo/fomo-deploy-helper bash >/tmp/fomo-helper-bash.txt 2>&1
+bash_code=$?
+set -e
+test "$extra_code" -ne 0
+test "$bash_code" -ne 0
+set +e
+bash scripts/setup-deploy-user.sh "${deploy_key}.pub" >/tmp/fomo-deploy-unprivileged.txt
+unprivileged=$?
+set -e
+test "$unprivileged" -ne 0
+grep -q 'only root step' /tmp/fomo-deploy-unprivileged.txt
+rm -f "$deploy_key" "${deploy_key}.pub"
+node scripts/check-deploy-triggers.mjs
+bash scripts/hold-deploy-workflow.sh --fixture-disabled >/dev/null
+set +e
+bash scripts/hold-deploy-workflow.sh --fixture-enabled >/tmp/fomo-hold.txt 2>&1
+hold_code=$?
+set -e
+test "$hold_code" -ne 0
+candidate_tree=$(git rev-parse 'HEAD^{tree}')
+bash scripts/check-merged-tree.sh --tree "$candidate_tree" --ref HEAD >/dev/null
+set +e
+bash scripts/check-merged-tree.sh --tree 0000000000000000000000000000000000000000 --ref HEAD >/tmp/fomo-tree.txt 2>&1
+tree_code=$?
+set -e
+test "$tree_code" -ne 0
 
 echo "abort when a deploy is already queued"
 bash scripts/pre-merge-deploy-check.sh

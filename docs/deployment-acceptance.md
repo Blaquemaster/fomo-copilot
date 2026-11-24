@@ -2,13 +2,21 @@
 
 This is the only deployment plan. It is not a deployment. Nothing in this branch contacts the server, merges, or starts paper.
 
-The release candidate is the branch `cursor/release-candidate-8ff7`. It contains the held stack through this change. CI builds the ingestor image and records the registry reference `repository@sha256:...` in `release-digest.json` and in the compose-gates log line `release digest`. Use the reference from the push run whose commit equals the branch head. That reference is the only image a later deploy may pull. The publish check compares it with the local image id from the same run. There is no schema-compatible fallback image. Rollback is forward-fix-only.
+The release is one pull request from `cursor/review-8-approval-8ff7` into `main`. Close pull requests #50, #51, #52, #53, #54, #55, #56, #57, #58, and #59 without merging them. #59 targets `cursor/release-candidate-8ff7`, not `main`. The push CI run of the merged commit records the registry reference `repository@sha256:...` in `release-digest.json` and the candidate SHA, current `main` SHA, and source tree hash in `release-handoff.json`. Use the reference whose `commit` equals that head. There is no schema-compatible fallback image. Rollback is forward-fix-only.
+
+Before the merge, disable the Deploy workflow that is already on `main`:
+
+```bash
+CONFIRM=hold-production-deploy bash scripts/hold-deploy-workflow.sh --disable
+```
+
+After the merge, `scripts/check-merged-tree.sh --tree <reviewed-tree> --ref origin/main` must pass. The merge commit id may differ. The tree hash must equal the reviewed candidate.
 
 ## What you can approve now
 
 Conditional on the checks in this revision: a bounded rollout and a diagnostic collection. Steps 0 through 8 below are the approval checklist, including the named stops for schema drift and the live probes. Do not dispatch until the publish check prints `replacement may start` and the pre-dispatch restore has succeeded.
 
-- One merge of this release candidate. The merge does not deploy. See below.
+- One merge of the direct-to-main pull request. The merge does not deploy. See below.
 - An off-host backup while the current ingestor is still running.
 - Loading the tested image, installing the rollback controller, and one ingestor replacement.
 - A diagnostic phase: reference scans, reconciliation, and quote collection. Paper and alerts stay off. The 7-day qualification clock stays off. No venue is chosen.
@@ -25,7 +33,7 @@ Conditional on the checks in this revision: a bounded rollout and a diagnostic c
 
 ## Why merging this branch does not deploy
 
-`.github/workflows/deploy.yml` has no `push` trigger. GitHub reads the workflow from the commit that was just pushed. The merge commit's workflow only listens for `workflow_dispatch`, so the merge does not start a deploy, and later pushes do not either.
+`.github/workflows/deploy.yml` and `.github/workflows/publish.yml` have no `push`, `pull_request`, `workflow_run`, `workflow_call`, `repository_dispatch`, or `schedule` trigger, and no workflow calls `deploy.yml`. Ordinary CI may still run on push. GitHub reads the workflow from the commit that was just pushed. The merge commit's Deploy workflow only listens for `workflow_dispatch`, so the merge does not start a deploy, and later pushes do not either. Disable the Deploy workflow that is already on `main` before the merge, because that older file still has a push trigger. `scripts/check-deploy-triggers.mjs` checks this tree.
 
 A dispatch that is already running is not cancelled: `concurrency.group` is `deploy-production` and `cancel-in-progress` is `false`. A second dispatch waits until the first finishes, including a migration.
 
@@ -40,31 +48,43 @@ Anything else exits before SSH. The job does not build from the checkout. It pul
 
 Do these yourself, in order, after you approve the bounded rollout. The agent does not run them. A failed condition stops that step.
 
-0. Before step 1, and again after the merge, run the live deploy-queue check. Do not merge while it aborts.
+0. One-time, as root, before any of the later steps. This does not remove root or any other administrator. Confirm the new login before changing any other access. Do not apply `infra/db/shadow-roles.sql` here.
 
 ```bash
+sudo bash scripts/setup-deploy-user.sh /root/.ssh/id_ed25519.pub
+sudo -u fomo-deploy sudo -n /usr/local/lib/fomo/fomo-deploy-helper rehearse
+```
+
+The script creates `fomo-deploy` with a locked password and one SSH key. It does not add that user to the `docker` group and it does not grant the Docker socket. It installs a root-owned helper at `/usr/local/lib/fomo/fomo-deploy-helper` and one sudoers line for that file. The helper accepts only `rehearse`, `backup`, `promote`, `install-rollback`, `preflight`, or `report`. The digest comes from root-owned `/etc/fomo/deploy-authorization.json`. The compose project is `fomo-copilot`, the compose file is `/etc/fomo/docker-compose.yml`, the context is `default`, the volume is `fomo-copilot_pgdata`, and the services are `postgres` and `ingestor`. A different account, checkout directory, `DOCKER_HOST`, or `COMPOSE_PROJECT_NAME` does not select another stack. This is not rootless Docker. Running the script again changes nothing.
+
+Before step 1, disable the existing Deploy workflow and run the live queue check. Do not merge while either one aborts. Repeat the queue check after the merge.
+
+```bash
+CONFIRM=hold-production-deploy bash scripts/hold-deploy-workflow.sh --disable
 bash scripts/pre-merge-deploy-check.sh
 ```
 
-1. Merge this release candidate into `main` only after that check prints `no queued or running deployment`.
-2. Post-merge confirmation: run `bash scripts/pre-merge-deploy-check.sh` again and look at Actions. No deploy workflow may have started. The workflow has no push trigger, so a started run is a stop.
-3. On the droplet, while the current ingestor is still running, dump the database and the roles. Copy both files off the machine. A dump is a snapshot: restoring it later discards ingestion that happened after the dump.
+1. Merge the pull request from `cursor/review-8-approval-8ff7` into `main` only after that check prints `no queued or running deployment`. Then confirm the tree:
 
 ```bash
-cd /opt/fomo-copilot
-docker compose --env-file .env -f infra/docker-compose.yml exec -T postgres \
-  pg_dump -U fomo -d fomo -Fc > "/var/backups/fomo-$(date -u +%Y%m%dT%H%M%SZ).dump"
-docker compose --env-file .env -f infra/docker-compose.yml exec -T postgres \
-  pg_dumpall -U fomo --roles-only > "/var/backups/fomo-roles-$(date -u +%Y%m%dT%H%M%SZ).sql"
+bash scripts/check-merged-tree.sh --tree THE_TREE_HASH --ref origin/main
 ```
+
+Dispatch Publish with that push run's id and the `release-oci` artifact id, and confirm `publish-tested-artifact`. The workflow downloads that artifact, computes the checksum, and stops if the archive is missing, expired, altered, or from another run. It copies the OCI archive into GHCR without rebuilding, then sets the package `fomo-copilot/ingestor` to public so the droplet can pull anonymously. No registry token is stored in this repo. That dispatch has not been run. As root, put the published digest into `/etc/fomo/deploy-authorization.json`. Do not dispatch Deploy. 2. Post-merge confirmation: run `bash scripts/pre-merge-deploy-check.sh` again and look at Actions. No deploy workflow may have started. The workflow has no push trigger, so a started run is a stop. 3. On the droplet, while the current ingestor is still running, dump the database and the roles. Copy both files off the machine. A dump is a snapshot: restoring it later discards ingestion that happened after the dump.
+
+```bash
+sudo -u fomo-deploy sudo -n /usr/local/lib/fomo/fomo-deploy-helper backup
+```
+
+The dump is written under `/home/fomo-deploy/backups`. Copy both files off the machine. A dump is a snapshot: restoring it later discards ingestion that happened after the dump.
 
 4. Install the rollback controller outside the checkout. Do not load a rebuilt image in place of the recorded reference:
 
 ```bash
-sudo bash scripts/install-rollback-controller.sh
+sudo -u fomo-deploy sudo -n /usr/local/lib/fomo/fomo-deploy-helper install-rollback
 ```
 
-`sudo` is only for creating `/usr/local/lib/fomo` and `/etc/fomo`. The controller and the preflight command do not need root after that. The installed manifest is forward-fix-only: `targets` is empty. The command stops services and asks for a forward fix. It will not start an older image. The production image from before this release has not been tested against migrations through `031_run_identity`.
+The helper copies the controller from root-owned `/usr/local/lib/fomo/rollback-src`. The deploy user cannot write that directory. The installed manifest is forward-fix-only: `targets` is empty. The command stops services and asks for a forward fix. It will not start an older image. The production image from before this release has not been tested against migrations through `031_run_identity`.
 
 5. Publish the recorded registry reference yourself. This repository does not push it. Then verify the pull for `linux/amd64` before any replacement. The droplet is Ubuntu on DigitalOcean amd64, the same architecture as the CI runner. A failed pull, a changed digest, or a rebuilt image stops the sequence. The script does not start the ingestor.
 
@@ -77,19 +97,21 @@ bash scripts/verify-published-image.sh \
 6. On the host, before any other script runs, verify the reviewed revision:
 
 ```bash
-git checkout "$(node -e 'process.stdout.write(require("./infra/release-pins.json").revision)')"
 bash scripts/verify-release-pins.sh
 bash scripts/pre-merge-deploy-check.sh
 ```
 
-`verify-release-pins.sh` checks the compose file and the host scripts. A mismatch stops you. `pre-merge-deploy-check.sh` lists queued and running deploy workflow runs and aborts if any exist, and it aborts if `deploy.yml` has a push trigger.
+`verify-release-pins.sh` checks the compose file and the host scripts against `infra/release-pins.json`. The `revision` field is the commit SHA of those pinned files. A later commit may change only that field. A mismatch stops you. `pre-merge-deploy-check.sh` lists queued and running deploy workflow runs and aborts if any exist, and it aborts if `deploy.yml` or `publish.yml` has a push trigger.
 
 Dispatch only after the publish check prints `replacement may start`. `confirm` must be `promote-tested-digest`. The workflow pulls that same reference. It writes `AUTOBUY_MODE=dry_run` before the container starts. `live` is refused. It stops the screener and the alerter, leaves Postgres running, and starts only that pulled image.
 
-These references are not approvable. `verify-published-image.sh` and the deploy workflow refuse them before a pull or SSH:
+These references are not approvable. `verify-published-image.sh` and the deploy workflow refuse every digest in `infra/refused-digests.txt` before a pull or SSH, including:
 
 - `ghcr.io/blaquemaster/fomo-copilot/ingestor@sha256:877b38b41fcf2e28bb1aa87488d37a301798992df4e2be63bddba30e3d65a4ed`
 - `ghcr.io/blaquemaster/fomo-copilot/ingestor@sha256:766502c8029cded0d35ac946f6da35bbc46b5f3676fed0a7a5a0ee50e21aeec6`
+- `ghcr.io/blaquemaster/fomo-copilot/ingestor@sha256:7e4d2735e9c23f6a1395457d9b17996938e49dbc89abc07487acdc3c4736c615`
+
+The push CI run uploads `release-oci.tar`, `release-digest.json`, and `release-handoff.json` as artifact `release-oci` and keeps it for 90 days. `scripts/verify-release-handoff.sh` computes the archive checksum. GitHub's download warning is not the check. A mismatch, a missing file, or a different run stops publication. CI copies that archive into a local registry with `skopeo copy --all` and pulls the same digest. The copy does not rebuild.
 
 Approve only the push-run `ingestorImage` whose `commit` equals the head of this revision.
 
@@ -120,16 +142,10 @@ psql -v ON_ERROR_STOP=1 -d fomo -f infra/sql/fomo-shadow-diagnostic.sql
 **Stop: probes.** Before diagnostics, run the live probes against the deployed image as `fomo_shadow`. A failed probe stops diagnostics. It does not stop the ingestor.
 
 ```bash
-bash scripts/preflight.sh --live \
-  --accepted /etc/fomo/preflight-accepted.json \
-  --project fomo-copilot \
-  --env-file /opt/fomo-copilot/.env \
-  --file infra/docker-compose.yml \
-  --service ingestor \
-  --shadow-user fomo_shadow
+sudo -u fomo-deploy sudo -n /usr/local/lib/fomo/fomo-deploy-helper preflight
 ```
 
-8. Start the diagnostic phase only after that probe passes. The command is the ingestor image entrypoint under the restricted role, not a manual scan or a standalone quote script:
+8. Start the diagnostic phase only after that probe passes. The database role is separate from the deploy user. Apply the SQL as an existing database administrator. The command is the ingestor image entrypoint under the restricted role, not a manual scan or a standalone quote script. The deploy user cannot open Docker, so an existing root operator starts this container:
 
 ```bash
 docker run --rm --network fomo-copilot_internal \
@@ -139,6 +155,8 @@ docker run --rm --network fomo-copilot_internal \
   ghcr.io/blaquemaster/fomo-copilot/ingestor@sha256:THE_PUSH_RUN_DIGEST \
   apps/ingestor/dist/diagnostic.js
 ```
+
+After the replacement, `sudo -u fomo-deploy sudo -n /usr/local/lib/fomo/fomo-deploy-helper report`. A missing feed, checkpoint, or error stays `not recorded`. Do not fill it in.
 
 The runner refuses to start unless its database role is `fomo_shadow` and that role is not a superuser. It charges the shared Postgres budget before every parsed-events scan, every public-RPC reconciliation request, and every Jupiter quote attempt, including a retry. A scan reserves the maximum pages its request budget can scan. The request sets `maxScannedTransactions` to 10,000, which is 20 credits, and a larger budget is not sent. After the response, the counter is reconciled to the pages actually scanned. If the budget database errors, or the charge is denied, the request is not sent. Exhaustion stops those three jobs. The existing ingestor keeps running. The qualification clock stays inhibited. A 90 percent Helius account-usage pause is an integrity failure for coverage even when diagnostic credits remain. Do not start paper or alerts.
 

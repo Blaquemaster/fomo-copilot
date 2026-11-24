@@ -90,3 +90,15 @@ jobs:
 
       - name: Show the recorded release digest
         run: cat release-digest.json
+
+      - name: Keep the tested OCI archive
+        if: github.event_name == 'push' && success()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: release-oci
+          retention-days: 90
+          if-no-files-found: error
+          path: |
+            release-oci.tar
+            release-digest.json
+            release-handoff.json

@@ -341,12 +341,13 @@ describe("rejected release reference", () => {
   it("refuses the previous registry digests before any pull", () => {
     const script = path.join(root, "scripts/verify-published-image.sh");
     const deploy = readFileSync(path.join(root, ".github/workflows/deploy.yml"), "utf8");
-    const refused = [
-      "sha256:766502c8029cded0d35ac946f6da35bbc46b5f3676fed0a7a5a0ee50e21aeec6",
-      "sha256:877b38b41fcf2e28bb1aa87488d37a301798992df4e2be63bddba30e3d65a4ed",
-    ];
-    for (const digest of refused) expect(deploy).toContain(digest);
+    const refused = readFileSync(path.join(root, "infra/refused-digests.txt"), "utf8")
+      .split("\n")
+      .map((line) => line.trim())
+      .filter((line) => line.startsWith("sha256:"));
+    expect(deploy).toContain("infra/refused-digests.txt");
     expect(deploy).toContain("not approvable");
+    expect(refused.length).toBeGreaterThan(2);
     for (const digest of refused) {
       expect(() =>
         execFileSync(
@@ -362,6 +363,36 @@ describe("rejected release reference", () => {
         ),
       ).toThrow(/not approvable/);
     }
+  });
+});
+
+describe("release route guards", () => {
+  it("rejects indirect deploy triggers and a tree that is not the candidate", () => {
+    expect(
+      execFileSync("node", ["scripts/check-deploy-triggers.mjs"], { cwd: root, encoding: "utf8" }),
+    ).toContain("no direct or indirect");
+    expect(
+      execFileSync("bash", ["scripts/hold-deploy-workflow.sh", "--fixture-disabled"], {
+        cwd: root,
+        encoding: "utf8",
+      }),
+    ).toContain("disabled");
+    expect(() =>
+      execFileSync("bash", ["scripts/hold-deploy-workflow.sh", "--fixture-enabled"], {
+        cwd: root,
+        encoding: "utf8",
+      }),
+    ).toThrow(/still enabled/);
+    const tree = execFileSync("git", ["rev-parse", "HEAD^{tree}"], {
+      cwd: root,
+      encoding: "utf8",
+    }).trim();
+    expect(
+      execFileSync("bash", ["scripts/check-merged-tree.sh", "--tree", tree, "--ref", "HEAD"], {
+        cwd: root,
+        encoding: "utf8",
+      }),
+    ).toContain("matches the reviewed candidate");
   });
 });
 

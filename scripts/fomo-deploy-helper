@@ -1,0 +1,141 @@
+#!/usr/bin/env bash
+# Root-owned deployment helper. The deploy account may sudo only this file.
+# It does not accept compose files, mounts, env files, or arbitrary commands.
+set -euo pipefail
+
+unset DOCKER_HOST DOCKER_CONTEXT COMPOSE_FILE COMPOSE_PROJECT_NAME COMPOSE_PROFILES COMPOSE_ENV_FILES
+export DOCKER_CONTEXT=default
+export COMPOSE_PROJECT_NAME=fomo-copilot
+
+compose_file=/etc/fomo/docker-compose.yml
+env_file=/etc/fomo/production.env
+manifest=/etc/fomo/deploy-authorization.json
+project=fomo-copilot
+volume=fomo-copilot_pgdata
+postgres_service=postgres
+ingestor_service=ingestor
+
+reject() {
+  echo "sequence stopped: $1" >&2
+  exit 1
+}
+
+root_owned() {
+  local file=$1
+  [[ -f "$file" ]] || reject "missing $file"
+  local owner mode
+  owner=$(stat -c '%U' "$file")
+  mode=$(stat -c '%a' "$file")
+  [[ "$owner" == "root" ]] || reject "$file is not root-owned"
+  [[ $((8#$mode & 0022)) -eq 0 ]] || reject "$file is writable by someone other than root"
+}
+
+if [[ "$(id -u)" -ne 0 ]]; then
+  reject "the helper runs as root through sudo"
+fi
+if [[ $# -ne 1 ]]; then
+  reject "exactly one fixed command is accepted"
+fi
+
+command=$1
+case "$command" in
+  rehearse | backup | promote | install-rollback | preflight | report) ;;
+  *) reject "command is not one of the privileged operations" ;;
+esac
+
+root_owned "$manifest"
+root_owned "$compose_file"
+root_owned /usr/local/lib/fomo/fomo-deploy-helper
+
+manifest_project=$(node --input-type=module -e "import {readFileSync} from 'node:fs'; const doc = JSON.parse(readFileSync(process.argv[1], 'utf8')); process.stdout.write(String(doc.composeProject ?? ''))" "$manifest")
+manifest_digest=$(node --input-type=module -e "import {readFileSync} from 'node:fs'; const doc = JSON.parse(readFileSync(process.argv[1], 'utf8')); process.stdout.write(String(doc.digest ?? ''))" "$manifest")
+[[ "$manifest_project" == "$project" ]] || reject "authorization manifest names a different compose project"
+[[ "$manifest_digest" =~ ^sha256:[0-9a-f]{64}$ ]] || reject "authorization digest is not a sha256 digest"
+grep -q '^name: fomo-copilot$' "$compose_file" || reject "protected compose file is not the fomo-copilot project"
+grep -q 'pgdata:/var/lib/postgresql/data' "$compose_file" || reject "protected compose file does not use the pgdata volume"
+
+postgres_id=$(docker ps -aq --filter label=com.docker.compose.project=fomo-copilot --filter label=com.docker.compose.service=postgres || true)
+postgres_id=${postgres_id%%$'\n'*}
+if docker volume inspect "$volume" >/dev/null 2>&1; then
+  volume_present=yes
+else
+  volume_present=no
+fi
+if [[ -n "$postgres_id" ]]; then
+  postgres_present=present
+else
+  postgres_present=missing
+fi
+
+context=$(docker context show)
+[[ "$context" == "default" ]] || reject "docker context is ${context}"
+echo "docker_context=${context}"
+echo "compose_project=$project"
+echo "compose_file=$compose_file"
+echo "postgres_service=$postgres_service"
+echo "postgres_volume=$volume"
+echo "ingestor_service=$ingestor_service"
+echo "postgres_container=$postgres_present"
+echo "postgres_volume_present=$volume_present"
+echo "manifest_digest=$manifest_digest"
+echo "privileged_operations=rehearse backup promote install-rollback preflight report"
+
+case "$command" in
+  rehearse)
+    [[ "$postgres_present" == "present" && "$volume_present" == "yes" ]] || reject "the fixed postgres container or volume is not the existing one"
+    echo "rehearse targets the existing postgres stack"
+    ;;
+  backup)
+    root_owned "$env_file"
+    stamp=$(date -u +%Y%m%dT%H%M%SZ)
+    install -d -m 750 -o fomo-deploy -g fomo-deploy /home/fomo-deploy/backups
+    docker compose --project-name "$project" --env-file "$env_file" -f "$compose_file" exec -T postgres \
+      pg_dump -U fomo -d fomo -Fc >"/home/fomo-deploy/backups/fomo-${stamp}.dump"
+    docker compose --project-name "$project" --env-file "$env_file" -f "$compose_file" exec -T postgres \
+      pg_dumpall -U fomo --roles-only >"/home/fomo-deploy/backups/fomo-roles-${stamp}.sql"
+    chown fomo-deploy:fomo-deploy "/home/fomo-deploy/backups/fomo-${stamp}.dump" "/home/fomo-deploy/backups/fomo-roles-${stamp}.sql"
+    echo "backup written under /home/fomo-deploy/backups"
+    ;;
+  promote)
+    root_owned "$env_file"
+    ref="ghcr.io/blaquemaster/fomo-copilot/ingestor@${manifest_digest}"
+    docker pull "$ref"
+    cat >/etc/fomo/ingestor-image.yml <<EOF
+services:
+  ingestor:
+    image: ${ref}
+    pull_policy: never
+EOF
+    chmod 644 /etc/fomo/ingestor-image.yml
+    chown root:root /etc/fomo/ingestor-image.yml
+    docker compose --project-name "$project" --env-file "$env_file" -f "$compose_file" -f /etc/fomo/ingestor-image.yml \
+      stop screener alerter
+    docker compose --project-name "$project" --env-file "$env_file" -f "$compose_file" -f /etc/fomo/ingestor-image.yml \
+      up -d --no-deps --no-build --pull never ingestor
+    echo "promoted ${ref}"
+    ;;
+  install-rollback)
+    install -d -m 755 -o root -g root /usr/local/lib/fomo /etc/fomo
+    install -m 755 -o root -g root /usr/local/lib/fomo/rollback-src/approved-rollback.sh /usr/local/lib/fomo/approved-rollback.sh
+    install -m 644 -o root -g root /usr/local/lib/fomo/rollback-src/rollback-decision.mjs /usr/local/lib/fomo/rollback-decision.mjs
+    install -m 644 -o root -g root /usr/local/lib/fomo/rollback-src/rollback-manifest.json /etc/fomo/rollback-manifest.json
+    echo "rollback controller installed from the root-owned source"
+    ;;
+  preflight)
+    bash /usr/local/lib/fomo/host/scripts/preflight.sh --live \
+      --accepted /etc/fomo/preflight-accepted.json \
+      --project "$project" \
+      --env-file "$env_file" \
+      --file "$compose_file" \
+      --service ingestor \
+      --shadow-user fomo_shadow
+    ;;
+  report)
+    bash /usr/local/lib/fomo/host/scripts/cutover-report.sh \
+      --project "$project" \
+      --env-file "$env_file" \
+      --file "$compose_file" \
+      --approved-image "$manifest_digest" \
+      --require-image
+    ;;
+esac

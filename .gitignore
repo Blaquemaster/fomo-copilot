@@ -8,3 +8,6 @@ coverage/
 *.log
 .DS_Store
 tmp/
+release-oci.tar
+release-digest.json
+release-handoff.json

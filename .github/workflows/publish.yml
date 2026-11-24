@@ -1,0 +1,131 @@
+name: Publish
+
+# Dispatch only. A push does not publish, and this file does not build an image.
+on:
+  workflow_dispatch:
+    inputs:
+      run_id:
+        description: Push CI run id that produced the tested archive
+        required: true
+        type: string
+      artifact_id:
+        description: Artifact id of release-oci from that run, not the latest success
+        required: true
+        type: string
+      confirm:
+        description: Type publish-tested-artifact to copy that archive
+        required: true
+        type: string
+
+permissions:
+  actions: read
+  contents: read
+  packages: write
+
+jobs:
+  publish:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Require the exact run and artifact
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PUBLISH_CONFIRM: ${{ inputs.confirm }}
+          PUBLISH_RUN: ${{ inputs.run_id }}
+          PUBLISH_ARTIFACT: ${{ inputs.artifact_id }}
+        run: |
+          set -euo pipefail
+          if [[ "$PUBLISH_CONFIRM" != "publish-tested-artifact" ]]; then
+            echo "publish held: confirmation was not publish-tested-artifact" >&2
+            exit 1
+          fi
+          if [[ ! "$PUBLISH_RUN" =~ ^[0-9]+$ || ! "$PUBLISH_ARTIFACT" =~ ^[0-9]+$ ]]; then
+            echo "publish held: run id and artifact id are required" >&2
+            exit 1
+          fi
+          gh api "repos/${GITHUB_REPOSITORY}/actions/artifacts/${PUBLISH_ARTIFACT}" >artifact.json
+          node --input-type=module - artifact.json "$PUBLISH_RUN" "$PUBLISH_ARTIFACT" <<'JS'
+          import { readFileSync } from "node:fs";
+          const doc = JSON.parse(readFileSync(process.argv[2], "utf8"));
+          const runId = process.argv[3];
+          const artifactId = process.argv[4];
+          const fail = (message) => {
+            process.stderr.write(`sequence stopped: ${message}\n`);
+            process.exit(1);
+          };
+          if (String(doc.id) !== artifactId) fail("artifact id does not match");
+          if (String(doc.workflow_run?.id) !== runId) fail("artifact is from a different run");
+          if (doc.name !== "release-oci") fail("artifact is not release-oci");
+          if (doc.expired) fail("artifact is expired");
+          JS
+
+      - name: Download that artifact
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PUBLISH_ARTIFACT: ${{ inputs.artifact_id }}
+        run: |
+          set -euo pipefail
+          curl -fsSL \
+            -H "Authorization: Bearer ${GH_TOKEN}" \
+            -H "Accept: application/vnd.github+json" \
+            -o release-oci.zip \
+            "https://api.github.com/repos/${GITHUB_REPOSITORY}/actions/artifacts/${PUBLISH_ARTIFACT}/zip"
+          unzip -o release-oci.zip
+          test -s release-oci.tar
+          test -s release-handoff.json
+
+      - name: Compare the checksum and the recorded digest
+        env:
+          PUBLISH_RUN: ${{ inputs.run_id }}
+          PUBLISH_ARTIFACT: ${{ inputs.artifact_id }}
+        run: |
+          set -euo pipefail
+          bash scripts/verify-release-handoff.sh \
+            --archive release-oci.tar \
+            --handoff release-handoff.json \
+            --run-id "$PUBLISH_RUN" \
+            --artifact-id "$PUBLISH_ARTIFACT"
+          node --input-type=module - artifact.json release-handoff.json <<'JS'
+          import { readFileSync } from "node:fs";
+          const artifact = JSON.parse(readFileSync(process.argv[2], "utf8"));
+          const handoff = JSON.parse(readFileSync(process.argv[3], "utf8"));
+          if (artifact.workflow_run?.head_sha !== handoff.sourceCommit) {
+            process.stderr.write("sequence stopped: artifact run commit does not match the handoff\n");
+            process.exit(1);
+          }
+          JS
+
+      - name: Install skopeo
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq skopeo
+
+      - name: Copy the archive without rebuilding
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_ACTOR: ${{ github.actor }}
+          PUBLISH_RUN: ${{ inputs.run_id }}
+        run: |
+          set -euo pipefail
+          echo "$GH_TOKEN" | skopeo login ghcr.io -u "$GH_ACTOR" --password-stdin
+          expected=$(node --input-type=module -e "import {readFileSync} from 'node:fs'; process.stdout.write(JSON.parse(readFileSync('release-handoff.json','utf8')).registryDigest)")
+          bash scripts/copy-tested-oci.sh \
+            --archive release-oci.tar \
+            --destination "ghcr.io/blaquemaster/fomo-copilot/ingestor:${PUBLISH_RUN}" \
+            --expected "$expected" \
+            --scheme https
+
+      - name: Make the package public
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh api --method PATCH \
+            -H "Accept: application/vnd.github+json" \
+            /users/Blaquemaster/packages/container/fomo-copilot%2Fingestor \
+            -f visibility=public
+          echo "package public; the droplet pulls anonymously and no registry token is stored in the repo"

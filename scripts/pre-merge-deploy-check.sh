@@ -18,6 +18,10 @@ if grep -Eq '^[[:space:]]*push:' .github/workflows/deploy.yml; then
   echo "abort: deploy.yml still has a push trigger" >&2
   exit 1
 fi
+if [[ -f .github/workflows/publish.yml ]] && grep -Eq '^[[:space:]]*push:' .github/workflows/publish.yml; then
+  echo "abort: publish.yml still has a push trigger" >&2
+  exit 1
+fi
 
 repo=${GITHUB_REPOSITORY:-Blaquemaster/fomo-copilot}
 queued=$(gh run list --repo "$repo" --workflow deploy.yml --status queued --limit 20 --json databaseId,status,headSha,event)
