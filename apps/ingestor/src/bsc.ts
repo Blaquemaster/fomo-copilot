@@ -23,7 +23,11 @@ const AUDIT_QUIET_BLOCKS = 20;
 const AUDIT_EVERY_MS = 6 * 60 * 60 * 1000;
 
 /** Delay until the next recall. A reconnect does not restart the 6 hour clock. */
-export function nextBscAuditDelay(lastAuditAt: number, now: number, every = AUDIT_EVERY_MS): number {
+export function nextBscAuditDelay(
+  lastAuditAt: number,
+  now: number,
+  every = AUDIT_EVERY_MS,
+): number {
   if (lastAuditAt <= 0) return every;
   return Math.max(0, every - (now - lastAuditAt));
 }

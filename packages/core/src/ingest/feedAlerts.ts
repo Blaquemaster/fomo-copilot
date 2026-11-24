@@ -30,10 +30,7 @@ export function blockLagAlert(input: {
 }
 
 /** True when an alert time falls inside an unrecovered ingest gap window. */
-export function inUnrecoveredGap(
-  at: Date,
-  gaps: readonly { start: Date; end: Date }[],
-): boolean {
+export function inUnrecoveredGap(at: Date, gaps: readonly { start: Date; end: Date }[]): boolean {
   const time = at.getTime();
   return gaps.some((gap) => time >= gap.start.getTime() && time <= gap.end.getTime());
 }
