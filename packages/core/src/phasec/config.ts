@@ -7,6 +7,7 @@ import {
   EXPERIMENT_ROUND_TRIP_CAP_PCT,
   EXPERIMENT_WINDOW_DAYS,
 } from "./experimentProtocol.js";
+import { validateExperimentConfig } from "./review3.js";
 import { defaultSizePct, type PhaseCConfig } from "./protocol.js";
 
 export function screenRulesFromThresholds(thresholds: Thresholds): ScreenRules {
@@ -30,6 +31,22 @@ export function screenRulesFromThresholds(thresholds: Thresholds): ScreenRules {
 
 export function phaseCConfigFromEnv(env: Env, thresholds: Thresholds): PhaseCConfig {
   const size = defaultSizePct();
+  const venueAllowlist = (env.EXPERIMENT_VENUES ?? "")
+    .split(",")
+    .map((venue) => venue.trim())
+    .filter((venue) => venue.length > 0);
+  const scaleOut = env.EXPERIMENT_SCALE_OUT === "true";
+  const mode = env.EXPERIMENT_MODE === "scored" ? "scored" : "shadow";
+  const check = validateExperimentConfig({
+    mode,
+    draft: mode === "shadow",
+    commit: env.EXPERIMENT_COMMIT ?? null,
+    venueAllowlist,
+    notionalUsd: env.EXPERIMENT_FIXED_NOTIONAL_USD ?? EXPERIMENT_ALLOCATED_USD,
+    scaleOut,
+    stops: false,
+    walletListVersion: env.WALLET_LIST_FREEZE_AT ?? null,
+  });
   return {
     bankroll: env.PAPER_BANKROLL_USD ?? env.BANKROLL ?? null,
     sizePct: {
@@ -63,9 +80,11 @@ export function phaseCConfigFromEnv(env: Env, thresholds: Thresholds): PhaseCCon
     deadNoRouteGapMs: (env.DEAD_NO_ROUTE_GAP_SEC ?? 60) * 1000,
     maxRoundTripImpactPct: EXPERIMENT_ROUND_TRIP_CAP_PCT,
     maxSizePoolShare: thresholds.screen.entries.max_size_pool_share,
-    scaleOutEnabled: env.EXPERIMENT_SCALE_OUT === "true",
+    scaleOutEnabled: false,
     fixedNotionalUsd: env.EXPERIMENT_FIXED_NOTIONAL_USD ?? EXPERIMENT_ALLOCATED_USD,
     experimentProtocol: true,
     stopsEnabled: false,
+    venueAllowlist,
+    configRefused: check.ok ? null : check.reason,
   };
 }

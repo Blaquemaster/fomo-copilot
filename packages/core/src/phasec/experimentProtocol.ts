@@ -116,8 +116,10 @@ export function pairedDifferences(
   );
   const complete = diffs.filter((diff): diff is number => diff !== null);
   const sum = complete.reduce((total, diff) => total + diff, 0);
+  const allKnown = pairs.length > 0 && complete.length === pairs.length;
   return {
-    mean: pairs.length === 0 ? null : sum / pairs.length,
+    // Dividing the known sum by the full count would treat a missing exit as zero.
+    mean: allKnown ? sum / complete.length : null,
     completeMean: complete.length === 0 ? null : sum / complete.length,
     complete: complete.length,
     missing: diffs.length - complete.length,

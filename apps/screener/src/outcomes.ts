@@ -1,6 +1,7 @@
 import {
   EXPERIMENT_LATENESS_MS,
   SOL_MINT,
+  acceptEntryObservation,
   jupiterQuoteUrl,
   lamportsForUsd,
   outcomeFromPrices,
@@ -91,6 +92,22 @@ export async function priceDueObservations(input: {
   for (const row of due) {
     const latenessMs = input.now.getTime() - row.dueAt.getTime();
     const isLate = latenessMs > EXPERIMENT_LATENESS_MS;
+    const entryGate =
+      row.role === "entry"
+        ? acceptEntryObservation({ entryAt: row.dueAt, observedAt: input.now, valid: true })
+        : null;
+    if (entryGate && !entryGate.usable) {
+      late += 1;
+      await input.store.saveObservation({
+        mint: row.mint,
+        label: row.label,
+        observedAt: input.now,
+        late: true,
+        priceUsd: null,
+        status: "late",
+      });
+      continue;
+    }
     if (row.role === "exit" && isLate) {
       late += 1;
       await input.store.saveObservation({

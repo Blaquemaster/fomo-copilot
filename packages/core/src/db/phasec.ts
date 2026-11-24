@@ -1,6 +1,7 @@
 import pg from "pg";
 
 import { scheduleObservations, type CandidateLogRow } from "../phasec/outcomes.js";
+import { enrollmentId } from "../phasec/review3.js";
 import type {
   PassCoin,
   PassPosition,
@@ -123,10 +124,12 @@ export class PhaseCRepository implements PhaseCStore {
            join selective s on s.wallet = f.wallet
            cross join win
            where f.slot > win.day_from
-             and f.token_amount is not null
-             and f.sol_amount is not null
-             and abs(f.sol_amount) >= 0.002
              and f.mint <> 'So11111111111111111111111111111111111111112'
+             and f.token_amount is not null
+             and (
+               f.side = 'sell'
+               or (f.sol_amount is not null and abs(f.sol_amount) >= 0.002 and f.side in ('buy','swap'))
+             )
            group by f.mint, f.wallet
          ) x, win
          where x.net_tokens > 0 and x.last_buy > win.fresh_from
@@ -529,8 +532,8 @@ export class PhaseCRepository implements PhaseCStore {
         `insert into phasec_execution
           (mint, group_name, enrolled_at, entry_at, event_at, venue, intended_spend_usd, route,
            fee_high_usd, fee_low_usd, acquired_qty_high, acquired_qty_low, entry_quote_usd,
-           decision_latency_ms, decision_facts)
-         values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)
+           decision_latency_ms, decision_facts, enrollment_id, run_id)
+         values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,'draft')
          on conflict (mint) do nothing`,
         [
           row.mint,
@@ -548,6 +551,7 @@ export class PhaseCRepository implements PhaseCStore {
           execution.entryQuoteUsd,
           execution.decisionLatencyMs,
           JSON.stringify(execution.facts),
+          enrollmentId(row.mint, execution.enrolledAt),
         ],
       );
       const observations = [
@@ -639,6 +643,19 @@ export class PhaseCRepository implements PhaseCStore {
     status: "priced" | "missing" | "late";
     outAmount?: string | null;
   }): Promise<void> {
+    await this.pool.query(
+      `insert into phasec_quote_attempt
+        (mint, label, requested_at, responded_at, qty, status, evidence)
+       values ($1,$2,$3,$3,$4,$5,$6)`,
+      [
+        input.mint,
+        input.label,
+        input.observedAt.toISOString(),
+        input.outAmount ?? null,
+        input.status,
+        input.late ? "late" : "on_time",
+      ],
+    );
     await this.pool.query(
       `update phasec_observation
        set observed_at = $3, late = $4, price_usd = $5, status = $6

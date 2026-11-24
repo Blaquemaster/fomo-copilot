@@ -18,6 +18,15 @@ function passing(): ShadowMeasurements {
     completeMatched: 20,
     projectedWalletPerDay: 3,
     cashReconciled: true,
+    timelyRecall: [{ venue: "pump", observed: 297, reference: 300 }],
+    eventualRecall: [{ venue: "pump", observed: 300, reference: 300 }],
+    healthyPeriodCoverage: 0.99,
+    wholeRunAvailability: 0.9,
+    matchedGatePassing: 20,
+    capRelaxed: false,
+    integrityFailure: false,
+    spendLimitHit: false,
+    unsafeOperation: false,
   };
 }
 

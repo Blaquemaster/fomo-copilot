@@ -1,0 +1,234 @@
+import { describe, expect, it } from "vitest";
+
+import { readFileSync } from "node:fs";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
+
+import {
+  acceptEntryObservation,
+  accumulation,
+  applyMissingAssumption,
+  chooseFirstValidExit,
+  classifyFill,
+  enrollmentEstimate,
+  isExcludedProtocol,
+  matchBenchmark,
+  matchContemporaneous,
+  MIN_BUY_SOL,
+  missingnessChangesDecision,
+  poolCanHoldNotional,
+  qualificationGate,
+  recallWalletSwaps,
+  scenarioFills,
+  simulateEqualBankrolls,
+  validateExperimentConfig,
+  type MatchCoin,
+} from "./review3.js";
+
+const at = "2026-11-24T12:02:00.000Z";
+
+function coin(mint: string, overrides: Partial<MatchCoin> = {}): MatchCoin {
+  return {
+    mint,
+    venue: "pump",
+    liquidityUsd: 20_000,
+    minutesSinceGraduation: 5,
+    hourUtc: 12,
+    decisionAt: at,
+    ...overrides,
+  };
+}
+
+describe("review 3", () => {
+  it("does not impute zero for an unresolved pair", () => {
+    const estimate = enrollmentEstimate([
+      { wallet: 0, control: -0.095, walletUnfilled: true },
+      { wallet: null, control: 0.1 },
+    ]);
+    expect(estimate.enrolled).toBe(2);
+    expect(estimate.known).toBe(1);
+    expect(estimate.unresolved).toBe(1);
+    expect(estimate.fullPopulation).toBe("not_identifiable");
+    expect(estimate.completeCaseMean).toBeCloseTo(0.095);
+    const hostile = applyMissingAssumption(
+      [
+        { wallet: 0, control: -0.095, walletUnfilled: true },
+        { wallet: null, control: 0.1 },
+      ],
+      "wallet_lost",
+    );
+    expect(hostile).toBeCloseTo((0 - -0.095 + (-1 - 0.1)) / 2);
+    const decision = missingnessChangesDecision({
+      completeLow: 0.09,
+      completeHigh: 0.1,
+      walletMean: 0.02,
+      requiredReturn: 0,
+      assumedMeans: [hostile, null],
+      gatesPass: true,
+    });
+    expect(decision.inconclusive).toBe(true);
+  });
+
+  it("matches only a validated contemporaneous pool and does not redraw", () => {
+    const wallets = [coin("wallet")];
+    const screened = [
+      coin("same"),
+      coin("other-hour", { hourUtc: 1 }),
+      coin("old", { decisionAt: "2026-11-23T12:02:00.000Z" }),
+      coin("far-age", { minutesSinceGraduation: 28 }),
+    ];
+    const once = matchContemporaneous({ wallets, screened, allowlist: ["pump"] });
+    const twice = matchContemporaneous({ wallets, screened, allowlist: ["pump"] });
+    expect(once).toEqual(twice);
+    expect(once.pairs[0]).toMatchObject({ control: "same", tier: "exact" });
+    const adjacent = matchContemporaneous({
+      wallets,
+      screened: [coin("near", { minutesSinceGraduation: 12 })],
+      allowlist: ["pump"],
+    });
+    expect(adjacent.pairs[0]?.tier).toBe("age_adjacent");
+    const none = matchContemporaneous({ wallets, screened, allowlist: [] });
+    expect(none.unmatched[0]?.reason).toBe("venue_not_validated");
+    const reserved = matchContemporaneous({
+      wallets: [coin("w1"), coin("w2")],
+      screened: [coin("only")],
+      allowlist: ["pump"],
+    });
+    expect(reserved.pairs).toHaveLength(1);
+    expect(reserved.unmatched.map((row) => row.reason)).toContain("stratum_empty");
+  });
+
+  it("draws the benchmark from its own universe and skips an enrolled mint", () => {
+    const result = matchBenchmark({
+      wallets: [coin("wallet")],
+      universe: [coin("fresh"), coin("wallet")],
+      enrolled: new Set(["wallet"]),
+      allowlist: ["pump"],
+    });
+    expect(result.pairs[0]?.benchmark).toBe("fresh");
+  });
+
+  it("keeps a sell under the minimum buy and does not call wrapped SOL the coin", () => {
+    expect(MIN_BUY_SOL).toBe(0.002);
+    const sell = classifyFill({
+      mint: "coin",
+      wrappedSolMint: "So11111111111111111111111111111111111111112",
+      side: "sell",
+      solAmount: -0.0001,
+      tokenAmount: -10,
+    });
+    expect(sell.countsInNet).toBe(true);
+    const payment = classifyFill({
+      mint: "So11111111111111111111111111111111111111112",
+      wrappedSolMint: "So11111111111111111111111111111111111111112",
+      side: "swap",
+      solAmount: 1,
+      tokenAmount: 1,
+    });
+    expect(payment.role).toBe("payment_leg");
+    const solOnly = classifyFill({
+      mint: "coin",
+      wrappedSolMint: "So111",
+      side: "buy",
+      solAmount: 1,
+      tokenAmount: null,
+    });
+    expect(solOnly.role).toBe("sol_only");
+    expect(
+      accumulation({
+        fills: [sell, { role: "unclassified", countsInNet: false, qualifyingBuy: false }],
+        venuesObserved: ["pump"],
+        venuesRequired: ["pump", "meteora"],
+      }).status,
+    ).toBe("unknown");
+  });
+
+  it("refuses scale-out, a thin pool, a late entry, and the cancelled protocol", () => {
+    expect(
+      validateExperimentConfig({
+        mode: "shadow",
+        draft: true,
+        commit: null,
+        venueAllowlist: [],
+        notionalUsd: 20,
+        scaleOut: true,
+        stops: false,
+        walletListVersion: null,
+      }).reason,
+    ).toBe("scale_out_refused");
+    expect(poolCanHoldNotional(1000, 20)).toBe(false);
+    expect(poolCanHoldNotional(5_000, 20)).toBe(true);
+    const entryAt = new Date("2026-11-24T12:05:00.000Z");
+    expect(
+      acceptEntryObservation({
+        entryAt,
+        observedAt: new Date("2026-11-24T12:15:00.000Z"),
+        valid: true,
+      }).usable,
+    ).toBe(false);
+    const exit = chooseFirstValidExit(
+      [
+        { at: new Date("2026-11-24T13:07:00.000Z"), valid: true, price: 9 },
+        { at: new Date("2026-11-24T13:06:00.000Z"), valid: true, price: 1 },
+      ],
+      new Date("2026-11-24T13:05:00.000Z"),
+      3 * 60 * 1000,
+    );
+    expect(exit?.price).toBe(1);
+    expect(isExcludedProtocol("c1d34366abcdef")).toBe(true);
+  });
+
+  it("freezes pairs before fee scenarios and simulates both bankrolls", () => {
+    const high = scenarioFills({
+      pairIds: ["a", "b"],
+      schedule: "solana_other",
+      tokenCashUsd: 19.05,
+      entryImpactPct: 4,
+      capPct: 10,
+    });
+    const low = scenarioFills({
+      pairIds: ["a", "b"],
+      schedule: "solana_lowest_fee",
+      tokenCashUsd: 19.6,
+      entryImpactPct: 4,
+      capPct: 10,
+    });
+    expect(high.map((row) => row.pairId)).toEqual(low.map((row) => row.pairId));
+    expect(high[0]?.observedRoute).toBe("unknown");
+    const books = simulateEqualBankrolls({
+      wallet: [0.1, null, 0.2],
+      control: [0.1, 0.1],
+      bankroll: 100,
+      notional: 20,
+      maxConcurrent: 1,
+    });
+    expect(books.walletCash).toBeCloseTo(82);
+    expect(books.reserved).toBe(20);
+    expect(books.skipped).toBe(1);
+  });
+
+  it("does not count shadow days until the qualification gate passes", () => {
+    expect(
+      qualificationGate({
+        ciGreenOnCommit: true,
+        isolationTested: true,
+        walletClassificationTested: true,
+        matchingImmutable: true,
+        horizonRecordsHonest: true,
+        venueRecallScheduled: false,
+        configChangedDuringShadow: false,
+      }).countDays,
+    ).toBe(false);
+    const loop = readFileSync(
+      path.resolve(
+        path.dirname(fileURLToPath(import.meta.url)),
+        "../../../../apps/ingestor/src/loop.ts",
+      ),
+      "utf8",
+    );
+    expect(loop).not.toContain("recallWalletSwaps");
+    expect(recallWalletSwaps({ known: new Set(["a"]), reference: ["a", "b"] }).missing).toEqual([
+      "b",
+    ]);
+  });
+});

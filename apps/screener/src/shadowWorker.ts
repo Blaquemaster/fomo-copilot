@@ -38,6 +38,15 @@ await startApp({
           completeMatched: 0,
           projectedWalletPerDay: 0,
           cashReconciled: false,
+          timelyRecall: [],
+          eventualRecall: [],
+          healthyPeriodCoverage: 0,
+          wholeRunAvailability: 0,
+          matchedGatePassing: 0,
+          capRelaxed: false,
+          integrityFailure: false,
+          spendLimitHit: false,
+          unsafeOperation: false,
         });
         logger.info({ pass: report.pass, checks: report.checks }, "shadow acceptance");
         await new Promise((resolve) => setTimeout(resolve, POLL_MS));

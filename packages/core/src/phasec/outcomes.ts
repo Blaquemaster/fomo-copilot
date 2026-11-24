@@ -4,9 +4,9 @@ import {
   EXPERIMENT_LATENESS_MS,
   enrollmentTimeline,
   executionRecord,
-  matchOneToOne,
   type StratumCoin,
 } from "./experimentProtocol.js";
+import { matchBenchmark, matchContemporaneous, type MatchCoin } from "./review3.js";
 import { isFlapMint, stageForCoin, type ScoreCoin } from "./score.js";
 import { screenCoin, type ScreenFacts, type ScreenRules } from "./screen.js";
 import type { Stage } from "./protocol.js";
@@ -94,6 +94,7 @@ export function buildCandidateLog(input: {
   prices: ReadonlyMap<string, number | null>;
   /** Freshly graduated 1:1 controls and a separate pre-screen draw. */
   experiment?: boolean;
+  venueAllowlist?: readonly string[];
 }): CandidateLogRow[] {
   const rows: CandidateLogRow[] = [];
   const used = new Set<string>();
@@ -169,7 +170,11 @@ export function buildCandidateLog(input: {
   const walletCount = rows.filter((row) => row.group === "wallet").length;
   const walletMints = new Set(rows.filter((row) => row.group === "wallet").map((row) => row.mint));
   if (input.experiment === true) {
-    applyExperimentControls(rows, { ...input, prices: input.prices });
+    applyExperimentControls(rows, {
+      ...input,
+      prices: input.prices,
+      venueAllowlist: input.venueAllowlist,
+    });
     return rows;
   }
   const pool = input.coins.filter((coin) => {
@@ -204,6 +209,7 @@ function applyExperimentControls(
     coins: readonly (ScoreCoin & ScreenFacts & { poolType?: string | null })[];
     rules: ScreenRules;
     prices: ReadonlyMap<string, number | null>;
+    venueAllowlist?: readonly string[];
   },
 ): void {
   const stratumFor = (coin: ScoreCoin & { poolType?: string | null }): StratumCoin | null => {
@@ -218,6 +224,9 @@ function applyExperimentControls(
       hourUtc: input.now.getUTCHours(),
     };
   };
+  const decisionAt = input.now.toISOString();
+  const asMatch = (coin: StratumCoin): MatchCoin => ({ ...coin, decisionAt });
+  const allowlist = input.venueAllowlist ?? [];
   const graduated = input.coins.flatMap((coin) => {
     const stratum = stratumFor(coin);
     if (!stratum || screenCoin(coin, input.rules).verdict !== "pass") return [];
@@ -225,19 +234,23 @@ function applyExperimentControls(
   });
   const wallets = graduated.filter((row) => row.coin.trackedBuyers >= 1).map((row) => row.stratum);
   const screened = graduated.filter((row) => row.coin.trackedBuyers < 1).map((row) => row.stratum);
-  const matched = matchOneToOne({ wallets, screened, now: input.now });
+  const matched = matchContemporaneous({
+    wallets: wallets.map(asMatch),
+    screened: screened.map(asMatch),
+    allowlist,
+  });
   const byMint = new Map(rows.map((row) => [row.mint, row]));
   for (const pair of matched.pairs) {
     const row = byMint.get(pair.control);
     if (!row) continue;
     row.group = "screened_control";
-    row.reason = pair.fallback;
+    row.reason = pair.tier;
     row.recordedOnly = true;
   }
-  for (const mint of matched.unmatched) {
-    const row = byMint.get(mint);
+  for (const missed of matched.unmatched) {
+    const row = byMint.get(missed.wallet);
     if (!row) continue;
-    row.reason = `${row.reason}; unmatched`;
+    row.reason = `${row.reason}; unmatched ${missed.reason}`;
   }
   const exclude = new Set<string>([
     ...wallets.map((row) => row.mint),
@@ -248,11 +261,16 @@ function applyExperimentControls(
     if (!stratum || exclude.has(coin.mint)) return [];
     return [stratum];
   });
-  const benchmark = matchOneToOne({ wallets, screened: benchmarkPool, now: input.now });
+  const benchmark = matchBenchmark({
+    wallets: wallets.map(asMatch),
+    universe: benchmarkPool.map(asMatch),
+    enrolled: exclude,
+    allowlist,
+  });
   for (const pair of benchmark.pairs) {
-    const row = byMint.get(pair.control);
+    const row = byMint.get(pair.benchmark);
     if (!row || row.group === "wallet" || row.group === "screened_control") continue;
-    row.reason = `pre_screen benchmark; ${pair.fallback}; prior ${row.group}`;
+    row.reason = `pre_screen benchmark; ${pair.tier}; prior ${row.group}`;
     row.group = "pre_screen";
     row.recordedOnly = true;
   }
@@ -291,7 +309,7 @@ function applyExperimentControls(
   };
   for (const mint of wallets.map((row) => row.mint)) stamp(mint);
   for (const pair of matched.pairs) stamp(pair.control);
-  for (const pair of benchmark.pairs) stamp(pair.control);
+  for (const pair of benchmark.pairs) stamp(pair.benchmark);
 }
 
 /** A missing follow-up quote is missing, not a loss. */

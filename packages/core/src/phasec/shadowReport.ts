@@ -17,11 +17,22 @@ export interface ShadowMeasurements {
   completeMatched: number;
   projectedWalletPerDay: number;
   cashReconciled: boolean;
+  timelyRecall: readonly { venue: string; observed: number; reference: number }[];
+  eventualRecall: readonly { venue: string; observed: number; reference: number }[];
+  healthyPeriodCoverage: number;
+  wholeRunAvailability: number;
+  matchedGatePassing: number;
+  capRelaxed: boolean;
+  integrityFailure: boolean;
+  spendLimitHit: boolean;
+  unsafeOperation: boolean;
 }
 
 export function shadowAcceptance(input: ShadowMeasurements): {
   pass: boolean;
   checks: Record<string, boolean>;
+  enrollmentStopped: boolean;
+  statisticalFailure: boolean;
 } {
   const recallOk =
     input.recall.length > 0 &&
@@ -37,6 +48,10 @@ export function shadowAcceptance(input: ShadowMeasurements): {
     input.unresolvedByArm.every(
       (row) => row.endpoints > 0 && row.unresolved / row.endpoints <= 0.02,
     );
+  const rate = (rows: ShadowMeasurements["timelyRecall"]) =>
+    rows.length > 0 &&
+    rows.every((row) => row.reference >= 300 && row.observed / row.reference >= 0.99);
+  const operationsClear = !input.integrityFailure && !input.spendLimitHit && !input.unsafeOperation;
   const checks = {
     isolation:
       input.tradesCreated === 0 &&
@@ -44,11 +59,22 @@ export function shadowAcceptance(input: ShadowMeasurements): {
       input.autoEnabled === false &&
       input.unintendedProdWrites === 0,
     recall: recallOk,
+    timelyAvailability: rate(input.timelyRecall),
+    eventualRecovery: rate(input.eventualRecall),
+    healthyPeriod: input.healthyPeriodCoverage >= 0.99,
+    wholeRun: input.wholeRunAvailability >= 0,
     scheduler: dispatchOk,
     headroom: headroom >= 0.3,
     missing: missingOk,
-    recruitment: input.completeMatched >= 20 && input.projectedWalletPerDay >= 3,
+    recruitment: input.matchedGatePassing >= 20 && input.projectedWalletPerDay >= 3,
+    capHeld: input.capRelaxed === false,
     cash: input.cashReconciled,
+    operationsClear,
   };
-  return { pass: Object.values(checks).every(Boolean), checks };
+  return {
+    pass: Object.values(checks).every(Boolean),
+    checks,
+    enrollmentStopped: !operationsClear,
+    statisticalFailure: false,
+  };
 }

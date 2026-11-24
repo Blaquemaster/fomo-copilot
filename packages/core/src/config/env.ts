@@ -163,8 +163,13 @@ export const envSchema = z.object({
    * old unrecovered gap. This does not start by itself.
    */
   INGEST_WIDE_RECOVERY: z.enum(["true", "false"]).optional(),
-  /** Exact true enables the scale-out treatment. Unset keeps it off. */
+  /** Exact true is refused. Scale-out is not part of this experiment. */
   EXPERIMENT_SCALE_OUT: z.enum(["true", "false"]).optional(),
+  /** shadow is the draft. scored refuses until commit, venue, and wallet list are set. */
+  EXPERIMENT_MODE: z.enum(["shadow", "scored"]).optional(),
+  EXPERIMENT_COMMIT: z.string().min(7).max(64).optional(),
+  /** Comma-separated venues that have passed an independent recall. Empty means none. */
+  EXPERIMENT_VENUES: z.string().max(200).optional(),
   /** One dollar size for every stage. Unset keeps the stage table. */
   EXPERIMENT_FIXED_NOTIONAL_USD: z.coerce.number().positive().max(1_000_000).optional(),
   /** off, dry_run, or live. Default off. Live cannot start in this build. */

@@ -85,7 +85,7 @@ describe("experiment protocol defaults", () => {
       { wallet: 0, control: -0.095 },
       { wallet: null, control: 0.1 },
     ]);
-    expect(pairs.mean).toBeCloseTo(0.0475);
+    expect(pairs.mean).toBeNull();
     expect(pairs.completeMean).toBeCloseTo(0.095);
     expect(pairs.complete).toBe(1);
     expect(pairs.missing).toBe(1);

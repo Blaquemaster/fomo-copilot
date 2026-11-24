@@ -84,6 +84,10 @@ export interface PhaseCConfig {
   experimentProtocol?: boolean;
   /** False disables the price stop. Undefined keeps the older paper stop. */
   stopsEnabled?: boolean;
+  /** Venues accepted for a match. Empty means none are validated yet. */
+  venueAllowlist?: readonly string[];
+  /** Set when the experiment config contradicts the frozen protocol. */
+  configRefused?: string | null;
 }
 
 export function defaultSizePct(): Record<Stage, number> {
@@ -129,6 +133,9 @@ export function protocolBody(config: PhaseCConfig, rules?: unknown): string {
     scaleOutEnabled: config.scaleOutEnabled === true,
     fixedNotionalUsd: config.fixedNotionalUsd ?? null,
     walletCohort: "exploratory_activity_graduation_selected",
+    parserVersion: "fill-v3",
+    excludedProtocol: "c1d34366",
+    voidedPositions: 79,
     experiment: EXPERIMENT_PROTOCOL,
     experimentProtocol: config.experimentProtocol === true,
     stopsEnabled: config.stopsEnabled !== false,

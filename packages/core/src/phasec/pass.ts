@@ -55,6 +55,7 @@ import {
   type ScreenRules,
 } from "./screen.js";
 import { exitStateFor } from "./quoteState.js";
+import { poolCanHoldNotional } from "./review3.js";
 import { buildCandidateLog, type CandidateLogRow } from "./outcomes.js";
 import { inQuietHours, nextEtMidnight } from "./time.js";
 
@@ -323,7 +324,7 @@ export function runPhaseCPass(input: PassInput): PassResult {
         }
       : null;
   const started = entriesStart === null || input.now.getTime() >= entriesStart.getTime();
-  const allowEntries = !registering && !restart && started;
+  const allowEntries = !registering && !restart && started && !config.configRefused;
   const quotes = new Map(input.quotes.map((quote) => [quote.mint, quote]));
   const coins = input.coins;
 
@@ -747,11 +748,24 @@ export function runPhaseCPass(input: PassInput): PassResult {
                   : config.sizePct[stage],
             }
           : sizeForStage(stage, config.sizePct, config.bankroll);
-      const capped = capSizeToLiquidity(
-        stageSize.amount,
-        coin.liquidityUsd,
-        config.maxSizePoolShare ?? 0.01,
-      );
+      if (
+        config.experimentProtocol === true &&
+        !poolCanHoldNotional(
+          coin.liquidityUsd,
+          config.fixedNotionalUsd ?? 20,
+          config.maxSizePoolShare ?? 0.01,
+        )
+      ) {
+        continue;
+      }
+      const capped =
+        config.experimentProtocol === true
+          ? stageSize.amount
+          : capSizeToLiquidity(
+              stageSize.amount,
+              coin.liquidityUsd,
+              config.maxSizePoolShare ?? 0.01,
+            );
       const size = {
         amount: capped,
         pct:
@@ -858,6 +872,7 @@ export function runPhaseCPass(input: PassInput): PassResult {
     entries,
     prices,
     experiment: config.experimentProtocol === true,
+    venueAllowlist: config.venueAllowlist,
   });
 
   const paper = evaluatePaper({
