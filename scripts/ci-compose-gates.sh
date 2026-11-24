@@ -8,7 +8,7 @@ cd "$root"
 app_env=$(mktemp)
 shadow_env=$(mktemp)
 fail_compose=$(mktemp)
-trap 'rm -f "$app_env" "$shadow_env" "$fail_compose"; docker compose --project-name fomo-ci --env-file "$app_env" -f infra/docker-compose.yml -f infra/docker-compose.ci.yml down -v --remove-orphans >/dev/null 2>&1 || true' EXIT
+trap 'rm -f "$app_env" "$shadow_env" "$fail_compose" ${schema_file:-} ${manifest_file:-} ${empty_manifest:-}; docker compose --project-name fomo-ci --env-file "$app_env" -f infra/docker-compose.yml -f infra/docker-compose.ci.yml down -v --remove-orphans >/dev/null 2>&1 || true' EXIT
 
 cat >"$app_env" <<'EOF'
 POSTGRES_USER=fomo
@@ -112,16 +112,88 @@ set -e
 test "$fail_code" -ne 0
 test -z "$(docker ps --format '{{.Names}}' | grep -E 'screener|alerter' || true)"
 
-echo "unguarded older image does start paper"
+echo "build an unguarded image the rollback command must refuse"
 docker build -f infra/legacy-screener.Dockerfile -t fomo-ci-screener:legacy .
-legacy_log=$(docker run --rm fomo-ci-screener:legacy)
-echo "$legacy_log" | grep -q "without a stop gate"
-
-echo "rollback to the previous gated image"
 network=$(docker network ls --format '{{.Name}}' | grep '^fomo-ci' | head -1)
 test -n "$network"
-rollback_log=$(docker run --rm --network "$network" --env-file "$app_env" -e PAPER_ENABLED=false -e ALERTS_ENABLED=false fomo-ci-screener:previous node apps/screener/dist/main.js)
-echo "$rollback_log" | grep -q "screener stayed stopped"
+guarded_id=$(docker image inspect --format '{{.Id}}' fomo-ci-screener:previous)
+legacy_id=$(docker image inspect --format '{{.Id}}' fomo-ci-screener:legacy)
+test "$guarded_id" != "$legacy_id"
+schema_file=$(mktemp)
+manifest_file=$(mktemp)
+empty_manifest=$(mktemp)
+compose exec -T postgres psql -U fomo -d fomo -At -c "select id from schema_migrations order by id" >"$schema_file"
+grep -q "031_run_identity" "$schema_file"
+cat >"$manifest_file" <<EOF
+{
+  "affectedServices": ["screener", "alerter", "outcomes", "shadow"],
+  "targets": [
+    {
+      "imageDigest": "${guarded_id}",
+      "builtAt": "2020-01-01T00:00:00Z",
+      "schemaRequirements": ["031_run_identity"],
+      "permittedServices": ["screener"],
+      "permittedModes": {
+        "paper": false,
+        "alerts": false,
+        "outcomes": false,
+        "shadow": false,
+        "wideRecovery": false
+      },
+      "gateTestsPassed": true,
+      "evidence": ["verify", "compose-gates"]
+    }
+  ]
+}
+EOF
+printf '%s\n' '{"targets":[]}' >"$empty_manifest"
+
+echo "unguarded rollback target is rejected before paper starts"
+set +e
+reject_log=$(bash scripts/approved-rollback.sh \
+  --manifest "$manifest_file" \
+  --schema "$schema_file" \
+  --target fomo-ci-screener:legacy \
+  --execute \
+  --project fomo-ci \
+  --env-file "$app_env" \
+  --network "$network" 2>&1)
+reject_code=$?
+set -e
+test "$reject_code" -eq 3
+echo "$reject_log" | grep -q "rejected before start"
+if echo "$reject_log" | grep -q "without a stop gate"; then
+  echo "unguarded image started paper" >&2
+  exit 1
+fi
+test -z "$(docker ps -aq --filter ancestor=fomo-ci-screener:legacy)"
+
+echo "permitted guarded fallback starts and stays stopped"
+fallback_log=$(bash scripts/approved-rollback.sh \
+  --manifest "$manifest_file" \
+  --schema "$schema_file" \
+  --digest "$guarded_id" \
+  --execute \
+  --env-file "$app_env" \
+  --network "$network")
+echo "$fallback_log" | grep -q "screener stayed stopped"
+
+echo "no approved fallback stops services and requires a forward fix"
+set +e
+forward_log=$(bash scripts/approved-rollback.sh \
+  --manifest "$empty_manifest" \
+  --schema "$schema_file" \
+  --digest "$legacy_id" \
+  --execute \
+  --project fomo-ci \
+  --env-file "$app_env" \
+  --network "$network" 2>&1)
+forward_code=$?
+set -e
+test "$forward_code" -eq 2
+echo "$forward_log" | grep -q "forward fix required"
+test -z "$(docker ps --format '{{.Names}}' | grep -E 'screener|alerter|outcomes|shadow' || true)"
+rm -f "$schema_file" "$manifest_file" "$empty_manifest"
 
 echo "restricted shadow role on the CI database only"
 compose exec -T postgres psql -v ON_ERROR_STOP=1 -U fomo -d fomo <<'SQL'

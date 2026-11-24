@@ -1,4 +1,5 @@
 import {
+  EXPERIMENT_ALLOCATED_USD,
   EXPERIMENT_ENTRY_DELAY_MS,
   EXPERIMENT_MIN_ADVANTAGE,
   experimentCall,
@@ -13,6 +14,8 @@ export const ENTRY_LATENESS_S = 60;
 export const ENTRY_LATENESS_MS = ENTRY_LATENESS_S * 1000;
 /** Scored inference stays off until a calibration is accepted. Shadow collection is unaffected. */
 export const INFERENTIAL_GO_ENABLED = false;
+/** The shadow clock is seven days, and it does not start until preflight passes. */
+export const SHADOW_CLOCK_DAYS = 7;
 
 export interface EnrollmentPair {
   wallet: number | null;
@@ -127,6 +130,254 @@ export function applyMissingAssumption(
   const known = filled.filter((value): value is number => value !== null);
   if (known.length !== pairs.length || known.length === 0) return null;
   return known.reduce((sum, value) => sum + value, 0) / known.length;
+}
+
+export type BoundObservation =
+  | { status: "unfilled" }
+  | { status: "resolved"; netReturn: number }
+  | { status: "filled_unresolved" };
+
+export interface BoundPair {
+  wallet: BoundObservation;
+  control: BoundObservation;
+}
+
+export type FeeScenarioName = "both_high" | "both_low" | "adverse";
+
+export const IDENTIFICATION_CALIBRATION_NOTE =
+  "Calibration of this full procedure is pending: 60-day window, variable volume, and heavy tails. Inferential Go stays disabled until that calibration is accepted.";
+
+const CASH_FLOOR = -1;
+
+export type EvidenceEnd = number | "-infinity" | "+infinity";
+
+function cashFloor(value: number): number {
+  if (!Number.isFinite(value) || value < CASH_FLOOR) {
+    throw new Error("cash exposure exceeds the $20 allocation");
+  }
+  return value;
+}
+
+function observationEnds(observation: BoundObservation): [number, number] {
+  if (observation.status === "unfilled") return [0, 0];
+  if (observation.status === "filled_unresolved") return [CASH_FLOOR, Number.POSITIVE_INFINITY];
+  const value = cashFloor(observation.netReturn);
+  return [value, value];
+}
+
+function subtractEnds(left: number, right: number): number {
+  if (right === Number.POSITIVE_INFINITY) return Number.NEGATIVE_INFINITY;
+  if (left === Number.POSITIVE_INFINITY) return Number.POSITIVE_INFINITY;
+  return left - right;
+}
+
+function publishEnd(values: readonly number[]): EvidenceEnd {
+  if (values.some((value) => value === Number.NEGATIVE_INFINITY)) return "-infinity";
+  if (values.some((value) => value === Number.POSITIVE_INFINITY)) return "+infinity";
+  return values.reduce((sum, value) => sum + value, 0) / values.length;
+}
+
+function knownReturn(observation: BoundObservation): number | null {
+  if (observation.status === "unfilled") return 0;
+  if (observation.status === "resolved") return cashFloor(observation.netReturn);
+  return null;
+}
+
+function asEnrollmentPair(pair: BoundPair): EnrollmentPair {
+  const wallet = knownReturn(pair.wallet);
+  const control = knownReturn(pair.control);
+  return {
+    wallet,
+    control,
+    walletUnfilled: pair.wallet.status === "unfilled",
+    controlUnfilled: pair.control.status === "unfilled",
+  };
+}
+
+export interface IdentificationBounds {
+  enrolled: number;
+  pointEstimate: number | "UNKNOWN";
+  evidenceLower: EvidenceEnd;
+  evidenceUpper: EvidenceEnd;
+  sensitivity: {
+    label: "assumption-based";
+    walletLost: number | null;
+    controlGained: number | null;
+  };
+  tippingPoint: {
+    threshold: number;
+    status: "computed" | "not_applicable" | "not_separable";
+    averageMissingControlReturn: number | null;
+    dollarsPer20: number | null;
+    belowCashFloor: boolean;
+  };
+}
+
+/**
+ * Evidence bounds use the allocation only. Unfilled is 0, a resolved return is
+ * itself, and a filled unresolved outcome is [-1, +infinity). The point
+ * estimate stays UNKNOWN while any enrolled pair is unidentified. Assumption
+ * means are reported separately and are not these bounds.
+ */
+export function identificationBounds(pairs: readonly BoundPair[]): IdentificationBounds {
+  if (pairs.length === 0) throw new Error("no enrollment");
+  const lowers: number[] = [];
+  const uppers: number[] = [];
+  let identifiedSum = 0;
+  let identified = true;
+  for (const pair of pairs) {
+    const [walletLow, walletHigh] = observationEnds(pair.wallet);
+    const [controlLow, controlHigh] = observationEnds(pair.control);
+    lowers.push(subtractEnds(walletLow, controlHigh));
+    uppers.push(subtractEnds(walletHigh, controlLow));
+    const wallet = knownReturn(pair.wallet);
+    const control = knownReturn(pair.control);
+    if (wallet === null || control === null) {
+      identified = false;
+      continue;
+    }
+    identifiedSum += wallet - control;
+  }
+  const enrollment = pairs.map(asEnrollmentPair);
+  const missingControls: number[] = [];
+  let separable = true;
+  let knownDifference = 0;
+  for (const pair of pairs) {
+    const walletMissing = pair.wallet.status === "filled_unresolved";
+    const controlMissing = pair.control.status === "filled_unresolved";
+    if (walletMissing) {
+      separable = false;
+      continue;
+    }
+    if (controlMissing) {
+      const wallet = knownReturn(pair.wallet);
+      if (wallet === null) separable = false;
+      else missingControls.push(wallet);
+      continue;
+    }
+    const wallet = knownReturn(pair.wallet);
+    const control = knownReturn(pair.control);
+    if (wallet === null || control === null) {
+      separable = false;
+      continue;
+    }
+    knownDifference += wallet - control;
+  }
+  let tipping: IdentificationBounds["tippingPoint"];
+  if (!separable) {
+    tipping = {
+      threshold: EXPERIMENT_MIN_ADVANTAGE,
+      status: "not_separable",
+      averageMissingControlReturn: null,
+      dollarsPer20: null,
+      belowCashFloor: false,
+    };
+  } else if (missingControls.length === 0) {
+    tipping = {
+      threshold: EXPERIMENT_MIN_ADVANTAGE,
+      status: "not_applicable",
+      averageMissingControlReturn: null,
+      dollarsPer20: null,
+      belowCashFloor: false,
+    };
+  } else {
+    const walletSum = missingControls.reduce((sum, value) => sum + value, 0);
+    const average =
+      (walletSum - EXPERIMENT_MIN_ADVANTAGE * pairs.length + knownDifference) /
+      missingControls.length;
+    tipping = {
+      threshold: EXPERIMENT_MIN_ADVANTAGE,
+      status: "computed",
+      averageMissingControlReturn: average,
+      dollarsPer20: average * EXPERIMENT_ALLOCATED_USD,
+      belowCashFloor: average < CASH_FLOOR,
+    };
+  }
+  return {
+    enrolled: pairs.length,
+    pointEstimate: identified ? identifiedSum / pairs.length : "UNKNOWN",
+    evidenceLower: publishEnd(lowers),
+    evidenceUpper: publishEnd(uppers),
+    sensitivity: {
+      label: "assumption-based",
+      walletLost: applyMissingAssumption(enrollment, "wallet_lost"),
+      controlGained: applyMissingAssumption(enrollment, "control_gained"),
+    },
+    tippingPoint: tipping,
+  };
+}
+
+export interface IdentificationDecision extends IdentificationBounds {
+  feeScenario: FeeScenarioName;
+  call: "go" | "no_go" | "inconclusive";
+  reasons: string[];
+  inferentialGoEnabled: boolean;
+  calibrationNote: string;
+}
+
+export function decideIdentification(input: {
+  feeScenario: FeeScenarioName;
+  pairs: readonly BoundPair[];
+  economicsPass: boolean;
+  riskPass: boolean;
+  inferentialGoEnabled: boolean;
+  calibration: {
+    status: "pending" | "calibrated";
+    lowerConfidenceBoundOnLowerBound: number | null;
+    upperConfidenceBoundOnUpperBound: number | null;
+  };
+}): IdentificationDecision {
+  const bounds = identificationBounds(input.pairs);
+  const reasons: string[] = [];
+  const gatesPass = input.economicsPass && input.riskPass;
+  if (!gatesPass) reasons.push("gate");
+  const calibrated = input.calibration.status === "calibrated";
+  if (!calibrated) reasons.push("calibration_pending");
+  if (!input.inferentialGoEnabled) reasons.push("inferential_go_disabled");
+  let call: IdentificationDecision["call"] = "inconclusive";
+  if (!gatesPass) {
+    call = "no_go";
+  } else if (calibrated && input.inferentialGoEnabled) {
+    const upper = input.calibration.upperConfidenceBoundOnUpperBound;
+    const lower = input.calibration.lowerConfidenceBoundOnLowerBound;
+    if (upper !== null && upper < EXPERIMENT_MIN_ADVANTAGE) call = "no_go";
+    else if (lower !== null && lower > EXPERIMENT_MIN_ADVANTAGE) call = "go";
+    else reasons.push("interval");
+  }
+  return {
+    ...bounds,
+    feeScenario: input.feeScenario,
+    call,
+    reasons,
+    inferentialGoEnabled: input.inferentialGoEnabled,
+    calibrationNote: IDENTIFICATION_CALIBRATION_NOTE,
+  };
+}
+
+/** Production scoring. Inferential Go stays off, so a statistical Go is not returned. */
+export function scoreIdentification(
+  input: Omit<Parameters<typeof decideIdentification>[0], "inferentialGoEnabled">,
+): IdentificationDecision {
+  return decideIdentification({ ...input, inferentialGoEnabled: INFERENTIAL_GO_ENABLED });
+}
+
+export function scoreFeeScenarios(input: {
+  scenarios: Record<
+    FeeScenarioName,
+    { pairs: readonly BoundPair[]; economicsPass: boolean; riskPass: boolean }
+  >;
+  calibration: Parameters<typeof decideIdentification>[0]["calibration"];
+}): IdentificationDecision[] {
+  const names: FeeScenarioName[] = ["both_high", "both_low", "adverse"];
+  return names.map((feeScenario) =>
+    scoreIdentification({
+      feeScenario,
+      pairs: input.scenarios[feeScenario].pairs,
+      economicsPass: input.scenarios[feeScenario].economicsPass,
+      riskPass: input.scenarios[feeScenario].riskPass,
+      calibration: input.calibration,
+    }),
+  );
 }
 
 /**
@@ -801,6 +1052,7 @@ export function qualificationGate(input: {
   configChangedDuringShadow: boolean;
   venueScopeSet: boolean;
   walletListVersionSet: boolean;
+  preflightPassed: boolean;
 }): { countDays: boolean; reasons: string[] } {
   const reasons: string[] = [];
   if (!input.ciGreenOnCommit) reasons.push("ci");
@@ -812,5 +1064,19 @@ export function qualificationGate(input: {
   if (input.configChangedDuringShadow) reasons.push("config_changed");
   if (!input.venueScopeSet) reasons.push("venue_scope_unset");
   if (!input.walletListVersionSet) reasons.push("wallet_list_unset");
+  if (!input.preflightPassed) reasons.push("preflight");
   return { countDays: reasons.length === 0, reasons };
+}
+
+export function shadowClock(input: { preflightPassed: boolean; startedAt: Date | null }): {
+  running: boolean;
+  days: number;
+  reason: "preflight" | "not_started" | null;
+} {
+  if (!input.preflightPassed)
+    return { running: false, days: SHADOW_CLOCK_DAYS, reason: "preflight" };
+  if (input.startedAt === null) {
+    return { running: false, days: SHADOW_CLOCK_DAYS, reason: "not_started" };
+  }
+  return { running: true, days: SHADOW_CLOCK_DAYS, reason: null };
 }

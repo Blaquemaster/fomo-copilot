@@ -15,9 +15,11 @@ import {
   applyMissingAssumption,
   chooseFirstValidExit,
   classifyFill,
+  decideIdentification,
   enrollmentEstimate,
   entryDeadline,
   exitDeadline,
+  identificationBounds,
   isExcludedProtocol,
   labeledPairMeans,
   measureBootstrapCalibration,
@@ -29,6 +31,9 @@ import {
   qualificationGate,
   qualificationRunId,
   REQUIRED_MIGRATIONS,
+  scoreFeeScenarios,
+  scoreIdentification,
+  shadowClock,
   recallWalletSwaps,
   scenarioFills,
   simulateEqualBankrolls,
@@ -325,6 +330,7 @@ describe("review 3", () => {
         configChangedDuringShadow: false,
         venueScopeSet: false,
         walletListVersionSet: false,
+        preflightPassed: false,
       }).countDays,
     ).toBe(false);
     const loop = readFileSync(
@@ -398,6 +404,168 @@ describe("review 3", () => {
     for (const id of REQUIRED_MIGRATIONS) expect(ddl).toContain(id);
     expect(ddl).toContain("set local lock_timeout = '3s'");
     expect(ddl).toContain("on conflict (id) do nothing");
+  });
+
+  it("keeps the primary unknown and bounds every enrolled pair", () => {
+    const bounds = identificationBounds([
+      { wallet: { status: "unfilled" }, control: { status: "resolved", netReturn: -0.095 } },
+      { wallet: { status: "filled_unresolved" }, control: { status: "resolved", netReturn: 0.1 } },
+    ]);
+    expect(bounds.pointEstimate).toBe("UNKNOWN");
+    expect(bounds.evidenceLower).toBeCloseTo(-0.5025);
+    expect(bounds.evidenceUpper).toBe("+infinity");
+    expect(bounds.sensitivity.label).toBe("assumption-based");
+    expect(bounds.sensitivity.walletLost).toBeCloseTo(-0.5025);
+    expect(bounds.sensitivity.controlGained).toBeNull();
+    expect(bounds.tippingPoint.status).toBe("not_separable");
+    expect(() =>
+      identificationBounds([
+        {
+          wallet: { status: "resolved", netReturn: -1.01 },
+          control: { status: "resolved", netReturn: 0 },
+        },
+      ]),
+    ).toThrow(/cash exposure exceeds the \$20 allocation/);
+  });
+
+  it("reports the missing-control return that puts the mean on +5pp", () => {
+    const bounds = identificationBounds([
+      {
+        wallet: { status: "resolved", netReturn: 0.1 },
+        control: { status: "resolved", netReturn: -0.1 },
+      },
+      { wallet: { status: "resolved", netReturn: 0.1 }, control: { status: "filled_unresolved" } },
+    ]);
+    expect(bounds.pointEstimate).toBe("UNKNOWN");
+    expect(bounds.evidenceLower).toBe("-infinity");
+    expect(bounds.evidenceUpper).toBeCloseTo(0.65);
+    expect(bounds.tippingPoint.status).toBe("computed");
+    expect(bounds.tippingPoint.averageMissingControlReturn).toBeCloseTo(0.2);
+    expect(bounds.tippingPoint.dollarsPer20).toBeCloseTo(4);
+    const erased = identificationBounds([
+      {
+        wallet: { status: "resolved", netReturn: -1 },
+        control: { status: "resolved", netReturn: 0 },
+      },
+      { wallet: { status: "resolved", netReturn: 0 }, control: { status: "filled_unresolved" } },
+    ]);
+    expect(erased.tippingPoint.averageMissingControlReturn).toBeCloseTo(-1.1);
+    expect(erased.tippingPoint.belowCashFloor).toBe(true);
+    expect(erased.tippingPoint.dollarsPer20).toBeCloseTo(-22);
+  });
+
+  it("scores each fee scenario without enabling inferential Go", () => {
+    const identified = [
+      {
+        wallet: { status: "resolved" as const, netReturn: 0.2 },
+        control: { status: "resolved" as const, netReturn: 0 },
+      },
+    ];
+    const calibration = {
+      status: "calibrated" as const,
+      lowerConfidenceBoundOnLowerBound: 0.06,
+      upperConfidenceBoundOnUpperBound: 0.2,
+    };
+    const scored = scoreIdentification({
+      feeScenario: "both_high",
+      pairs: identified,
+      economicsPass: true,
+      riskPass: true,
+      calibration,
+    });
+    expect(scored.call).toBe("inconclusive");
+    expect(scored.inferentialGoEnabled).toBe(false);
+    expect(scored.reasons).toContain("inferential_go_disabled");
+    expect(scored.calibrationNote).toContain("60-day");
+    expect(scored.pointEstimate).toBeCloseTo(0.2);
+    const wouldGo = decideIdentification({
+      feeScenario: "both_high",
+      pairs: identified,
+      economicsPass: true,
+      riskPass: true,
+      inferentialGoEnabled: true,
+      calibration,
+    });
+    expect(wouldGo.call).toBe("go");
+    expect(
+      decideIdentification({
+        feeScenario: "both_low",
+        pairs: identified,
+        economicsPass: true,
+        riskPass: true,
+        inferentialGoEnabled: true,
+        calibration: {
+          status: "calibrated",
+          lowerConfidenceBoundOnLowerBound: 0.06,
+          upperConfidenceBoundOnUpperBound: 0.04,
+        },
+      }).call,
+    ).toBe("no_go");
+    expect(
+      decideIdentification({
+        feeScenario: "adverse",
+        pairs: identified,
+        economicsPass: false,
+        riskPass: true,
+        inferentialGoEnabled: true,
+        calibration,
+      }).call,
+    ).toBe("no_go");
+    expect(
+      decideIdentification({
+        feeScenario: "both_high",
+        pairs: identified,
+        economicsPass: true,
+        riskPass: true,
+        inferentialGoEnabled: true,
+        calibration: {
+          status: "calibrated",
+          lowerConfidenceBoundOnLowerBound: 0.04,
+          upperConfidenceBoundOnUpperBound: 0.2,
+        },
+      }).call,
+    ).toBe("inconclusive");
+    const pending = {
+      status: "pending" as const,
+      lowerConfidenceBoundOnLowerBound: null,
+      upperConfidenceBoundOnUpperBound: null,
+    };
+    const calls = scoreFeeScenarios({
+      calibration: pending,
+      scenarios: {
+        both_high: { pairs: identified, economicsPass: true, riskPass: true },
+        both_low: { pairs: identified, economicsPass: true, riskPass: true },
+        adverse: { pairs: identified, economicsPass: false, riskPass: true },
+      },
+    });
+    expect(calls.map((row) => [row.feeScenario, row.call])).toEqual([
+      ["both_high", "inconclusive"],
+      ["both_low", "inconclusive"],
+      ["adverse", "no_go"],
+    ]);
+    expect(calls.every((row) => row.inferentialGoEnabled === false)).toBe(true);
+  });
+
+  it("starts the seven day clock only after preflight", () => {
+    const ready = {
+      ciGreenOnCommit: true,
+      isolationTested: true,
+      walletClassificationTested: true,
+      matchingImmutable: true,
+      horizonRecordsHonest: true,
+      venueRecallScheduled: true,
+      configChangedDuringShadow: false,
+      venueScopeSet: true,
+      walletListVersionSet: true,
+      preflightPassed: false,
+    };
+    expect(qualificationGate(ready).countDays).toBe(false);
+    expect(qualificationGate(ready).reasons).toContain("preflight");
+    expect(qualificationGate({ ...ready, preflightPassed: true }).countDays).toBe(true);
+    expect(shadowClock({ preflightPassed: false, startedAt: null }).running).toBe(false);
+    expect(
+      shadowClock({ preflightPassed: true, startedAt: new Date("2026-11-24T00:00:00Z") }),
+    ).toEqual({ running: true, days: 7, reason: null });
   });
 
   it("measures bootstrap false positives, coverage, and power", () => {
