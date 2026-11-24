@@ -1,5 +1,5 @@
 {
-  "revision": "b775ffb60ebaf62972c11b1f5ce52159d738acc6",
+  "revision": "97592718f16e8e594683b256a82b9e5221a3c29c",
   "files": {
     "infra/docker-compose.yml": "741c1b6cd2e628b125358d126f0d55c1cd99561f0f9c353e55d2c2638f4d01d4",
     ".github/workflows/deploy.yml": "5178c13fc4b3f05d61f1bc7cd169475e49eb7f11f858a026b76942360b06e693",
