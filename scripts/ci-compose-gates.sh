@@ -442,6 +442,7 @@ mock_counts() {
 run_diag() {
   docker run --rm --network "$network" \
     --env-file "$app_env" \
+    -e POSTGRES_USER=fomo_shadow_ci \
     -e DATABASE_URL="$1" \
     -e DIAGNOSTIC_SCOPE="$2" \
     -e DIAGNOSTIC_PROCESS_ID="$3" \
@@ -498,7 +499,7 @@ run_diag "$shadow_url" denied d 11 2 1 >/tmp/fomo-diag-d.txt
 cat /tmp/fomo-diag-d.txt
 grep -q '"sent":{"scan":0,"reconciliation":0,"quote":0}' /tmp/fomo-diag-d.txt
 test "$(mock_counts)" = "$shared_counts"
-run_diag "postgres://fomo_shadow_ci:password1@postgres:5432/fomo_missing" missing e 11 2 1 >/tmp/fomo-diag-e.txt
+run_diag "postgres://fomo_shadow_ci:password1@127.0.0.1:1/fomo" missing e 11 2 1 >/tmp/fomo-diag-e.txt
 cat /tmp/fomo-diag-e.txt
 grep -q '"budgetDbFailed":true' /tmp/fomo-diag-e.txt
 test "$(mock_counts)" = "$shared_counts"
