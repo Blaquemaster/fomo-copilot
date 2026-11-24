@@ -81,7 +81,8 @@ done
 test "$(docker inspect -f '{{.State.Status}}' fomo-ci-stale-screener)" = "exited"
 docker start fomo-ci-stale-screener >/dev/null
 docker wait fomo-ci-stale-screener >/dev/null || true
-docker logs fomo-ci-stale-screener | grep -Eq "configuration error|screener stayed stopped"
+stale_log=$(docker logs fomo-ci-stale-screener 2>&1 || true)
+echo "$stale_log" | grep -Eq "configuration error|screener stayed stopped"
 test -z "$(docker ps -q --filter name=fomo-ci-stale-screener --filter status=running)"
 
 echo "explicit service starts stay off"
