@@ -92,6 +92,8 @@ export async function priceDueObservations(input: {
   for (const row of due) {
     const latenessMs = input.now.getTime() - row.dueAt.getTime();
     const isLate = latenessMs > EXPERIMENT_LATENESS_MS;
+    const claimed = await input.store.claimObservation(row.mint, row.label, input.now);
+    if (!claimed) continue;
     const entryGate =
       row.role === "entry"
         ? acceptEntryObservation({ entryAt: row.dueAt, observedAt: input.now, valid: true })

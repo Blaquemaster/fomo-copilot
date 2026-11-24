@@ -83,6 +83,7 @@ export interface PhaseCStore {
     Array<{ mint: string; label: string; role: string; dueAt: Date; entryOutAmount: string | null }>
   >;
   observationBacklog(now: Date): Promise<{ due: number; pending: number }>;
+  claimObservation(mint: string, label: string, now: Date): Promise<boolean>;
   saveObservation(input: {
     mint: string;
     label: string;

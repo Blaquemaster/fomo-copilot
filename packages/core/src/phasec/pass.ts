@@ -194,6 +194,7 @@ export interface PlannedClose {
     | "routing_failure"
     | "near_zero_recovery"
     | "transfer_restriction"
+    | "platform_restriction"
     | "skipped_impact"
     | "skipped_exit_impact"
     | "unfilled";

@@ -1,6 +1,7 @@
 import {
   createPool,
   serviceEnabled,
+  serviceStartDecision,
   shadowAcceptance,
   shadowDependency,
   startApp,
@@ -18,6 +19,20 @@ const POLL_MS = 60_000;
 await startApp({
   app: "shadow",
   run: async ({ env, logger }) => {
+    const start = serviceStartDecision({
+      paperFlag: env.PAPER_ENABLED,
+      alertsFlag: env.ALERTS_ENABLED,
+      outcomesFlag: env.OUTCOMES_ENABLED,
+      shadowFlag: env.SHADOW_ENABLED,
+      telegramToken: env.TELEGRAM_BOT_TOKEN,
+    });
+    if (!start.shadow) {
+      logger.warn(
+        { reason: start.shadowBlockedReason ?? "disabled" },
+        "shadow runner stayed stopped",
+      );
+      return;
+    }
     if (!serviceEnabled(env.SHADOW_ENABLED)) {
       logger.warn(
         { shadowEnabled: env.SHADOW_ENABLED ?? "unset" },

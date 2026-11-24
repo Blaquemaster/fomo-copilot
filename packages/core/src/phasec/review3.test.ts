@@ -4,6 +4,9 @@ import { readFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
+import { reconstructActivity } from "../ingest/fillCheck.js";
+import { referenceCheckPlan } from "../ingest/referenceSchedule.js";
+import { exitStateFor } from "./quoteState.js";
 import { buildCandidateLog } from "./outcomes.js";
 import type { ScreenRules } from "./screen.js";
 import {
@@ -137,6 +140,58 @@ describe("review 3", () => {
       tokenAmount: -10,
     });
     expect(sell.countsInNet).toBe(true);
+    const swap = reconstructActivity([
+      {
+        signature: "sig",
+        mint: "So11111111111111111111111111111111111111112",
+        side: "swap",
+        solAmount: -1,
+        tokenAmount: 1,
+        venue: "pump",
+      },
+      {
+        signature: "sig",
+        mint: "coin",
+        side: "buy",
+        solAmount: -1,
+        tokenAmount: 10,
+        venue: "pump",
+      },
+      {
+        signature: "sig2",
+        mint: "coin",
+        side: "sell",
+        solAmount: 0.0001,
+        tokenAmount: -4,
+        venue: "meteora",
+        priced: false,
+      },
+    ]);
+    expect(swap.paymentLegs).toHaveLength(1);
+    expect(swap.activityCount).toBe(3);
+    expect(swap.venues).toEqual(["pump", "meteora"]);
+    expect(swap.status).toBe("net_buyer");
+    expect(referenceCheckPlan().walletFeedRecall.enabled).toBe(false);
+    expect(
+      exitStateFor({
+        bid: {
+          ok: true,
+          execPriceUsd: 1,
+          midPriceUsd: 1,
+          impactPct: 50,
+          feeUsd: 0,
+          sizeUsd: 20,
+          liquidityUsd: null,
+          inAmount: "1",
+          outAmount: "1",
+        },
+        horizonReached: true,
+        onChainUntradable: false,
+        transferRestricted: false,
+        platformRestricted: true,
+        netIfPriced: -0.4,
+      }).state,
+    ).toBe("platform_restriction");
     const payment = classifyFill({
       mint: "So11111111111111111111111111111111111111112",
       wrappedSolMint: "So11111111111111111111111111111111111111112",

@@ -180,8 +180,9 @@ services:
       dockerfile: apps/screener/Dockerfile
     command: ["node", "apps/screener/dist/shadowWorker.js"]
     restart: "no"
+    # Not the app env. That file holds the Telegram token. This file is not in git.
     env_file:
-      - path: ../.env
+      - path: ../shadow.env
         required: false
     depends_on:
       postgres:

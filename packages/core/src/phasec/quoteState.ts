@@ -9,6 +9,7 @@ export type ExitState =
   | "provider_failure"
   | "routing_failure"
   | "transfer_restriction"
+  | "platform_restriction"
   | "near_zero_recovery"
   | "unresolved";
 
@@ -17,8 +18,11 @@ export function exitStateFor(input: {
   horizonReached: boolean;
   onChainUntradable: boolean;
   transferRestricted: boolean;
+  /** FOMO refusing the token is not the same as an on-chain transfer hook. */
+  platformRestricted?: boolean;
   netIfPriced: number | null;
 }): { state: ExitState; net: number | null } {
+  if (input.platformRestricted) return { state: "platform_restriction", net: -1 };
   if (input.transferRestricted) return { state: "transfer_restriction", net: -1 };
   if (input.bid?.ok) {
     const net = input.netIfPriced;

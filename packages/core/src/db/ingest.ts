@@ -625,10 +625,12 @@ create table if not exists phasec_observation (
   late boolean,
   price_usd double precision,
   status text not null default 'pending',
+  claimed_at timestamptz,
   primary key (mint, label)
 );
 create index if not exists phasec_observation_due_idx
   on phasec_observation (due_at) where status = 'pending';
+alter table phasec_observation add column if not exists claimed_at timestamptz;
 
 alter table phasec_execution add column if not exists enrollment_id text;
 alter table phasec_execution add column if not exists run_id text;
@@ -982,6 +984,10 @@ export async function migrate(pool: pg.Pool): Promise<void> {
     await client.query(
       "insert into schema_migrations (id) values ($1) on conflict (id) do nothing",
       ["029_review3_records"],
+    );
+    await client.query(
+      "insert into schema_migrations (id) values ($1) on conflict (id) do nothing",
+      ["030_observation_claim"],
     );
     await client.query(
       `update ingest_recall_audit a

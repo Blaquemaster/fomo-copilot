@@ -88,6 +88,7 @@ export interface PhaseCConfig {
   venueAllowlist?: readonly string[];
   /** Set when the experiment config contradicts the frozen protocol. */
   configRefused?: string | null;
+  walletListVersion?: string | null;
 }
 
 export function defaultSizePct(): Record<Stage, number> {
@@ -136,6 +137,18 @@ export function protocolBody(config: PhaseCConfig, rules?: unknown): string {
     parserVersion: "fill-v3",
     excludedProtocol: "c1d34366",
     voidedPositions: 79,
+    effectiveConfig: {
+      protocolVersion: "v2",
+      stage: "freshly_graduated",
+      venueAllowlist: config.venueAllowlist ?? [],
+      notionalUsd: config.fixedNotionalUsd ?? null,
+      entryDelaySec: config.entryDelaySec,
+      horizonMs: config.horizonMs,
+      matching: "contemporaneous_bounded_seeded",
+      walletListVersion: config.walletListVersion ?? null,
+      mode: config.configRefused ? "refused" : "shadow_draft",
+      refused: config.configRefused ?? null,
+    },
     experiment: EXPERIMENT_PROTOCOL,
     experimentProtocol: config.experimentProtocol === true,
     stopsEnabled: config.stopsEnabled !== false,

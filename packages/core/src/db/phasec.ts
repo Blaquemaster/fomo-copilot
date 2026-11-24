@@ -102,8 +102,9 @@ export class PhaseCRepository implements PhaseCStore {
                 tip.slot - (rate.per_sec * 60 * $3::float)::bigint as fresh_from
          from tip, rate
        ),
-       -- Tracked wallets that are selective. A wallet that touched more distinct mints than the
-       -- cap in the last day is a flip bot, and its buys say nothing about a coin.
+       -- 24h activity counts every fill, including unpriced and unclassified rows.
+       -- 0.002 SOL is the strategy minimum buy. It does not drop sells.
+       -- Wrapped SOL rows stay in wallet_fill as the payment leg; they are not the coin.
        selective as (
          select f.wallet from wallet_fill f
          join tracked_wallet t on t.address = f.wallet and t.active
@@ -133,6 +134,13 @@ export class PhaseCRepository implements PhaseCStore {
            group by f.mint, f.wallet
          ) x, win
          where x.net_tokens > 0 and x.last_buy > win.fresh_from
+           and not exists (
+             select 1 from wallet_fill u
+             where u.mint = x.mint and u.wallet = x.wallet
+               and u.token_amount is null
+               and u.mint <> 'So11111111111111111111111111111111111111112'
+               and u.slot > win.day_from
+           )
          group by x.mint
        ),
        newest as (
@@ -618,6 +626,18 @@ export class PhaseCRepository implements PhaseCStore {
       dueAt: date(row.due_at),
       entryOutAmount: row.entry_out_amount,
     }));
+  }
+
+  async claimObservation(mint: string, label: string, now: Date): Promise<boolean> {
+    const result = await this.pool.query(
+      `update phasec_observation
+       set claimed_at = $3
+       where mint = $1 and label = $2 and status = 'pending'
+         and (claimed_at is null or claimed_at < $3::timestamptz - interval '2 minutes')
+       returning mint`,
+      [mint, label, now.toISOString()],
+    );
+    return (result.rowCount ?? 0) > 0;
   }
 
   async observationBacklog(now: Date): Promise<{ due: number; pending: number }> {

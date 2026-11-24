@@ -255,6 +255,7 @@ export function matchContemporaneous(input: {
   pairs: Array<{ wallet: string; control: string; tier: MatchTier; liquidityGap: number | null }>;
   unmatched: Array<{ wallet: string; reason: string }>;
   dispatch: string[];
+  balance: { byTier: Record<string, number>; meanAbsLiquidityGap: number | null };
 } {
   const used = new Set(input.reserved ?? []);
   const seed = input.seed ?? EXPERIMENT_MATCH_SEED;
@@ -305,14 +306,28 @@ export function matchContemporaneous(input: {
       liquidityGap,
     });
   }
+  const decisionAt = input.wallets[0]?.decisionAt ?? "";
   const dispatch = pairs
     .flatMap((pair) => [pair.wallet, pair.control])
-    .sort(
-      (left, right) =>
-        drawKey(left, input.wallets[0]?.decisionAt ?? "", seed) -
-        drawKey(right, input.wallets[0]?.decisionAt ?? "", seed),
-    );
-  return { pairs, unmatched, dispatch };
+    .sort((left, right) => drawKey(left, decisionAt, seed) - drawKey(right, decisionAt, seed));
+  return { pairs, unmatched, dispatch, balance: matchBalance(pairs) };
+}
+
+export function matchBalance(pairs: readonly { tier: MatchTier; liquidityGap: number | null }[]): {
+  byTier: Record<string, number>;
+  meanAbsLiquidityGap: number | null;
+} {
+  const byTier: Record<string, number> = {};
+  const gaps: number[] = [];
+  for (const pair of pairs) {
+    byTier[pair.tier] = (byTier[pair.tier] ?? 0) + 1;
+    if (pair.liquidityGap !== null) gaps.push(pair.liquidityGap);
+  }
+  return {
+    byTier,
+    meanAbsLiquidityGap:
+      gaps.length === 0 ? null : gaps.reduce((sum, gap) => sum + gap, 0) / gaps.length,
+  };
 }
 
 /** Pre-screen universe. An already enrolled mint is not reused. */
@@ -619,6 +634,7 @@ export const REQUIRED_MIGRATIONS = [
   "027_execution_record",
   "028_wide_recovery",
   "029_review3_records",
+  "030_observation_claim",
 ] as const;
 
 export function qualificationGate(input: {

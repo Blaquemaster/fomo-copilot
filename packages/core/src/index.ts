@@ -1,6 +1,6 @@
 export { ConfigError } from "./config/error.js";
 export { loadEnv, secretValuesFromEnv, type Env } from "./config/env.js";
-export { serviceEnabled } from "./runtime/serviceGate.js";
+export { serviceEnabled, serviceStartDecision } from "./runtime/serviceGate.js";
 export { readTokenExtensions } from "./phasec/token2022.js";
 export { loadThresholds, thresholdsSchema, type Thresholds } from "./config/thresholds.js";
 export { createLogger, type Logger } from "./log/logger.js";

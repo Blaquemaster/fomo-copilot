@@ -6,7 +6,12 @@ import {
   executionRecord,
   type StratumCoin,
 } from "./experimentProtocol.js";
-import { matchBenchmark, matchContemporaneous, type MatchCoin } from "./review3.js";
+import {
+  EXPERIMENT_MATCH_SEED,
+  matchBenchmark,
+  matchContemporaneous,
+  type MatchCoin,
+} from "./review3.js";
 import { isFlapMint, stageForCoin, type ScoreCoin } from "./score.js";
 import { screenCoin, type ScreenFacts, type ScreenRules } from "./screen.js";
 import type { Stage } from "./protocol.js";
@@ -303,6 +308,11 @@ function applyExperimentControls(
         sniperBundlePct: coin.sniperBundlePct,
         creatorSells: coin.creatorSells,
         trackedBuyers: coin.trackedBuyers,
+        decisionAt: input.now.toISOString(),
+        matchSeed: EXPERIMENT_MATCH_SEED,
+        observedAt: input.now.toISOString(),
+        parserVersion: "fill-v3",
+        balance: matched.balance,
       },
     };
     row.outcomeDueAt = new Date(timeline.entryAt.getTime() + EXPERIMENT_HORIZON_MS);

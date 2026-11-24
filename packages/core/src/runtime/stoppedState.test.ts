@@ -27,5 +27,11 @@ describe("stopped state survives a workflow revert", () => {
     expect(compose).toContain('profiles: ["outcomes"]');
     expect(compose).toContain('profiles: ["shadow"]');
     expect(compose).toContain('profiles: ["paper"]');
+    const shadow = compose.split(/^ {2}shadow:/m)[1]?.split(/^ {2}[a-z]/m)[0] ?? "";
+    expect(shadow).toContain("shadow.env");
+    expect(shadow).not.toContain("../.env");
+    expect(source("apps/screener/src/shadowWorker.ts")).toContain("telegramToken");
+    expect(source("apps/ingestor/src/loop.ts")).not.toContain("referenceCheckPlan");
+    expect(source(".github/workflows/deploy.yml")).toContain("stop screener alerter");
   });
 });
