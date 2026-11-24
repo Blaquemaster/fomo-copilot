@@ -123,6 +123,7 @@ jobs:
           PAPER_WINDOW_DAYS: ${{ vars.PAPER_WINDOW_DAYS }}
           PAPER_ENTRY_DELAY_SEC: ${{ vars.PAPER_ENTRY_DELAY_SEC }}
           SECOND_WAVE_MIN_CHANGE_PCT: ${{ vars.SECOND_WAVE_MIN_CHANGE_PCT }}
+          ENABLE_PAPER: ${{ vars.ENABLE_PAPER }}
         run: |
           set -euo pipefail
           umask 077
@@ -286,6 +287,10 @@ jobs:
                   raise SystemExit(f"{name} must be a non-zero integer")
               return raw
 
+          def paper_flag():
+              # A merge starts paper trading and alerts only when this is the exact word true.
+              return "true" if os.environ.get("ENABLE_PAPER", "").strip() == "true" else "false"
+
           def slot_margin():
               raw = os.environ.get("BACKFILL_SLOT_MARGIN", "").strip() or "16"
               if not raw.isdigit() or int(raw) > 10000:
@@ -365,6 +370,8 @@ jobs:
               line("AUTOBUY_KILL", pick("AUTOBUY_KILL", "off", {"off", "on"})),
               line("AUTOBUY_MAX_TRADE_USD", usd_amount("AUTOBUY_MAX_TRADE_USD", "25")),
               line("AUTOBUY_DAILY_USD_CAP", usd_amount("AUTOBUY_DAILY_USD_CAP", "100")),
+              line("PAPER_ENABLED", paper_flag()),
+              line("ALERTS_ENABLED", paper_flag()),
           ] + ([line("BANKROLL", bankroll)] if (bankroll := optional_bankroll()) else [])
             + ([line("TELEGRAM_TEST_CHAT_ID", test_chat)] if (test_chat := optional_chat("TELEGRAM_TEST_CHAT_ID")) else [])
           ) + "\n"
@@ -403,6 +410,14 @@ jobs:
           fi
           mv .env.incoming .env
           chmod 600 .env
-          docker compose --env-file .env -f infra/docker-compose.yml up -d --build
+          compose=(docker compose --env-file .env -f infra/docker-compose.yml)
+          # Default deploy keeps the screener and alerter stopped, including a
+          # container left over from an older compose file that had no profile.
+          if grep -q '^PAPER_ENABLED="true"$' .env && grep -q '^ALERTS_ENABLED="true"$' .env; then
+            "${compose[@]}" --profile paper up -d --build postgres ingestor screener alerter
+          else
+            "${compose[@]}" stop screener alerter || true
+            "${compose[@]}" up -d --build postgres ingestor
+          fi
           docker image prune -f
           REMOTE

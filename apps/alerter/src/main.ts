@@ -5,6 +5,7 @@ import {
   createPool,
   deliverCrashAlert,
   secretValuesFromEnv,
+  serviceEnabled,
   startApp,
 } from "@fomo/core";
 import { Bot } from "grammy";
@@ -17,6 +18,13 @@ await startApp({
   run: async ({ env, logger }) => {
     if (process.argv.includes("--crash-test")) {
       throw new Error("intentional crash test");
+    }
+    if (!serviceEnabled(env.ALERTS_ENABLED)) {
+      logger.warn(
+        { alertsEnabled: env.ALERTS_ENABLED ?? "unset" },
+        "alerter stayed stopped: ALERTS_ENABLED is not true",
+      );
+      return;
     }
 
     const secrets = secretValuesFromEnv(env);

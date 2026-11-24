@@ -134,6 +134,16 @@ export const envSchema = z.object({
   FOMO_FEE_SCHEDULE: z.enum(["solana_lowest_fee", "solana_other"]).optional(),
   WALLET_SCORE_CUTOFF: z.string().datetime().optional(),
   SECOND_WAVE_MIN_CHANGE_PCT: z.coerce.number().min(0).max(10_000).optional(),
+  /**
+   * Screener paper loop. Unset or anything other than "true" means the process
+   * exits without screening, quoting, or sending an alert.
+   */
+  PAPER_ENABLED: z.enum(["true", "false"]).optional(),
+  /**
+   * Alerter long-poll. Unset or anything other than "true" means the process
+   * exits without polling Telegram.
+   */
+  ALERTS_ENABLED: z.enum(["true", "false"]).optional(),
   /** off, dry_run, or live. Default off. Live cannot start in this build. */
   AUTOBUY_MODE: z.enum(["off", "dry_run", "live"]).optional(),
   /** Must be the exact word yes, and a signer must exist. Neither is configured here. */

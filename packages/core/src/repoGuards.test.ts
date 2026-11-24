@@ -7,6 +7,21 @@ import { describe, expect, it } from "vitest";
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../..");
 
 describe("repository guards", () => {
+  it("keeps screener and alerter off unless deploy is explicitly enabled", () => {
+    const compose = readFileSync(path.join(root, "infra/docker-compose.yml"), "utf8");
+    const deploy = readFileSync(path.join(root, ".github/workflows/deploy.yml"), "utf8");
+    const screener = compose.split(/^ {2}screener:/m)[1]?.split(/^ {2}[a-z]/m)[0] ?? "";
+    const alerter = compose.split(/^ {2}alerter:/m)[1]?.split(/^ {2}[a-z]/m)[0] ?? "";
+    expect(screener).toContain('profiles: ["paper"]');
+    expect(alerter).toContain('profiles: ["paper"]');
+    expect(screener).toContain('restart: "no"');
+    expect(alerter).toContain('restart: "no"');
+    expect(deploy).toContain("ENABLE_PAPER");
+    expect(deploy).toContain('PAPER_ENABLED="true"');
+    expect(deploy).toContain("stop screener alerter");
+    expect(deploy).not.toContain("up -d --build\n");
+  });
+
   it("gives postgres only its own settings so app env edits do not recreate it", () => {
     const compose = readFileSync(path.join(root, "infra/docker-compose.yml"), "utf8");
     const postgres = compose.split(/^ {2}ingestor:/m)[0] ?? "";

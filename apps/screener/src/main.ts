@@ -4,6 +4,7 @@ import {
   PhaseCRepository,
   resolveAlertChat,
   sendTelegramMessage,
+  serviceEnabled,
   startApp,
 } from "@fomo/core";
 
@@ -17,6 +18,13 @@ await startApp({
   run: async ({ env, thresholds, logger }) => {
     if (process.argv.includes("--crash-test")) {
       throw new Error("intentional crash test");
+    }
+    if (!serviceEnabled(env.PAPER_ENABLED)) {
+      logger.warn(
+        { paperEnabled: env.PAPER_ENABLED ?? "unset" },
+        "screener stayed stopped: PAPER_ENABLED is not true",
+      );
+      return;
     }
     const pool = createPool(env.DATABASE_URL);
     const store = new PhaseCRepository(pool);
