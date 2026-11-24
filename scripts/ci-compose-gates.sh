@@ -80,7 +80,7 @@ for _ in $(seq 1 30); do
 done
 test "$(docker inspect -f '{{.State.Status}}' fomo-ci-stale-screener)" = "exited"
 docker start fomo-ci-stale-screener >/dev/null
-docker wait fomo-ci-stale-screener >/dev/null
+docker wait fomo-ci-stale-screener >/dev/null || true
 docker logs fomo-ci-stale-screener | grep -Eq "configuration error|screener stayed stopped"
 test -z "$(docker ps -q --filter name=fomo-ci-stale-screener --filter status=running)"
 

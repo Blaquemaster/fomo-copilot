@@ -7,10 +7,10 @@ const databaseUrl = process.env["PHASEC_TEST_DATABASE_URL"];
 describe.skipIf(!databaseUrl)("migration lock timeout", () => {
   it("fails a locked change within 3 seconds and then reruns cleanly", async () => {
     const pool = createPool(databaseUrl ?? "");
+    await migrate(pool);
     const holder = await pool.connect();
     const waiter = await pool.connect();
     try {
-      await migrate(pool);
       await holder.query("begin");
       await holder.query("create table if not exists migration_lock_probe (id integer)");
       await holder.query("commit");
@@ -37,12 +37,12 @@ describe.skipIf(!databaseUrl)("migration lock timeout", () => {
       await waiter.query("set local lock_timeout = '3s'");
       await waiter.query("alter table migration_lock_probe add column if not exists extra text");
       await waiter.query("commit");
-      await migrate(pool);
     } finally {
       await holder.query("rollback").catch(() => undefined);
       holder.release();
       waiter.release();
-      await pool.end();
     }
+    await migrate(pool);
+    await pool.end();
   }, 20_000);
 });
