@@ -28,7 +28,13 @@ describe("diagnostic specification", () => {
     expect(exactBinomialLower(300, 300)).toBeCloseTo(0.99006, 5);
     expect(exactBinomialLower(300, 300)).toBeGreaterThanOrEqual(0.99);
     expect(venuePasses(full("pump", 300))).toBe(true);
+    expect(exactBinomialLower(299, 300)).toBeLessThan(0.99);
+    expect(exactBinomialLower(999, 1000)).toBeCloseTo(0.995265, 5);
+    expect(exactBinomialLower(999, 1000)).toBeGreaterThanOrEqual(0.99);
     expect(venuePasses({ ...full("pump", 300), recallSuccesses: 299 })).toBe(false);
+    expect(venuePasses({ ...full("pump", 1000), recallSuccesses: 999, recallTrials: 1000 })).toBe(
+      true,
+    );
   });
 
   it("waits until the fixed end and does not extend", () => {
@@ -60,7 +66,7 @@ describe("diagnostic specification", () => {
         earlyStop: "none",
         venues: [full("pump", 300), full("meteora", 300)],
       }),
-    ).toEqual({ status: "insufficient_evidence", venue: null });
+    ).toEqual({ status: "tie", venue: null });
     expect(
       selectDiagnosticVenue({
         now: window.end,
@@ -68,7 +74,15 @@ describe("diagnostic specification", () => {
         earlyStop: "none",
         venues: [{ ...full("pump", 300), graduationEvents: 10 }],
       }),
-    ).toEqual({ status: "insufficient_evidence", venue: null });
+    ).toEqual({ status: "gap", venue: null });
+    expect(
+      selectDiagnosticVenue({
+        now: window.end,
+        end: window.end,
+        earlyStop: "none",
+        venues: [{ ...full("pump", 300), recallSuccesses: 299 }],
+      }).status,
+    ).toBe("recall_below_99");
     expect(
       selectDiagnosticVenue({
         now: new Date("2026-12-03T00:00:00Z"),
@@ -76,7 +90,7 @@ describe("diagnostic specification", () => {
         earlyStop: "budget",
         venues: [full("pump", 300)],
       }).status,
-    ).toBe("insufficient_evidence");
+    ).toBe("budget");
   });
 
   it("stops on the hard ceilings and keeps pumpswap as a destination only", () => {

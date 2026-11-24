@@ -59,15 +59,17 @@ export function exactBinomialLower(successes: number, trials: number, alpha = 0.
   if (successes === trials) return Math.exp(Math.log(alpha) / trials);
   let low = 0;
   let high = 1;
-  for (let step = 0; step < 60; step += 1) {
+  for (let step = 0; step < 80; step += 1) {
     const mid = (low + high) / 2;
-    if (binomialUpperTail(successes, trials, mid) > alpha) low = mid;
+    if (binomialUpperTail(successes, trials, mid) < alpha) low = mid;
     else high = mid;
   }
   return low;
 }
 
 function binomialUpperTail(successes: number, trials: number, probability: number): number {
+  if (probability <= 0) return successes === 0 ? 1 : 0;
+  if (probability >= 1) return 1;
   let sum = 0;
   for (let count = successes; count <= trials; count += 1) {
     const log =
@@ -121,13 +123,26 @@ export function diagnosticBudgetStop(input: {
   return { stop: false, reason: null };
 }
 
+/** A full passer meets the recall bar and the separate gap check. */
 export function venuePasses(counts: VenueCounts): boolean {
+  return recallMeetsBar(counts.recallSuccesses, counts.recallTrials) && gapCheck(counts);
+}
+
+export type SelectionStatus =
+  "wait" | "selected" | "recall_below_99" | "gap" | "integrity" | "budget" | "tie";
+
+/** The recall bar is only the exact-binomial lower limit. Gap and integrity are separate. */
+export function recallMeetsBar(successes: number, trials: number): boolean {
+  if (trials <= 0) return false;
+  return exactBinomialLower(successes, trials) >= RECALL_LOWER_LIMIT;
+}
+
+export function gapCheck(counts: VenueCounts): boolean {
   const classes = Object.values(counts.referenceEventsByClass);
-  if (classes.length === 0 || classes.some((value) => value < MIN_REFERENCE_EVENTS)) return false;
+  if (!counts.scansComplete || classes.length === 0) return false;
+  if (classes.some((value) => value < MIN_REFERENCE_EVENTS)) return false;
   if (counts.graduationEvents < MIN_REFERENCE_EVENTS) return false;
-  if (counts.walletBuys < MIN_WALLET_SWAPS || counts.walletSells < MIN_WALLET_SWAPS) return false;
-  if (!counts.scansComplete) return false;
-  return exactBinomialLower(counts.recallSuccesses, counts.recallTrials) >= RECALL_LOWER_LIMIT;
+  return counts.walletBuys >= MIN_WALLET_SWAPS && counts.walletSells >= MIN_WALLET_SWAPS;
 }
 
 export function selectDiagnosticVenue(input: {
@@ -135,21 +150,20 @@ export function selectDiagnosticVenue(input: {
   end: Date;
   earlyStop: "none" | "integrity" | "budget";
   venues: readonly VenueCounts[];
-}): { status: "wait" | "selected" | "insufficient_evidence"; venue: string | null } {
-  if (input.earlyStop !== "none") return { status: "insufficient_evidence", venue: null };
+}): { status: SelectionStatus; venue: string | null } {
+  if (input.earlyStop === "integrity") return { status: "integrity", venue: null };
+  if (input.earlyStop === "budget") return { status: "budget", venue: null };
   if (input.now.getTime() < input.end.getTime()) return { status: "wait", venue: null };
-  const passers = input.venues.filter(venuePasses);
-  if (passers.length === 0) return { status: "insufficient_evidence", venue: null };
-  const ranked = [...passers].sort((left, right) => {
-    const leftDenom = left.recallTrials;
-    const rightDenom = right.recallTrials;
-    return rightDenom - leftDenom;
-  });
+  const recallPassers = input.venues.filter((venue) =>
+    recallMeetsBar(venue.recallSuccesses, venue.recallTrials),
+  );
+  if (recallPassers.length === 0) return { status: "recall_below_99", venue: null };
+  const full = recallPassers.filter(gapCheck);
+  if (full.length === 0) return { status: "gap", venue: null };
+  const ranked = [...full].sort((left, right) => right.recallTrials - left.recallTrials);
   const best = ranked[0];
   const second = ranked[1];
-  if (!best) return { status: "insufficient_evidence", venue: null };
-  if (second && second.recallTrials === best.recallTrials) {
-    return { status: "insufficient_evidence", venue: null };
-  }
+  if (!best) return { status: "gap", venue: null };
+  if (second && second.recallTrials === best.recallTrials) return { status: "tie", venue: null };
   return { status: "selected", venue: best.id };
 }

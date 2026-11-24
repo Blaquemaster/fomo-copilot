@@ -38,10 +38,17 @@ Anything else exits before SSH. The job does not build from the checkout. It sta
 
 ## Server steps that need your yes
 
-Do these yourself, in order, after you approve the bounded rollout. The agent does not run them.
+Do these yourself, in order, after you approve the bounded rollout. The agent does not run them. A failed condition stops that step.
 
-1. Confirm CI on `cursor/release-candidate-8ff7` is green. Copy the ingestor image id from `release digest` in the compose-gates log, and save the CI image tar if you exported one (`docker save` of that id).
-2. On the droplet, while the current ingestor is still running, dump the database and the roles. Copy both files off the machine. A dump is a snapshot: restoring it later discards ingestion that happened after the dump.
+0. Before step 1, and again after the merge, run the live deploy-queue check. Do not merge while it aborts.
+
+```bash
+bash scripts/pre-merge-deploy-check.sh
+```
+
+1. Merge this release candidate into `main` only after that check prints `no queued or running deployment`.
+2. Post-merge confirmation: run `bash scripts/pre-merge-deploy-check.sh` again and look at Actions. No deploy workflow may have started. The workflow has no push trigger, so a started run is a stop.
+3. On the droplet, while the current ingestor is still running, dump the database and the roles. Copy both files off the machine. A dump is a snapshot: restoring it later discards ingestion that happened after the dump.
 
 ```bash
 cd /opt/fomo-copilot
@@ -51,18 +58,23 @@ docker compose --env-file .env -f infra/docker-compose.yml exec -T postgres \
   pg_dumpall -U fomo --roles-only > "/var/backups/fomo-roles-$(date -u +%Y%m%dT%H%M%SZ).sql"
 ```
 
-3. Merge this release candidate into `main`. Wait and confirm no deploy workflow started.
-4. Install the rollback controller outside the checkout, then load the tested image and confirm the id:
+4. Install the rollback controller outside the checkout. Do not load a rebuilt image in place of the recorded reference:
 
 ```bash
 sudo bash scripts/install-rollback-controller.sh
-docker load < release-ingestor.tar
-docker image inspect sha256:THE_RECORDED_ID >/dev/null
 ```
 
 `sudo` is only for creating `/usr/local/lib/fomo` and `/etc/fomo`. The controller and the preflight command do not need root after that. The installed manifest is forward-fix-only: `targets` is empty. The command stops services and asks for a forward fix. It will not start an older image. The production image from before this release has not been tested against migrations through `031_run_identity`.
 
-5. On the host, before any script runs, verify the reviewed revision:
+5. Publish the recorded registry reference yourself. This repository does not push it. Then verify the pull for `linux/amd64` before any replacement. The droplet is Ubuntu on DigitalOcean amd64, the same architecture as the CI runner. A failed pull, a changed digest, or a rebuilt image stops the sequence. The script does not start the ingestor.
+
+```bash
+bash scripts/verify-published-image.sh \
+  --reference 'ghcr.io/blaquemaster/fomo-copilot/ingestor@sha256:THE_INDEX_DIGEST' \
+  --expected-image-id 'sha256:THE_CI_IMAGE_ID'
+```
+
+6. On the host, before any other script runs, verify the reviewed revision:
 
 ```bash
 git checkout "$(node -e 'process.stdout.write(require("./infra/release-pins.json").revision)')"
@@ -72,15 +84,39 @@ bash scripts/pre-merge-deploy-check.sh
 
 `verify-release-pins.sh` checks the compose file and the host scripts. A mismatch stops you. `pre-merge-deploy-check.sh` lists queued and running deploy workflow runs and aborts if any exist, and it aborts if `deploy.yml` has a push trigger.
 
-Publish the recorded registry reference, then dispatch. The reference looks like `ghcr.io/blaquemaster/fomo-copilot/ingestor@sha256:…`. It is the manifest digest CI computed, not the local image id. This repository does not push the image. The dispatch runs `docker pull` on that reference. If the reference is not in the registry, the pull fails and nothing is replaced. `confirm` must be `promote-tested-digest`. The workflow writes `AUTOBUY_MODE=dry_run` before the container starts. `live` is refused. It stops the screener and the alerter, leaves Postgres running, and starts only that pulled image.
+Dispatch only after the publish check prints `replacement may start`. `confirm` must be `promote-tested-digest`. The workflow pulls that same reference. It writes `AUTOBUY_MODE=dry_run` before the container starts. `live` is refused. It stops the screener and the alerter, leaves Postgres running, and starts only that pulled image.
 
-Before the dispatch, restore the production backup into an isolated Postgres 16 and apply migrations `023` through `031`:
+**Stop: schema drift.** Before those migrations, read production `schema_migrations` with SELECT only and compare it to `infra/db/production-baseline.txt`.
+
+```bash
+bash scripts/halt-on-schema-drift.sh --applied /tmp/production-schema-migrations.txt
+```
+
+If that prints `sequence stopped: schema drift`, do not migrate and do not dispatch.
+
+Then restore the production backup into an isolated Postgres 16 and apply migrations `023` through `031`:
 
 ```bash
 bash scripts/restore-and-upgrade.sh --dump /var/backups/fomo-TIMESTAMP.dump --database fomo_cutover
 ```
 
-A restore failure, a database that already has `031_run_identity`, or an upgrade failure prints `sequence stopped` and exits non-zero. Do not dispatch after that. 6. Record the replacement with `scripts/replace-ingestor.sh` if you run the replacement by hand instead of the dispatch. Pull or load the image first. The script records checkpoint counts, the interruption time, and that wide recovery is disabled. An unrecovered gap stays recorded and blocks readiness. Do not delete checkpoint rows. 7. Start the diagnostic phase only. Do not start paper, alerts, or the qualification clock.
+A restore failure, a database that already has `031_run_identity`, or an upgrade failure prints `sequence stopped` and exits non-zero. Do not dispatch after that.
+
+7. Record the replacement with `scripts/replace-ingestor.sh` if you run the replacement by hand instead of the dispatch. The image must already be the verified pull. The script records checkpoint counts, the interruption time, and that wide recovery is disabled. An unrecovered gap stays recorded and blocks readiness. Do not delete checkpoint rows.
+
+**Stop: probes.** Before diagnostics, install the restricted shadow role and run the live probes against the deployed image. A failed probe stops diagnostics. It does not stop the ingestor.
+
+```bash
+bash scripts/preflight.sh --live \
+  --accepted /etc/fomo/preflight-accepted.json \
+  --project fomo-copilot \
+  --env-file /opt/fomo-copilot/.env \
+  --file infra/docker-compose.yml \
+  --service ingestor \
+  --shadow-user fomo_shadow
+```
+
+8. Start the diagnostic phase only after that probe passes. Do not start paper, alerts, or the qualification clock.
 
 ## Migrations
 
@@ -136,9 +172,9 @@ Candidate sources, none selected. PumpSwap is the destination of a Pump graduati
 - `launchlab`: program `LanMV9sAd7wArD4vJFi2qDdfnVhFxYSUg6eADduJ3uj`, graduation `launchlab_migrate`.
 - `meteora`: program `dbcij3LWUppWqq96dh6gJWwBifmcGfLSB5D4DuSMaqN`, graduation `dbc_migration_damm_v2`, destination `cpamdpZCGKUy5JxQXB4dcpGPiikHawvSWAd6mEn1sGG`.
 
-Each candidate needs at least 300 unique reference events in every critical class, including graduation or migration; at least 300 independently referenced wallet buys and 300 sells for the frozen cohort, counted across venues; and completed reference scans of the whole window on the 6-hour interval. The one-sided 95 percent exact-binomial lower limit on recall has to be at least 99 percent. 300 successes in 300 trials is about 0.99006. The tie-breaker runs only among full passers and uses the larger recall denominator. A tie, or no passer, is `insufficient_evidence`. Do not loosen a bar.
+Each candidate needs at least 300 unique reference events in every critical class, including graduation or migration; at least 300 independently referenced wallet buys and 300 sells for the frozen cohort, counted across venues; and completed reference scans of the whole window on the 6-hour interval. The recall rule is only the exact-binomial one-sided 95 percent lower limit, and it has to be at least 99 percent. 300 of 300 is about 0.99006. 999 of 1000 is about 0.995265 and passes. 299 of 300 fails. Gap coverage and integrity are separate checks, named `gap` and `integrity`. A recall miss is `recall_below_99`. A tie among passers is `tie`. Do not treat every miss as one insufficient-evidence result. The tie-breaker runs only among venues that pass the recall bar and the gap check. Do not loosen a bar.
 
-Hard ceilings, rejected by config if set higher: 50,000 Helius credits for the window, 2,000 Jupiter quotes a day, 20,000 public-RPC calls a day, and 24 Jupiter quotes a minute without a key. Hitting one stops the diagnostic.
+Hard ceilings, rejected by config if set higher: 50,000 Helius credits, 2,000 Jupiter quotes a day, 20,000 public-RPC calls a day, and the $25 ceiling. The 50,000 credits are diagnostic additions only. They do not include the ingestor's existing stream. The weights are the documented Helius method costs: 1 credit for `getSlot`, `getTransaction`, and `getSignaturesForAddress`, 1 credit for a parsed event, and 10 credits plus 1 per scanned page for a parsed-events scan. Hitting a ceiling stops reference scans, reconciliation, and quote collection. It does not stop the existing ingestor. The counters are rows in Postgres, shared by every diagnostic process, and they remain after a restart. A denied retry does not add another unit.
 
 ## External APIs and the cost ceiling
 
@@ -166,7 +202,7 @@ A venue is judged only on operations:
 
 Returns, winners, and wallet outperformance are not criteria. If two venues meet every operational bar, the tie-breaker is the larger completed reference-scan denominator. If that is also tied, stop and ask. Do not pick a winner from returns.
 
-A venue that misses the 300-event or 99 percent recall bar is not a passer. No passer means insufficient evidence. Do not loosen a bar and do not extend the window.
+A recall miss, a gap miss, and an integrity miss are different stops. Do not loosen a bar and do not extend the window.
 
 Stop the diagnostic if paper or alerts would turn on, if wide recovery would be enabled, if a prohibited write succeeds, or if a budget ceiling is hit. The incremental-cost ceiling for this approval is $25.
 

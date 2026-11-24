@@ -322,6 +322,21 @@ describe("preflight checker", () => {
   });
 });
 
+describe("schema drift halt", () => {
+  it("accepts the production baseline and stops when an id is missing", () => {
+    const script = path.join(root, "scripts/halt-on-schema-drift.sh");
+    const baseline = path.join(root, "infra/db/production-baseline.txt");
+    expect(execFileSync("bash", [script, "--applied", baseline], { encoding: "utf8" })).toContain(
+      "matches the production baseline",
+    );
+    expect(() =>
+      execFileSync("bash", [script, "--applied", path.join(root, "package.json")], {
+        encoding: "utf8",
+      }),
+    ).toThrow(/schema drift/);
+  });
+});
+
 describe("release pins and deploy hold", () => {
   it("accepts a clear deploy queue and rejects a busy one", () => {
     const script = path.join(root, "scripts/pre-merge-deploy-check.sh");

@@ -440,6 +440,64 @@ compose exec -T postgres pg_dump -U fomo -d fomo_pre_upgrade -Fc >"$pre_dump"
 bash scripts/restore-and-upgrade.sh --dump "$pre_dump" --database fomo_cutover --project fomo-ci --env-file "$app_env"
 rm -f "$pre_dump"
 
+echo "schema drift halts before migrations"
+bash scripts/halt-on-schema-drift.sh --applied infra/db/production-baseline.txt
+drifted=$(mktemp)
+grep -v '^022_' infra/db/production-baseline.txt >"$drifted"
+set +e
+drift_log=$(bash scripts/halt-on-schema-drift.sh --applied "$drifted" 2>&1)
+drift_code=$?
+set -e
+test "$drift_code" -ne 0
+echo "$drift_log" | grep -q "schema drift"
+rm -f "$drifted"
+
+echo "publish the image to a local registry and verify the pulled id"
+docker rm -f fomo-ci-registry >/dev/null 2>&1 || true
+docker run -d --name fomo-ci-registry -p 127.0.0.1:5000:5000 registry:2
+for _ in $(seq 1 30); do
+  if curl -fsS http://127.0.0.1:5000/v2/ >/dev/null; then
+    break
+  fi
+  sleep 1
+done
+curl -fsS http://127.0.0.1:5000/v2/ >/dev/null
+docker tag fomo-ci-ingestor 127.0.0.1:5000/fomo-ingestor:tested
+docker push 127.0.0.1:5000/fomo-ingestor:tested
+published=$(curl -fsSI \
+  -H "Accept: application/vnd.oci.image.index.v1+json, application/vnd.docker.distribution.manifest.list.v2+json, application/vnd.docker.distribution.manifest.v2+json" \
+  http://127.0.0.1:5000/v2/fomo-ingestor/manifests/tested | awk 'tolower($1)=="docker-content-digest:" { print $2 }' | tr -d '\r')
+test -n "$published"
+expected_id=$(docker image inspect --format '{{.Id}}' fomo-ci-ingestor)
+verify_log=$(bash scripts/verify-published-image.sh \
+  --reference "127.0.0.1:5000/fomo-ingestor@${published}" \
+  --expected-image-id "$expected_id")
+echo "$verify_log" | grep -q "platform=linux/amd64"
+echo "$verify_log" | grep -q "replacement may start"
+docker tag node:22.23.4-bookworm-slim@sha256:5ec23b7c622b00547753bc6ffd78085dd868a68aeb41c8e0a1418f033e13d96d \
+  127.0.0.1:5000/fomo-ingestor:rebuilt
+docker push 127.0.0.1:5000/fomo-ingestor:rebuilt
+rebuilt=$(curl -fsSI \
+  -H "Accept: application/vnd.oci.image.index.v1+json, application/vnd.docker.distribution.manifest.list.v2+json, application/vnd.docker.distribution.manifest.v2+json" \
+  http://127.0.0.1:5000/v2/fomo-ingestor/manifests/rebuilt | awk 'tolower($1)=="docker-content-digest:" { print $2 }' | tr -d '\r')
+set +e
+rebuild_log=$(bash scripts/verify-published-image.sh \
+  --reference "127.0.0.1:5000/fomo-ingestor@${rebuilt}" \
+  --expected-image-id "$expected_id" 2>&1)
+rebuild_code=$?
+set -e
+test "$rebuild_code" -ne 0
+echo "$rebuild_log" | grep -q "must not be substituted"
+set +e
+missing_log=$(bash scripts/verify-published-image.sh \
+  --reference "127.0.0.1:5000/fomo-ingestor@sha256:0000000000000000000000000000000000000000000000000000000000000000" \
+  --expected-image-id "$expected_id" 2>&1)
+missing_code=$?
+set -e
+test "$missing_code" -ne 0
+echo "$missing_log" | grep -q "pull failed"
+docker rm -f fomo-ci-registry >/dev/null 2>&1 || true
+
 echo "abort when a deploy is already queued"
 bash scripts/pre-merge-deploy-check.sh
 bash scripts/verify-release-pins.sh

@@ -8,6 +8,8 @@
     "scripts/install-rollback-controller.sh": "fccf8188be7fb52837524bd5f2dbd6a512c4ee9e665665f9b5fbb1a156c94fc7",
     "scripts/preflight.sh": "62c568620a836b1994be156c4cd4a6537d8cdb0eaa2f266630c87f9552885b99",
     "scripts/restore-and-upgrade.sh": "c4be60f28b006624ff886045b13d14370df2a3a0faf61f7270af624b36e94e87",
-    "scripts/pre-merge-deploy-check.sh": "c3ce890098c735bb13a27afd3f5cfad601a47f3d5b2ec83e87a35d8050c821a8"
+    "scripts/pre-merge-deploy-check.sh": "c3ce890098c735bb13a27afd3f5cfad601a47f3d5b2ec83e87a35d8050c821a8",
+    "scripts/halt-on-schema-drift.sh": "a4496a016214f3f44382cb48a1b4ab4dbf0beae2f92d47a0f800d8d1fdbc76c9",
+    "scripts/verify-published-image.sh": "6980806fa6a3b959ef43d7cbe2fdc86b9b2c194e7a3c173a20f8691cef19cc64"
   }
 }
