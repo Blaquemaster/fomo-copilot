@@ -52,7 +52,7 @@ before=$(compose exec -T postgres psql -U fomo -d fomo -At -c "select count(*) f
 interrupted_at=$(date -u +%Y-%m-%dT%H:%M:%SZ)
 
 if [[ "$oneshot" == "1" ]]; then
-  compose run --rm --no-deps --no-build --entrypoint node ingestor \
+  compose run --rm --no-deps --entrypoint node ingestor \
     apps/ingestor/dist/main.js --spot-check
 else
   compose up -d --no-deps --no-build ingestor

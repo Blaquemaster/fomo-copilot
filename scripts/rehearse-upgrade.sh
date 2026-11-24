@@ -21,24 +21,22 @@ echo "synthetic main migration table"
 psql_admin -c "drop database if exists fomo_rehearse"
 psql_admin -c "drop database if exists fomo_restore"
 psql_admin -c "create database fomo_rehearse"
-compose exec -T postgres psql -v ON_ERROR_STOP=1 -U fomo -d fomo_rehearse <<'SQL'
-create table schema_migrations (id text primary key);
-SQL
-while read -r id; do
-  compose exec -T postgres psql -v ON_ERROR_STOP=1 -U fomo -d fomo_rehearse \
-    -c "insert into schema_migrations (id) values ('$id')"
-done < <(grep -v '^#' infra/db/production-baseline.txt | grep -v '^$')
+{
+  echo "create table schema_migrations (id text primary key);"
+  grep -v '^#' infra/db/production-baseline.txt | grep -v '^$' | while read -r id; do
+    echo "insert into schema_migrations (id) values ('$id');"
+  done
+} | compose exec -T postgres psql -v ON_ERROR_STOP=1 -U fomo -d fomo_rehearse
 
 applied=$(mktemp)
 compose exec -T postgres psql -U fomo -d fomo_rehearse -At -c "select id from schema_migrations order by id" >"$applied"
 report=$(node scripts/migration-inventory.mjs --release-source packages/core/src/db/ingest.ts --applied "$applied")
 echo "$report"
 echo "$report" | grep -q '"timeoutRollsBack":"whole_batch"'
-echo "$report" | grep -q '023_scale_booking'
-echo "$report" | grep -q '031_run_identity'
+echo "$report" | grep -q '"pending":\["023_scale_booking"'
 
 password=$(grep '^POSTGRES_PASSWORD=' "$app_env" | cut -d= -f2-)
-compose --profile paper run --rm --no-deps --no-build \
+compose --profile paper run --rm --no-deps \
   -e "DATABASE_URL=postgres://fomo:${password}@postgres:5432/fomo_rehearse" \
   --entrypoint node screener \
   --input-type=module -e 'import { createPool, migrate } from "@fomo/core"; const pool = createPool(process.env.DATABASE_URL); await migrate(pool); await pool.end();'
