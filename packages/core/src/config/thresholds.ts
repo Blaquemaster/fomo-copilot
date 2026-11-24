@@ -34,6 +34,8 @@ export const thresholdsSchema = z.strictObject({
       freeze_authority_active: z.boolean(),
       transfer_fee_bps_above: bps,
       exit_quote_impact_pct_above: percent,
+      entry_impact_pct_above: percent.default(10),
+      round_trip_impact_pct_above: percent.default(10),
       top10_holders_pct_above: percent.default(50),
       sniper_bundle_pct_above: percent.default(60),
       required_source_error: z.literal("WATCH"),
@@ -49,11 +51,13 @@ export const thresholdsSchema = z.strictObject({
         trench_min_tracked_buyers: z.number().int().nonnegative().max(1_000).default(1),
         wallet_max_mints_per_day: z.number().int().positive().max(1_000_000).default(40),
         wallet_buy_fresh_minutes: z.number().positive().max(10_080).default(60),
+        max_size_pool_share: z.number().positive().max(1).default(0.01),
       })
       .default({
         trench_min_tracked_buyers: 1,
         wallet_max_mints_per_day: 40,
         wallet_buy_fresh_minutes: 60,
+        max_size_pool_share: 0.01,
       }),
   }),
   alerts: z.strictObject({
@@ -68,7 +72,12 @@ export const thresholdsSchema = z.strictObject({
   }),
   paper: z.strictObject({
     assumed_slippage_bps: bps,
-    assumed_fee_bps: bps,
+    fee_schedule: z
+      .enum(["solana_lowest_fee", "solana_other", "fixed_usd"])
+      .default("solana_lowest_fee"),
+    tx_cost_usd: z.number().nonnegative().max(1000).default(0.95),
+    other_min_usd: z.number().nonnegative().max(1000).default(0.95),
+    other_rate: z.number().nonnegative().max(1).default(0.005),
   }),
 });
 

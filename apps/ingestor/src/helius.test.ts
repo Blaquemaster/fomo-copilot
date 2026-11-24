@@ -38,7 +38,67 @@ describe("parsed events scan", () => {
       matches: [{ signature: "sig", slot: 50 }],
       creditsCharged: 12,
       complete: true,
+      requestsSent: 1,
+      scannedTransactions: 1495,
+      exceeded: false,
     });
+  });
+
+  it("refuses a diagnostic scan whose budget could exceed the 10,000-transaction reservation", async () => {
+    let fetches = 0;
+    const result = await scanInstructionHistory({
+      apiKey: "test-key",
+      programId: "cpamdpZCGKUy5JxQXB4dcpGPiikHawvSWAd6mEn1sGG",
+      instructionNames: ["initialize_pool"],
+      slotGt: 0,
+      slotLte: null,
+      maxScannedTransactions: 20_000,
+      gate: async () => {
+        fetches += 1;
+        return true;
+      },
+      fetchImpl: (() => {
+        fetches += 1;
+        return Promise.resolve(new Response("{}", { status: 200 }));
+      }) as typeof fetch,
+    });
+    expect(fetches).toBe(0);
+    expect(result.requestsSent).toBe(0);
+    expect(result.exceeded).toBe(true);
+  });
+
+  it("does not send another page when the response scans more than the reserved budget", async () => {
+    let fetches = 0;
+    const result = await scanInstructionHistory({
+      apiKey: "test-key",
+      programId: "cpamdpZCGKUy5JxQXB4dcpGPiikHawvSWAd6mEn1sGG",
+      instructionNames: ["initialize_pool"],
+      slotGt: 0,
+      slotLte: null,
+      maxPages: 2,
+      maxScannedTransactions: 10_000,
+      gate: async () => true,
+      fetchImpl: ((_url: string, init?: RequestInit) => {
+        fetches += 1;
+        const body = JSON.parse(String(init?.body)) as {
+          budget: { maxScannedTransactions: number };
+        };
+        expect(body.budget.maxScannedTransactions).toBe(10_000);
+        return Promise.resolve(
+          new Response(
+            JSON.stringify({
+              data: [],
+              paginationToken: "next",
+              scan: { scannedTransactions: 20_000, creditsCharged: 30, stoppedOn: "budget" },
+            }),
+            { status: 200, headers: { "content-type": "application/json" } },
+          ),
+        );
+      }) as typeof fetch,
+    });
+    expect(fetches).toBe(1);
+    expect(result.exceeded).toBe(true);
+    expect(result.requestsSent).toBe(1);
   });
 
   it("does not put the api key in an HTTP error", async () => {

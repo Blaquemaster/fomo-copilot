@@ -1,4 +1,4 @@
-import { encodeBase58, rpcCredits } from "@fomo/core";
+import { encodeBase58, readTokenExtensions, rpcCredits } from "@fomo/core";
 
 function readU64(data: Uint8Array, offset: number): bigint {
   let value = 0n;
@@ -463,6 +463,7 @@ export async function loadMintAuthorities(input: {
     mintAuthorityActive: boolean;
     freezeAuthorityActive: boolean;
     supply: bigint;
+    tokenExtension: "classic" | "clear" | "dangerous" | "unknown";
   }>;
   credits: number;
 }> {
@@ -491,8 +492,9 @@ export async function loadMintAuthorities(input: {
       };
       const encoded = body.result?.value?.data?.[0];
       if (!encoded) continue;
-      const parsed = parseMintAccount(Buffer.from(encoded, "base64"));
-      if (parsed) rows.push({ mint, ...parsed });
+      const bytes = Buffer.from(encoded, "base64");
+      const parsed = parseMintAccount(bytes);
+      if (parsed) rows.push({ mint, ...parsed, tokenExtension: readTokenExtensions(bytes).status });
     } catch {
       // A missed account stays WATCH until the next pass.
     }

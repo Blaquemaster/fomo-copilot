@@ -14,7 +14,12 @@ import {
   programsForVenues,
   subscribedPrograms,
   enabledVenues,
+  blockLagAlert,
+  serviceEnabled,
+  reconcileWideGap,
+  fetchSignaturePage,
   venueForProgram,
+  venueStaleAlert,
   pumpTradeRetention,
   subscriptionNamesForProgram,
   allowanceCredits,
@@ -164,7 +169,7 @@ export async function runIngestLoop(input: {
     input.env.HELIUS_API_KEY,
     input.env.TELEGRAM_BOT_TOKEN,
     input.env.POSTGRES_PASSWORD,
-  ];
+  ].filter((value): value is string => Boolean(value));
   let attempt = 0;
   let outageAlerted = false;
   const choice = { method: selectWsMethod(input.env.HELIUS_PLAN, input.env.HELIUS_WS_MODE) };
@@ -196,6 +201,10 @@ export async function runIngestLoop(input: {
     heapMs > 0
       ? setInterval(() => {
           void recordHeapSample(input.repo, input.logger);
+          for (const [venue, last] of venueLastEvent) {
+            const stale = venueStaleAlert({ venue, lastEventAt: last, now: new Date() });
+            if (stale) input.logger.warn({ venue, metric: "venue_stale" }, stale);
+          }
         }, heapMs)
       : null;
   input.signal.addEventListener(
@@ -941,7 +950,7 @@ async function persistDecoded(
   },
   decoded: { observations: Observation[]; failures: DecodeFailure[] },
   byteLength: number,
-  source: "stream" | "audit",
+  source: "stream" | "backfill" | "audit",
 ): Promise<number> {
   for (const failure of decoded.failures) {
     try {
@@ -962,7 +971,16 @@ async function persistDecoded(
       if (!kept) continue;
       stored += 1;
       const venue = venueForProgram(observation.programId);
-      if (venue !== null) input.usage?.add({ venueStored: { [venue]: 1 } });
+      if (venue !== null) {
+        input.usage?.add({ venueStored: { [venue]: 1 } });
+        venueLastEvent.set(venue, receivedAt);
+        const lag = blockLagAlert({
+          venue,
+          blockTimeMs: observation.blockTimeMs,
+          recordedAt: receivedAt,
+        });
+        if (lag && source === "stream") input.logger.warn({ venue, metric: "block_lag" }, lag);
+      }
     } catch (error) {
       input.logger.error({ err: error }, "failed to store ingest event");
       input.overflow?.note(observation.programId, observation.slot);
@@ -1222,7 +1240,7 @@ export async function backfillProgram(input: {
         { repo: input.repo, logger: input.logger, seen },
         decoded,
         0,
-        "stream",
+        "backfill",
       );
     } catch (error) {
       errored = true;
@@ -1380,7 +1398,7 @@ async function backfillByScan(input: {
         { repo: input.repo, logger: input.logger, seen: input.seen },
         decoded,
         0,
-        "stream",
+        "backfill",
       );
     } catch (error) {
       errored = true;
@@ -1770,14 +1788,22 @@ async function callRpc(
     return input.deps.callRpc(method, params);
   }
   if (method === "getTransaction" && typeof params[0] === "string") {
-    return getTransaction(input.env.HELIUS_API_KEY, params[0], input.meter);
+    return getTransaction(
+      input.env.HELIUS_API_KEY,
+      params[0],
+      input.meter,
+      input.env.HELIUS_HTTP_BASE,
+    );
   }
-  if (method === "getSlot") return getSlot(input.env.HELIUS_API_KEY, input.meter);
+  if (method === "getSlot") {
+    return getSlot(input.env.HELIUS_API_KEY, input.meter, input.env.HELIUS_HTTP_BASE);
+  }
   return heliusRpc({
     apiKey: input.env.HELIUS_API_KEY,
     method,
     params,
     meter: input.meter,
+    baseUrl: input.env.HELIUS_HTTP_BASE,
   });
 }
 
@@ -1805,8 +1831,8 @@ async function notify(
 ): Promise<void> {
   try {
     await sendTelegramMessage({
-      token: input.env.TELEGRAM_BOT_TOKEN,
-      chatId: input.env.TELEGRAM_ADMIN_CHAT_ID,
+      token: input.env.TELEGRAM_BOT_TOKEN ?? "",
+      chatId: input.env.TELEGRAM_ADMIN_CHAT_ID ?? "",
       text: truncateTelegramText(redactString(text, secrets)),
     });
   } catch (error) {
@@ -1826,7 +1852,11 @@ function openSocket(input: {
   choice: { method: ResolvedWsMethod };
   deps?: IngestDeps;
 }): SocketLike {
-  const url = websocketUrlSafe(input.env.HELIUS_API_KEY, input.choice.method);
+  const url = websocketUrlSafe(
+    input.env.HELIUS_API_KEY,
+    input.choice.method,
+    input.env.HELIUS_WS_BASE,
+  );
   if (input.deps?.openSocket) return input.deps.openSocket(url);
   return wrapWs(new WebSocket(url));
 }
@@ -1882,7 +1912,8 @@ function rpcReply(message: unknown, id: number): { matched: boolean; slot: numbe
   return { matched: false, slot: null };
 }
 
-function websocketUrlSafe(apiKey: string, method: ResolvedWsMethod): string {
+function websocketUrlSafe(apiKey: string, method: ResolvedWsMethod, base?: string): string {
+  if (base) return `${base.replace(/\/$/, "")}/?api-key=${encodeURIComponent(apiKey)}`;
   const host = method === "parsed" ? "beta.helius-rpc.com" : "mainnet.helius-rpc.com";
   return `wss://${host}/?api-key=${encodeURIComponent(apiKey)}`;
 }
@@ -1909,6 +1940,7 @@ function sleep(ms: number, signal: AbortSignal): Promise<void> {
 }
 
 const notedNotifications = new BoundedSet(NOTED_NOTIFICATIONS);
+const venueLastEvent = new Map<string, Date>();
 
 function noteIgnored(logger: Logger, method: string): void {
   if (!notedNotifications.add(method)) return;
@@ -1933,7 +1965,7 @@ async function storeObservation(
   observation: Observation,
   byteLength: number,
   receivedAt: Date,
-  source: "stream" | "audit",
+  source: "stream" | "backfill" | "audit",
 ): Promise<boolean> {
   const pumpish = isPumpTradeKind(observation.kind) || isPumpLifecycleKind(observation.kind);
   const coin = pumpish && observation.mint ? await input.repo.pumpCoin(observation.mint) : null;
@@ -2039,7 +2071,64 @@ async function recoverOverflow(input: {
     const tooWide = span.toSlot - span.fromSlot > BACKFILL_MAX_SLOT_SPAN;
     let recovered = 0;
     let fetched = 0;
+    let pagesFetched = 0;
+    let recoveryCompletedAt: Date | null = null;
     let failed = tooWide;
+    if (tooWide && serviceEnabled(input.env.INGEST_WIDE_RECOVERY)) {
+      try {
+        const now = new Date();
+        const rawBySignature = new Map<string, unknown>();
+        const reconciled = await reconcileWideGap({
+          programId: span.programId,
+          fromSlot: span.fromSlot,
+          toSlot: span.toSlot,
+          now,
+          pageSize: 100,
+          alreadyStored: new Set(),
+          fetchPage: (before) =>
+            fetchSignaturePage({
+              programId: span.programId,
+              before,
+              limit: 100,
+            }),
+          fetchTransaction: async (signature) => {
+            const result = await callRpc(
+              { env: input.env, deps: input.deps, meter: makeMeter(input.repo, input.logger) },
+              "getTransaction",
+              [signature],
+            );
+            if (result == null) return { ok: false };
+            rawBySignature.set(signature, result);
+            return { ok: true, blockTime: null };
+          },
+          persist: async (event) => {
+            const raw = rawBySignature.get(event.signature);
+            if (raw === undefined) throw new Error("missing transaction");
+            const decoded = decodeRpcTransaction(raw, event.signature);
+            if (decoded.observations.length === 0) throw new Error("decode");
+            await persistDecoded(
+              { repo: input.repo, logger: input.logger, seen: input.seen },
+              decoded,
+              0,
+              "backfill",
+            );
+          },
+        });
+        for (const checkpoint of reconciled.checkpoints) {
+          await input.repo.insertRecoveryCheckpoint({
+            ...checkpoint,
+            recoveryCompletedAt: reconciled.recoveryCompletedAt,
+          });
+        }
+        pagesFetched = reconciled.checkpoints.length;
+        recovered = reconciled.stored.length;
+        failed = !reconciled.recoveryComplete;
+        recoveryCompletedAt = reconciled.recoveryCompletedAt;
+      } catch (error) {
+        failed = true;
+        input.logger.warn({ err: error, programId: span.programId }, "wide recovery failed");
+      }
+    }
     if (!tooWide && scanNamesForProgram(span.programId).length > 0) {
       try {
         const scan = input.deps?.scanHistory ?? scanInstructionHistory;
@@ -2074,7 +2163,7 @@ async function recoverOverflow(input: {
             { repo: input.repo, logger: input.logger, seen: input.seen },
             decodeRpcTransaction(result, match.signature),
             0,
-            "stream",
+            "backfill",
           );
         }
         failed = !scanned.complete;
@@ -2100,7 +2189,7 @@ async function recoverOverflow(input: {
       gapSeconds: null,
       gapSlots: span.toSlot - span.fromSlot,
       eventsRecovered: recovered,
-      pagesFetched: 0,
+      pagesFetched,
       signaturesSeen: span.frames,
       transactionsFetched: fetched,
       reachedCheckpoint: !failed,
@@ -2109,6 +2198,7 @@ async function recoverOverflow(input: {
       gapFromSlot: span.fromSlot,
       gapToSlot: span.toSlot,
       reason: "queue_overflow",
+      recoveryCompletedAt,
     });
   }
 }

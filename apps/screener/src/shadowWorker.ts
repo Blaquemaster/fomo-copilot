@@ -1,0 +1,95 @@
+import {
+  createPool,
+  serviceEnabled,
+  serviceStartDecision,
+  shadowAcceptance,
+  shadowDependency,
+  startApp,
+} from "@fomo/core";
+
+const POLL_MS = 60_000;
+
+/**
+ * Collection-only shadow. Compose does not start it. The process exits unless
+ * SHADOW_ENABLED is the exact word true. Outcome quotes are executed by the
+ * outcomes process, not by this one. Enabling this runner without
+ * OUTCOMES_ENABLED is a dependency failure. This file does not send Telegram
+ * and does not insert a trade intent. Returns are not read and not logged.
+ */
+await startApp({
+  app: "shadow",
+  run: async ({ env, logger }) => {
+    const start = serviceStartDecision({
+      paperFlag: env.PAPER_ENABLED,
+      alertsFlag: env.ALERTS_ENABLED,
+      outcomesFlag: env.OUTCOMES_ENABLED,
+      shadowFlag: env.SHADOW_ENABLED,
+      telegramToken: env.TELEGRAM_BOT_TOKEN,
+    });
+    if (!start.shadow) {
+      logger.warn(
+        { reason: start.shadowBlockedReason ?? "disabled" },
+        "shadow runner stayed stopped",
+      );
+      return;
+    }
+    if (!serviceEnabled(env.SHADOW_ENABLED)) {
+      logger.warn(
+        { shadowEnabled: env.SHADOW_ENABLED ?? "unset" },
+        "shadow runner stayed stopped: SHADOW_ENABLED is not true",
+      );
+      return;
+    }
+    const dependency = shadowDependency({
+      shadowEnabled: true,
+      outcomesEnabled: serviceEnabled(env.OUTCOMES_ENABLED),
+    });
+    if (!dependency.ok) {
+      logger.error({ reason: dependency.reason }, "shadow runner dependency failed");
+      return;
+    }
+    const pool = createPool(env.DATABASE_URL);
+    try {
+      for (;;) {
+        const trades = await pool.query<{ n: string }>(
+          "select count(*)::text as n from autobuy_intent",
+        );
+        const observations = await pool.query<{ n: string }>(
+          "select count(*)::text as n from phasec_observation where status <> 'pending'",
+        );
+        const report = shadowAcceptance({
+          tradesCreated: Number(trades.rows[0]?.n ?? 0),
+          telegramSends: 0,
+          autoEnabled: serviceEnabled(env.PAPER_ENABLED) || serviceEnabled(env.ALERTS_ENABLED),
+          unintendedProdWrites: 0,
+          recall: [],
+          dispatchWithin60s: 0,
+          dispatchAttempts: 0,
+          silentDrops: 0,
+          peakRequests: 0,
+          peakCapacity: 10,
+          unresolvedByArm: [],
+          completeMatched: 0,
+          projectedWalletPerDay: 0,
+          cashReconciled: false,
+          timelyRecall: [],
+          eventualRecall: [],
+          healthyPeriodCoverage: 0,
+          wholeRunAvailability: 0,
+          matchedGatePassing: 0,
+          capRelaxed: false,
+          integrityFailure: false,
+          spendLimitHit: false,
+          unsafeOperation: false,
+          servicesRunning: serviceEnabled(env.OUTCOMES_ENABLED),
+          observations: Number(observations.rows[0]?.n ?? 0),
+          recallRuns: 0,
+        });
+        logger.info({ status: report.status, pass: report.pass }, "shadow acceptance");
+        await new Promise((resolve) => setTimeout(resolve, POLL_MS));
+      }
+    } finally {
+      await pool.end();
+    }
+  },
+});

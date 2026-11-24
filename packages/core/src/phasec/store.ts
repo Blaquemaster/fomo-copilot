@@ -1,4 +1,11 @@
-import type { PassCoin, PassPosition } from "./pass.js";
+import type { CandidateLogRow } from "./outcomes.js";
+import type {
+  PassCoin,
+  PassPosition,
+  PlannedQuoteFailure,
+  PlannedScale,
+  PlannedStreak,
+} from "./pass.js";
 import type { ResolvedReturn } from "./paper.js";
 import type { Stage } from "./protocol.js";
 import type { TierWallet } from "./risk.js";
@@ -8,9 +15,15 @@ export interface WalletSignalRules {
   maxMintsPerDay: number;
   /** A tracked buy counts only if the wallet is still a net buyer and bought this recently. */
   freshMinutes: number;
+  /** Wallets selected after this time are not on the frozen list. Null uses every active row. */
+  freezeAt?: Date | null;
 }
 
-export const DEFAULT_WALLET_SIGNAL: WalletSignalRules = { maxMintsPerDay: 40, freshMinutes: 60 };
+export const DEFAULT_WALLET_SIGNAL: WalletSignalRules = {
+  maxMintsPerDay: 40,
+  freshMinutes: 60,
+  freezeAt: null,
+};
 
 export interface PhaseCStore {
   protocol(): Promise<{ fingerprint: string; body: string; registeredAt: Date } | null>;
@@ -39,6 +52,7 @@ export interface PhaseCStore {
     sniperUnmeasured?: boolean;
     alertAt: Date;
     entryAfter: Date;
+    alertPriceUsd?: number | null;
   }): Promise<string>;
   markDelivered(ids: readonly string[], at: Date): Promise<void>;
   openPosition(
@@ -53,7 +67,47 @@ export interface PhaseCStore {
     at: Date,
   ): Promise<void>;
   markSellWarned(ids: readonly string[]): Promise<void>;
-  markScaled(ids: readonly string[], at: Date): Promise<void>;
+  markScaled(rows: readonly PlannedScale[], at: Date): Promise<void>;
+  saveQuoteFailures(rows: readonly PlannedQuoteFailure[], at: Date): Promise<void>;
+  insertCandidates(rows: readonly CandidateLogRow[], at: Date): Promise<void>;
+  recordWalletList(
+    listHash: string,
+    walletCount: number,
+    at: Date,
+    freezeAt: Date | null,
+  ): Promise<void>;
+  dueObservations(
+    now: Date,
+    limit: number,
+  ): Promise<
+    Array<{ mint: string; label: string; role: string; dueAt: Date; entryOutAmount: string | null }>
+  >;
+  observationBacklog(now: Date): Promise<{ due: number; pending: number }>;
+  claimObservation(mint: string, label: string, now: Date): Promise<string | null>;
+  saveObservation(input: {
+    mint: string;
+    label: string;
+    observedAt: Date;
+    late: boolean;
+    priceUsd: number | null;
+    status: "priced" | "missing" | "late";
+    outAmount?: string | null;
+    claimToken: string;
+  }): Promise<boolean>;
+  dueCandidates(
+    now: Date,
+    limit: number,
+  ): Promise<Array<{ id: string; mint: string; alertPriceUsd: number | null }>>;
+  saveCandidateOutcome(
+    id: string,
+    status: "priced" | "missing",
+    priceUsd: number | null,
+    net: number | null,
+  ): Promise<void>;
+  saveNoRouteStreaks(rows: readonly PlannedStreak[]): Promise<void>;
+  openPools(
+    mints: readonly string[],
+  ): Promise<Array<{ mint: string; pool: string; poolType: string | null }>>;
   saveMintCache(
     rows: readonly {
       mint: string;
@@ -63,6 +117,7 @@ export interface PhaseCStore {
       sniperPct: number | null;
       curveLiquidityUsd: number | null;
       exitImpactPct: number | null;
+      entryImpactPct?: number | null;
     }[],
     at: Date,
   ): Promise<void>;
@@ -107,13 +162,13 @@ export interface PhaseCStore {
   closePosition(input: {
     id: string;
     quote: number;
-    net: number;
-    net2x: number;
+    net: number | null;
+    net2x: number | null;
     reason: string;
     impactPct: number | null;
     feeUsd: number | null;
     failure: string | null;
-    fomoFeeUsd?: number;
+    fomoFeeUsd?: number | null;
     quoteSource?: string | null;
     at: Date;
   }): Promise<void>;

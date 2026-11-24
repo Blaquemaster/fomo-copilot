@@ -1,6 +1,14 @@
 import pg from "pg";
 
-import type { PassCoin, PassPosition } from "../phasec/pass.js";
+import { scheduleObservations, type CandidateLogRow } from "../phasec/outcomes.js";
+import { enrollmentId } from "../phasec/review3.js";
+import type {
+  PassCoin,
+  PassPosition,
+  PlannedQuoteFailure,
+  PlannedScale,
+  PlannedStreak,
+} from "../phasec/pass.js";
 import type { ResolvedReturn } from "../phasec/paper.js";
 import type { PaperArm, Stage } from "../phasec/protocol.js";
 import {
@@ -44,6 +52,12 @@ export class PhaseCRepository implements PhaseCStore {
        on conflict (id) do nothing`,
       [fingerprint, body, at.toISOString()],
     );
+    await this.pool.query(
+      `insert into phasec_config_history (fingerprint, body, recorded_at)
+       values ($1, $2, $3)
+       on conflict (fingerprint) do nothing`,
+      [fingerprint, body, at.toISOString()],
+    );
   }
 
   async coins(
@@ -65,6 +79,7 @@ export class PhaseCRepository implements PhaseCStore {
       freeze_authority_active: boolean | null;
       liquidity_usd: number | null;
       exit_impact_pct: number | null;
+      entry_impact_pct: number | null;
       bonding_curve: string | null;
       pool_type: string | null;
       created_slot: string | null;
@@ -87,11 +102,15 @@ export class PhaseCRepository implements PhaseCStore {
                 tip.slot - (rate.per_sec * 60 * $3::float)::bigint as fresh_from
          from tip, rate
        ),
-       -- Tracked wallets that are selective. A wallet that touched more distinct mints than the
-       -- cap in the last day is a flip bot, and its buys say nothing about a coin.
+       -- 24h activity counts every fill, including unpriced and unclassified rows.
+       -- 0.002 SOL is the strategy minimum buy. It does not drop sells.
+       -- Wrapped SOL rows stay in wallet_fill as the payment leg; they are not the coin.
        selective as (
-         select f.wallet from wallet_fill f, win
+         select f.wallet from wallet_fill f
+         join tracked_wallet t on t.address = f.wallet and t.active
+         cross join win
          where f.slot > win.day_from
+           and ($4::timestamptz is null or t.selected_at <= $4::timestamptz)
          group by f.wallet
          having count(distinct f.mint) <= $2
        ),
@@ -100,16 +119,28 @@ export class PhaseCRepository implements PhaseCStore {
        live_signal as (
          select x.mint, count(*)::int as tracked_buyers from (
            select f.mint, f.wallet,
-             count(*) filter (where f.side in ('buy', 'swap')) as buys,
-             count(*) filter (where f.side = 'sell') as sells,
+             coalesce(sum(f.token_amount), 0) as net_tokens,
              max(f.slot) filter (where f.side in ('buy', 'swap')) as last_buy
            from wallet_fill f
            join selective s on s.wallet = f.wallet
            cross join win
            where f.slot > win.day_from
+             and f.mint <> 'So11111111111111111111111111111111111111112'
+             and f.token_amount is not null
+             and (
+               f.side = 'sell'
+               or (f.sol_amount is not null and abs(f.sol_amount) >= 0.002 and f.side in ('buy','swap'))
+             )
            group by f.mint, f.wallet
          ) x, win
-         where x.buys > x.sells and x.last_buy > win.fresh_from
+         where x.net_tokens > 0 and x.last_buy > win.fresh_from
+           and not exists (
+             select 1 from wallet_fill u
+             where u.mint = x.mint and u.wallet = x.wallet
+               and u.token_amount is null
+               and u.mint <> 'So11111111111111111111111111111111111111112'
+               and u.slot > win.day_from
+           )
          group by x.mint
        ),
        newest as (
@@ -141,13 +172,15 @@ export class PhaseCRepository implements PhaseCStore {
               coin.transfer_fee_bps,
               coalesce(stats.creator_sells, 0) as creator_sells,
               coalesce(sells.tracked_sells, 0) as tracked_sells,
-              case when coalesce(snipers.buys, 0) = 0 then cache.sniper_pct else snipers.sniper_pct end as sniper_pct,
+              coalesce(snipers.sniper_pct, cache.sniper_pct) as sniper_pct,
               case when cache.top10_method = '${TOP10_METHOD}' then cache.top10_pct end as top10_pct,
               cache.mint_authority_active,
               cache.freeze_authority_active,
               coalesce(snap.liquidity_usd, cache.curve_liquidity_usd) as liquidity_usd,
               case when cache.exit_impact_at > now() - interval '10 minutes'
                 then cache.exit_impact_pct else null end as exit_impact_pct,
+              case when cache.entry_impact_at > now() - interval '10 minutes'
+                then cache.entry_impact_pct else null end as entry_impact_pct,
               coalesce(origin.launch_pool, pc.bonding_curve, coin.pool) as bonding_curve,
               n.pool_type,
               coalesce(origin.created_slot, pc.created_slot, coin.created_slot)::text as created_slot
@@ -172,14 +205,16 @@ export class PhaseCRepository implements PhaseCStore {
        left join phasec_mint_cache cache on cache.mint = n.mint
        left join lateral (
          select count(*)::int as tracked_sells from wallet_fill f
+         join tracked_wallet t on t.address = f.wallet and t.active
          where f.mint = n.mint and f.side = 'sell'
+           and ($4::timestamptz is null or t.selected_at <= $4::timestamptz)
        ) sells on true
        left join lateral (
-         select count(*) filter (where t.side = 'buy') as buys,
-           case when count(*) filter (where t.side = 'buy') = 0 then null
+         select count(*) filter (where t.side = 'buy' and t.is_creator = false) as non_creator_buys,
+           case when count(*) filter (where t.side = 'buy' and t.is_creator = false) = 0 then null
              else count(*) filter (
                where t.side = 'buy' and t.is_creator = false and t.slot = p.created_slot
-             )::float / count(*) filter (where t.side = 'buy') * 100
+             )::float / count(*) filter (where t.side = 'buy' and t.is_creator = false) * 100
            end as sniper_pct
          from pump_trade t
          join pump_coin p on p.mint = t.mint
@@ -192,7 +227,12 @@ export class PhaseCRepository implements PhaseCStore {
          limit 1
        ) snap on true
        order by n.first_seen_at desc`,
-      [limit, signal.maxMintsPerDay, signal.freshMinutes],
+      [
+        limit,
+        signal.maxMintsPerDay,
+        signal.freshMinutes,
+        signal.freezeAt ? signal.freezeAt.toISOString() : null,
+      ],
     );
     return result.rows.map((row) => ({
       mint: row.mint,
@@ -206,6 +246,8 @@ export class PhaseCRepository implements PhaseCStore {
       mintAuthorityActive: row.mint_authority_active,
       freezeAuthorityActive: row.freeze_authority_active,
       exitQuoteImpactPct: row.exit_impact_pct === null ? null : Number(row.exit_impact_pct),
+      entryQuoteImpactPct: row.entry_impact_pct === null ? null : Number(row.entry_impact_pct),
+      tokenExtension: null,
       top10HoldersPct: row.top10_pct === null ? null : Number(row.top10_pct),
       sniperBundlePct: row.sniper_pct === null ? null : Number(row.sniper_pct),
       trackedSells: Number(row.tracked_sells),
@@ -248,13 +290,22 @@ export class PhaseCRepository implements PhaseCStore {
       entry_out_amount: string | null;
       sell_warned: boolean;
       scaled_at: Date | null;
+      no_route_streak: number | null;
+      no_route_first_at: Date | null;
+      no_route_last_at: Date | null;
+      scale_quote: number | null;
+      scale_impact_pct: number | null;
+      scale_proceeds_usd: number | null;
+      scale_fee_usd: number | null;
       size_pct: number;
       exit_plan: string;
       screen_failed: boolean;
     }>(
       `select id, mint, stage, arm, status, alert_at, entry_after, opened_at, entry_quote,
               entry_size_usd, entry_fee_usd, entry_out_amount, size_pct, exit_plan,
-              screen_failed, sell_warned, scaled_at
+              screen_failed, sell_warned, scaled_at, no_route_streak, no_route_first_at,
+              no_route_last_at, scale_quote, scale_impact_pct,
+              scale_proceeds_usd, scale_fee_usd
        from phasec_position
        where status in ('pending', 'open')
        order by alert_at`,
@@ -274,6 +325,13 @@ export class PhaseCRepository implements PhaseCStore {
       entryOutAmount: row.entry_out_amount,
       sellWarned: row.sell_warned,
       scaledAt: row.scaled_at ? date(row.scaled_at) : null,
+      noRouteStreak: Number(row.no_route_streak ?? 0),
+      noRouteFirstAt: row.no_route_first_at ? date(row.no_route_first_at) : null,
+      noRouteLastAt: row.no_route_last_at ? date(row.no_route_last_at) : null,
+      scaleQuote: row.scale_quote === null ? null : Number(row.scale_quote),
+      scaleImpactPct: row.scale_impact_pct === null ? null : Number(row.scale_impact_pct),
+      scaleProceedsUsd: row.scale_proceeds_usd === null ? null : Number(row.scale_proceeds_usd),
+      scaleFeeUsd: row.scale_fee_usd === null ? null : Number(row.scale_fee_usd),
       sizePct: Number(row.size_pct),
       exitPlan: row.exit_plan,
       screenFailed: row.screen_failed,
@@ -286,7 +344,8 @@ export class PhaseCRepository implements PhaseCStore {
   ): Promise<Array<{ sizePct: number; netReturn: number }>> {
     const result = await this.pool.query<{ size_pct: number; net_return: number }>(
       `select size_pct, net_return from phasec_position
-       where status = 'closed' and closed_at >= $1 and closed_at < $2 and net_return is not null
+       where status in ('closed', 'unpriced') and closed_at >= $1 and closed_at < $2
+         and net_return is not null
          and arm <> 'random_pass' and restarted_at is null`,
       [start.toISOString(), end.toISOString()],
     );
@@ -346,6 +405,7 @@ export class PhaseCRepository implements PhaseCStore {
     sniperUnmeasured?: boolean;
     alertAt: Date;
     entryAfter: Date;
+    alertPriceUsd?: number | null;
   }): Promise<string> {
     const client = await this.pool.connect();
     try {
@@ -373,8 +433,8 @@ export class PhaseCRepository implements PhaseCStore {
       await client.query(
         `insert into phasec_position
           (mint, stage, arm, status, alert_at, entry_after, size_pct, exit_plan, screen_failed,
-           sniper_unmeasured)
-         values ($1, $2, $3, 'pending', $4, $5, $6, $7, false, $8)`,
+           sniper_unmeasured, alert_price_usd)
+         values ($1, $2, $3, 'pending', $4, $5, $6, $7, false, $8, $9)`,
         [
           input.mint,
           input.stage,
@@ -384,6 +444,7 @@ export class PhaseCRepository implements PhaseCStore {
           input.sizePct,
           input.exitPlan,
           input.sniperUnmeasured ?? false,
+          input.alertPriceUsd ?? null,
         ],
       );
       await client.query("commit");
@@ -419,10 +480,310 @@ export class PhaseCRepository implements PhaseCStore {
       `update phasec_position
        set status = 'open', opened_at = $9, entry_quote = $2, entry_impact_pct = $3,
            entry_fee_usd = $4, entry_size_usd = $5, entry_out_amount = $6,
-           fomo_fee_usd = $7, quote_source = $8
+           fomo_fee_usd = $7, quote_source = $8, fee_basis = 'fomo_schedule'
        where id = $1 and status = 'pending'`,
       [id, quote, impactPct, feeUsd, sizeUsd, outAmount, fomoFeeUsd, quoteSource, at.toISOString()],
     );
+  }
+
+  async saveQuoteFailures(rows: readonly PlannedQuoteFailure[], at: Date): Promise<void> {
+    for (const row of rows) {
+      await this.pool.query(
+        `insert into phasec_quote_failure
+          (position_id, mint, purpose, observed_at, http_status, reason, body, source)
+         values ($1::bigint, $2, $3, $4, $5, $6, $7, $8)`,
+        [
+          row.positionId,
+          row.mint,
+          row.purpose,
+          at.toISOString(),
+          row.httpStatus,
+          row.reason,
+          row.body,
+          row.source,
+        ],
+      );
+    }
+  }
+
+  async insertCandidates(rows: readonly CandidateLogRow[], at: Date): Promise<void> {
+    for (const row of rows) {
+      await this.pool.query(
+        `insert into phasec_candidate
+          (pass_at, mint, stage, group_name, verdict, reason, recorded_only, during_pause,
+           alert_price_usd, outcome_due_at, outcome_status, decision_facts, ingest_gap)
+         values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,'pending',$11,
+           exists (
+             select 1 from ingest_backfill b
+             where b.unrecovered
+               and b.observed_at <= $1::timestamptz
+               and b.observed_at >= $1::timestamptz - interval '6 hours'
+           ))
+         on conflict (mint) do nothing`,
+        [
+          at.toISOString(),
+          row.mint,
+          row.stage,
+          row.group,
+          row.verdict,
+          row.reason,
+          row.recordedOnly,
+          row.duringPause,
+          row.alertPriceUsd,
+          row.outcomeDueAt.toISOString(),
+          row.execution ? JSON.stringify(row.execution.facts) : null,
+        ],
+      );
+      if (!row.execution) continue;
+      const execution = row.execution;
+      await this.pool.query(
+        `insert into phasec_execution
+          (mint, group_name, enrolled_at, entry_at, event_at, venue, intended_spend_usd, route,
+           fee_high_usd, fee_low_usd, acquired_qty_high, acquired_qty_low, entry_quote_usd,
+           decision_latency_ms,           decision_facts, enrollment_id, run_id, process_instance_id, entry_due_at, latest_entry_at)
+         values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,null,$17,$4,$18)
+         on conflict (mint) do nothing`,
+        [
+          row.mint,
+          row.group,
+          execution.enrolledAt.toISOString(),
+          execution.entryAt.toISOString(),
+          execution.eventAt?.toISOString() ?? null,
+          execution.venue,
+          execution.intendedSpendUsd,
+          execution.route,
+          execution.feeHighUsd,
+          execution.feeLowUsd,
+          execution.acquiredQtyHigh,
+          execution.acquiredQtyLow,
+          execution.entryQuoteUsd,
+          execution.decisionLatencyMs,
+          JSON.stringify(execution.facts),
+          enrollmentId(row.mint, execution.enrolledAt),
+          crypto.randomUUID(),
+          new Date(execution.entryAt.getTime() + 60_000).toISOString(),
+        ],
+      );
+      const observations = [
+        { label: "entry_high", role: "entry", dueAt: execution.entryAt },
+        { label: "entry_low", role: "entry", dueAt: execution.entryAt },
+        { label: "reverse_high", role: "reverse", dueAt: execution.entryAt },
+        { label: "reverse_low", role: "reverse", dueAt: execution.entryAt },
+        ...scheduleObservations(execution.entryAt).map((item) => ({
+          label: item.label,
+          role: item.role,
+          dueAt: item.dueAt,
+        })),
+      ];
+      for (const item of observations) {
+        await this.pool.query(
+          `insert into phasec_observation (mint, label, role, due_at)
+           values ($1,$2,$3,$4)
+           on conflict (mint, label) do nothing`,
+          [row.mint, item.label, item.role, item.dueAt.toISOString()],
+        );
+      }
+    }
+  }
+
+  async recordWalletList(
+    listHash: string,
+    walletCount: number,
+    at: Date,
+    freezeAt: Date | null,
+  ): Promise<void> {
+    await this.pool.query(
+      `insert into phasec_wallet_list_version (list_hash, recorded_at, wallet_count, freeze_at)
+       values ($1,$2,$3,$4)
+       on conflict (list_hash) do nothing`,
+      [listHash, at.toISOString(), walletCount, freezeAt?.toISOString() ?? null],
+    );
+  }
+
+  async dueObservations(
+    now: Date,
+    limit: number,
+  ): Promise<
+    Array<{ mint: string; label: string; role: string; dueAt: Date; entryOutAmount: string | null }>
+  > {
+    const result = await this.pool.query<{
+      mint: string;
+      label: string;
+      role: string;
+      due_at: Date;
+      entry_out_amount: string | null;
+    }>(
+      `select o.mint, o.label, o.role, o.due_at, e.entry_out_amount
+       from phasec_observation o
+       join phasec_execution e on e.mint = o.mint
+       where o.status = 'pending' and o.due_at <= $1
+       order by o.due_at, o.mint, o.label
+       limit $2`,
+      [now.toISOString(), limit],
+    );
+    return result.rows.map((row) => ({
+      mint: row.mint,
+      label: row.label,
+      role: row.role,
+      dueAt: date(row.due_at),
+      entryOutAmount: row.entry_out_amount,
+    }));
+  }
+
+  async claimObservation(mint: string, label: string, now: Date): Promise<string | null> {
+    const token = crypto.randomUUID();
+    const result = await this.pool.query<{ claim_token: string }>(
+      `update phasec_observation
+       set claimed_at = $3, claim_token = $4
+       where mint = $1 and label = $2 and status = 'pending'
+         and (claimed_at is null or claimed_at < $3::timestamptz - interval '2 minutes')
+       returning claim_token`,
+      [mint, label, now.toISOString(), token],
+    );
+    return result.rows[0]?.claim_token ?? null;
+  }
+
+  async observationBacklog(now: Date): Promise<{ due: number; pending: number }> {
+    const result = await this.pool.query<{ due: string; pending: string }>(
+      `select count(*) filter (where due_at <= $1)::text as due,
+              count(*)::text as pending
+       from phasec_observation
+       where status = 'pending'`,
+      [now.toISOString()],
+    );
+    return {
+      due: Number(result.rows[0]?.due ?? 0),
+      pending: Number(result.rows[0]?.pending ?? 0),
+    };
+  }
+
+  async saveObservation(input: {
+    mint: string;
+    label: string;
+    observedAt: Date;
+    late: boolean;
+    priceUsd: number | null;
+    status: "priced" | "missing" | "late";
+    outAmount?: string | null;
+    claimToken: string;
+  }): Promise<boolean> {
+    await this.pool.query(
+      `insert into phasec_quote_attempt
+        (mint, label, requested_at, responded_at, qty, status, evidence)
+       values ($1,$2,$3,$3,$4,$5,$6)`,
+      [
+        input.mint,
+        input.label,
+        input.observedAt.toISOString(),
+        input.outAmount ?? null,
+        input.status,
+        input.late ? "late" : "on_time",
+      ],
+    );
+    const finalizedResult = await this.pool.query(
+      `update phasec_observation
+       set observed_at = $3, late = $4, price_usd = $5, status = $6
+       where mint = $1 and label = $2 and status = 'pending' and claim_token = $7`,
+      [
+        input.mint,
+        input.label,
+        input.observedAt.toISOString(),
+        input.late,
+        input.priceUsd,
+        input.status,
+        input.claimToken,
+      ],
+    );
+    const finalized = (finalizedResult.rowCount ?? 0) > 0;
+    if (!finalized) return false;
+    if (input.label === "entry_high" && input.outAmount) {
+      await this.pool.query(
+        `update phasec_execution
+         set entry_out_amount = $2, entry_quoted_at = $3, entry_quote_usd = coalesce($4, entry_quote_usd)
+         where mint = $1 and entry_out_amount is null`,
+        [input.mint, input.outAmount, input.observedAt.toISOString(), input.priceUsd],
+      );
+    }
+    if (input.label.startsWith("reverse") && input.priceUsd !== null) {
+      await this.pool.query(
+        `update phasec_execution
+         set reverse_quote_usd = $2, reverse_quoted_at = $3, reverse_out_amount = $4
+         where mint = $1 and reverse_quoted_at is null`,
+        [input.mint, input.priceUsd, input.observedAt.toISOString(), input.outAmount ?? null],
+      );
+    }
+    return true;
+  }
+
+  async dueCandidates(
+    now: Date,
+    limit: number,
+  ): Promise<Array<{ id: string; mint: string; alertPriceUsd: number | null }>> {
+    const result = await this.pool.query<{
+      id: string;
+      mint: string;
+      alert_price_usd: number | null;
+    }>(
+      `select id, mint, alert_price_usd from phasec_candidate
+       where outcome_status = 'pending' and outcome_due_at <= $1
+       order by outcome_due_at
+       limit $2`,
+      [now.toISOString(), limit],
+    );
+    return result.rows.map((row) => ({
+      id: String(row.id),
+      mint: row.mint,
+      alertPriceUsd: row.alert_price_usd === null ? null : Number(row.alert_price_usd),
+    }));
+  }
+
+  async saveCandidateOutcome(
+    id: string,
+    status: "priced" | "missing",
+    priceUsd: number | null,
+    net: number | null,
+  ): Promise<void> {
+    await this.pool.query(
+      `update phasec_candidate
+       set outcome_status = $2, outcome_price_usd = $3, outcome_net = $4
+       where id = $1::bigint and outcome_status = 'pending'`,
+      [id, status, priceUsd, net],
+    );
+  }
+
+  async saveNoRouteStreaks(rows: readonly PlannedStreak[]): Promise<void> {
+    const latest = new Map<string, PlannedStreak>();
+    for (const row of rows) latest.set(row.id, row);
+    for (const row of latest.values()) {
+      await this.pool.query(
+        `update phasec_position
+         set no_route_streak = $2, no_route_first_at = $3, no_route_last_at = $4
+         where id = $1::bigint and status in ('pending', 'open')`,
+        [row.id, row.streak, row.firstAt?.toISOString() ?? null, row.lastAt?.toISOString() ?? null],
+      );
+    }
+  }
+
+  async openPools(
+    mints: readonly string[],
+  ): Promise<Array<{ mint: string; pool: string; poolType: string | null }>> {
+    if (mints.length === 0) return [];
+    const result = await this.pool.query<{
+      mint: string;
+      pool: string;
+      pool_type: string | null;
+    }>(
+      `select distinct on (mint) mint, pool, pool_type
+       from candidates
+       where mint = any($1::text[]) and pool is not null
+       order by mint, graduated_at desc nulls last, first_seen_at desc`,
+      [mints],
+    );
+    return result.rows.map((row) => ({
+      mint: row.mint,
+      pool: row.pool,
+      poolType: row.pool_type,
+    }));
   }
 
   async markSellWarned(ids: readonly string[]): Promise<void> {
@@ -433,12 +794,16 @@ export class PhaseCRepository implements PhaseCStore {
     );
   }
 
-  async markScaled(ids: readonly string[], at: Date): Promise<void> {
-    if (ids.length === 0) return;
-    await this.pool.query(
-      "update phasec_position set scaled_at = $2 where id = any($1::bigint[]) and scaled_at is null",
-      [ids, at.toISOString()],
-    );
+  async markScaled(rows: readonly PlannedScale[], at: Date): Promise<void> {
+    for (const row of rows) {
+      await this.pool.query(
+        `update phasec_position
+         set scaled_at = $2, scale_quote = $3, scale_impact_pct = $4,
+             scale_proceeds_usd = $5, scale_fee_usd = $6
+         where id = $1::bigint and scaled_at is null`,
+        [row.id, at.toISOString(), row.quote, row.impactPct, row.proceedsUsd, row.feeUsd],
+      );
+    }
   }
 
   async saveMintCache(
@@ -450,6 +815,7 @@ export class PhaseCRepository implements PhaseCStore {
       sniperPct: number | null;
       curveLiquidityUsd: number | null;
       exitImpactPct: number | null;
+      entryImpactPct?: number | null;
     }[],
     at: Date,
   ): Promise<void> {
@@ -457,8 +823,12 @@ export class PhaseCRepository implements PhaseCStore {
       await this.pool.query(
         `insert into phasec_mint_cache
           (mint, mint_authority_active, freeze_authority_active, top10_pct, sniper_pct, curve_liquidity_usd,
-           exit_impact_pct, exit_impact_at, fetched_at, top10_method)
-         values ($1,$2,$3,$4::double precision,$5,$6,$7, case when $7::double precision is null then null else $8::timestamptz end, $8::timestamptz,
+           exit_impact_pct, exit_impact_at, entry_impact_pct, entry_impact_at, fetched_at, top10_method)
+         values ($1,$2,$3,$4::double precision,$5,$6,$7,
+           case when $7::double precision is null then null else $8::timestamptz end,
+           $9::double precision,
+           case when $9::double precision is null then null else $8::timestamptz end,
+           $8::timestamptz,
            case when $4::double precision is null then null else '${TOP10_METHOD}' end)
          on conflict (mint) do update set
            mint_authority_active = coalesce(excluded.mint_authority_active, phasec_mint_cache.mint_authority_active),
@@ -475,6 +845,9 @@ export class PhaseCRepository implements PhaseCStore {
            exit_impact_pct = coalesce(excluded.exit_impact_pct, phasec_mint_cache.exit_impact_pct),
            exit_impact_at = case when excluded.exit_impact_pct is not null then excluded.fetched_at
              else phasec_mint_cache.exit_impact_at end,
+           entry_impact_pct = coalesce(excluded.entry_impact_pct, phasec_mint_cache.entry_impact_pct),
+           entry_impact_at = case when excluded.entry_impact_pct is not null then excluded.fetched_at
+             else phasec_mint_cache.entry_impact_at end,
            fetched_at = excluded.fetched_at`,
         [
           row.mint,
@@ -485,6 +858,7 @@ export class PhaseCRepository implements PhaseCStore {
           row.curveLiquidityUsd,
           row.exitImpactPct,
           at.toISOString(),
+          row.entryImpactPct ?? null,
         ],
       );
     }
@@ -642,25 +1016,29 @@ export class PhaseCRepository implements PhaseCStore {
   async closePosition(input: {
     id: string;
     quote: number;
-    net: number;
-    net2x: number;
+    net: number | null;
+    net2x: number | null;
     reason: string;
     impactPct: number | null;
     feeUsd: number | null;
     failure: string | null;
-    fomoFeeUsd?: number;
+    fomoFeeUsd?: number | null;
     quoteSource?: string | null;
     at: Date;
   }): Promise<void> {
     await this.pool.query(
       `update phasec_position
-       set status = case when $5::text = 'unpriced' then 'unpriced' else 'closed' end,
+       set status = case
+             when $5::text like 'skipped%' then 'skipped'
+             when $5::text = 'unpriced' then 'unpriced'
+             else 'closed' end,
            exit_quote = $2::double precision,
-           net_return = case when $5::text = 'unpriced' then null else $3::double precision end,
-           net_return_2x = case when $5::text = 'unpriced' then null else $4::double precision end,
+           net_return = case when $5::text like 'skipped%' then null else $3::double precision end,
+           net_return_2x = case when $5::text like 'skipped%' then null else $4::double precision end,
            exit_reason = $5::text, exit_impact_pct = $6::double precision,
            exit_fee_usd = $7::double precision, quote_failure = $8::text, closed_at = $9::timestamptz,
-           fomo_fee_usd = coalesce(fomo_fee_usd, 0) + coalesce($10::double precision, 0),
+           fomo_fee_usd = case when $10::double precision is null then fomo_fee_usd else $10::double precision end,
+           fee_basis = case when $10::double precision is null then fee_basis else 'fomo_schedule' end,
            quote_source = coalesce($11::text, quote_source)
        where id = $1::bigint and status in ('open', 'pending')`,
       [
@@ -835,7 +1213,7 @@ export class PhaseCRepository implements PhaseCStore {
       size_pct: number;
     }>(
       `select closed_at, arm, net_return, size_pct from phasec_position
-       where status = 'closed' and net_return is not null and closed_at is not null
+       where status in ('closed', 'unpriced') and net_return is not null and closed_at is not null
          and restarted_at is null
        order by closed_at`,
     );

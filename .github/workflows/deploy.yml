@@ -1,12 +1,22 @@
 name: Deploy
 
+# No push trigger. GitHub uses the workflow file in the commit being pushed.
+# Merging this file does not start a deploy, and later pushes do not either.
+# A dispatch that is already migrating is not cancelled.
 on:
-  push:
-    branches:
-      - main
+  workflow_dispatch:
+    inputs:
+      image_digest:
+        description: Tested image id recorded by the release-candidate CI artifact
+        required: true
+        type: string
+      confirm:
+        description: Type promote-tested-digest to promote that image
+        required: true
+        type: string
 
 permissions:
-  contents: none
+  contents: read
 
 concurrency:
   group: deploy-production
@@ -16,6 +26,11 @@ jobs:
   deploy:
     runs-on: ubuntu-24.04
     steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
       - name: Check deploy secrets
         id: gate
         env:
@@ -123,8 +138,26 @@ jobs:
           PAPER_WINDOW_DAYS: ${{ vars.PAPER_WINDOW_DAYS }}
           PAPER_ENTRY_DELAY_SEC: ${{ vars.PAPER_ENTRY_DELAY_SEC }}
           SECOND_WAVE_MIN_CHANGE_PCT: ${{ vars.SECOND_WAVE_MIN_CHANGE_PCT }}
+          ENABLE_PAPER: ${{ vars.ENABLE_PAPER }}
+          IMAGE_DIGEST: ${{ inputs.image_digest }}
+          DEPLOY_CONFIRM: ${{ inputs.confirm }}
         run: |
           set -euo pipefail
+          if [ "$DEPLOY_CONFIRM" != "promote-tested-digest" ]; then
+            echo "deploy held: production auto-deploy is off"
+            exit 1
+          fi
+          if ! [[ "$IMAGE_DIGEST" =~ ^ghcr\.io/blaquemaster/fomo-copilot/ingestor@sha256:[0-9a-f]{64}$ ]]; then
+            echo "deploy held: refusing a reference that is not the tested registry digest"
+            exit 1
+          fi
+          while IFS= read -r refused || [[ -n "$refused" ]]; do
+            [[ -z "$refused" || "$refused" == \#* ]] && continue
+            if [[ "$IMAGE_DIGEST" == *"$refused"* ]]; then
+              echo "deploy held: this reference is not approvable"
+              exit 1
+            fi
+          done < infra/refused-digests.txt
           umask 077
           key_file="$(mktemp)"
           known_file="$(mktemp)"
@@ -146,6 +179,12 @@ jobs:
               if value not in allowed:
                   raise SystemExit(f"{name} must be one of: {', '.join(sorted(allowed))}")
               return value
+
+          def autobuy_mode():
+              value = os.environ.get("AUTOBUY_MODE", "").strip()
+              if value == "live":
+                  raise SystemExit("AUTOBUY_MODE live is refused")
+              return "dry_run"
 
           def bsc_url():
               value = os.environ.get("BSC_WSS_URL", "").strip() or "wss://bsc-rpc.publicnode.com"
@@ -286,6 +325,10 @@ jobs:
                   raise SystemExit(f"{name} must be a non-zero integer")
               return raw
 
+          def paper_flag():
+              # A merge starts paper trading and alerts only when this is the exact word true.
+              return "true" if os.environ.get("ENABLE_PAPER", "").strip() == "true" else "false"
+
           def slot_margin():
               raw = os.environ.get("BACKFILL_SLOT_MARGIN", "").strip() or "16"
               if not raw.isdigit() or int(raw) > 10000:
@@ -361,10 +404,12 @@ jobs:
               line("MARKET_POLL_MINUTES", market_poll()),
               line("THRESHOLDS_PATH", "/app/config/thresholds.yaml"),
               line("PAPER_BANKROLL_USD", paper_bankroll()),
-              line("AUTOBUY_MODE", pick("AUTOBUY_MODE", "off", {"off", "dry_run", "live"})),
+              line("AUTOBUY_MODE", autobuy_mode()),
               line("AUTOBUY_KILL", pick("AUTOBUY_KILL", "off", {"off", "on"})),
               line("AUTOBUY_MAX_TRADE_USD", usd_amount("AUTOBUY_MAX_TRADE_USD", "25")),
               line("AUTOBUY_DAILY_USD_CAP", usd_amount("AUTOBUY_DAILY_USD_CAP", "100")),
+              line("PAPER_ENABLED", paper_flag()),
+              line("ALERTS_ENABLED", paper_flag()),
           ] + ([line("BANKROLL", bankroll)] if (bankroll := optional_bankroll()) else [])
             + ([line("TELEGRAM_TEST_CHAT_ID", test_chat)] if (test_chat := optional_chat("TELEGRAM_TEST_CHAT_ID")) else [])
           ) + "\n"
@@ -381,6 +426,7 @@ jobs:
           )
           target="${DEPLOY_USER}@${DEPLOY_HOST}"
           "${ssh_base[@]}" "$target" "umask 077; test -d /opt/fomo-copilot/.git; cat > /opt/fomo-copilot/.env.incoming" < "$env_file"
+          printf '%s\n' "$IMAGE_DIGEST" | "${ssh_base[@]}" "$target" "cat > /opt/fomo-copilot/.release-digest"
           "${ssh_base[@]}" "$target" bash -s << 'REMOTE'
           set -euo pipefail
           cd /opt/fomo-copilot
@@ -403,6 +449,16 @@ jobs:
           fi
           mv .env.incoming .env
           chmod 600 .env
-          docker compose --env-file .env -f infra/docker-compose.yml up -d --build
-          docker image prune -f
+          ref=$(tr -d '[:space:]' < /opt/fomo-copilot/.release-digest)
+          if ! [[ "$ref" =~ ^ghcr\.io/blaquemaster/fomo-copilot/ingestor@sha256:[0-9a-f]{64}$ ]]; then
+            echo "deploy held: image reference missing" >&2
+            exit 1
+          fi
+          docker pull "$ref"
+          printf 'services:\n  ingestor:\n    image: %s\n    pull_policy: always\n' "$ref" > /opt/fomo-copilot/infra/ingestor-image.yml
+          compose=(docker compose --env-file .env -f infra/docker-compose.yml -f infra/ingestor-image.yml)
+          # Postgres stays up. Only the ingestor container is replaced, and only
+          # with the loaded image. Do not build from the checkout.
+          "${compose[@]}" stop screener alerter || true
+          "${compose[@]}" up -d --no-deps --no-build ingestor
           REMOTE

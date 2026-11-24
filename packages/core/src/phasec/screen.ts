@@ -15,6 +15,8 @@ export interface ScreenRules {
   sniperWarn: number;
   minLiquidityUsd: number;
   minMakers1h: number;
+  /** Hard fail when the entry quote's price impact exceeds this percent. Default 10, from PR #39. */
+  entryImpactPctAbove?: number;
 }
 
 export interface ScreenFacts {
@@ -28,6 +30,13 @@ export interface ScreenFacts {
   uniqueMakers1h: number | null;
   creatorSells: number;
   quoteError: boolean;
+  /** Entry quote price impact in percent. Null is unmeasured (WATCH). Omitted is not yet wired. */
+  entryQuoteImpactPct?: number | null;
+  /**
+   * Token-2022 extension check. classic/clear may pass. dangerous fails.
+   * unknown, null, or omitted is not a pass.
+   */
+  tokenExtension?: "classic" | "clear" | "dangerous" | "unknown" | null;
   /**
    * True when a launch pool and create slot are known, so a sniper share can be fetched.
    * Unset keeps the default: a null sniper value is WATCH (unmeasured).
@@ -48,8 +57,8 @@ const REQUIRED: Array<[keyof ScreenFacts, string]> = [
   ["freezeAuthorityActive", "freeze authority"],
   ["exitQuoteImpactPct", "exit impact"],
   ["top10HoldersPct", "holders"],
-  ["sniperBundlePct", "snipers"],
   ["liquidityUsd", "liquidity"],
+  ["entryQuoteImpactPct", "entry impact"],
 ];
 
 /**
@@ -78,6 +87,7 @@ export function failsCheaperGates(
     freezeAuthorityActive?: boolean | null;
     top10HoldersPct?: number | null;
     exitQuoteImpactPct?: number | null;
+    entryQuoteImpactPct?: number | null;
     transferFeeBps?: number | null;
   },
   rules: ScreenRules,
@@ -95,6 +105,14 @@ export function failsCheaperGates(
     coin.exitQuoteImpactPct !== null &&
     coin.exitQuoteImpactPct !== undefined &&
     coin.exitQuoteImpactPct > rules.exitImpactPctAbove
+  ) {
+    return true;
+  }
+  const maxEntry = rules.entryImpactPctAbove ?? 10;
+  if (
+    coin.entryQuoteImpactPct !== null &&
+    coin.entryQuoteImpactPct !== undefined &&
+    coin.entryQuoteImpactPct > maxEntry
   ) {
     return true;
   }
@@ -165,19 +183,26 @@ export function screenCoin(facts: ScreenFacts, rules: ScreenRules): ScreenResult
   if (facts.exitQuoteImpactPct !== null && facts.exitQuoteImpactPct > rules.exitImpactPctAbove) {
     hard.push(`exit impact ${facts.exitQuoteImpactPct.toString()}%`);
   }
+  const maxEntry = rules.entryImpactPctAbove ?? 10;
+  if (
+    facts.entryQuoteImpactPct !== null &&
+    facts.entryQuoteImpactPct !== undefined &&
+    facts.entryQuoteImpactPct > maxEntry
+  ) {
+    hard.push(`entry impact ${facts.entryQuoteImpactPct.toString()}%`);
+  }
+  if (facts.tokenExtension === "dangerous") hard.push("token extension");
   if (
     rules.top10FailAbove !== undefined &&
     facts.top10HoldersPct !== null &&
     facts.top10HoldersPct > rules.top10FailAbove
   ) {
-    hard.push(`top 10 holders ${facts.top10HoldersPct.toFixed(1)}%`);
+    hard.push(
+      `top 10 holders ${facts.top10HoldersPct.toFixed(1)}% of total supply, excluding bonding curve and pool vaults`,
+    );
   }
-  if (
-    rules.sniperFailAbove !== undefined &&
-    facts.sniperBundlePct !== null &&
-    facts.sniperBundlePct > rules.sniperFailAbove
-  ) {
-    hard.push(`sniper bundle ${facts.sniperBundlePct.toFixed(1)}%`);
+  if (facts.tokenExtension === "unknown" || facts.tokenExtension === null) {
+    missing.push("token extensions");
   }
   const sniperUnmeasured = isSniperUnmeasured(facts);
   for (const [key, label] of REQUIRED) {

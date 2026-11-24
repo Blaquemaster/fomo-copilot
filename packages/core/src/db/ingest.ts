@@ -541,6 +541,143 @@ alter table phasec_position add column if not exists entry_out_amount text;
 alter table phasec_position add column if not exists sell_warned boolean not null default false;
 alter table phasec_position add column if not exists scaled_at timestamptz;
 alter table phasec_position add column if not exists fomo_fee_usd double precision;
+alter table phasec_position add column if not exists fee_basis text;
+alter table phasec_position add column if not exists alert_price_usd double precision;
+alter table phasec_position add column if not exists scale_quote double precision;
+alter table phasec_position add column if not exists scale_impact_pct double precision;
+alter table phasec_position add column if not exists scale_proceeds_usd double precision;
+alter table phasec_position add column if not exists scale_fee_usd double precision;
+alter table phasec_position add column if not exists no_route_streak integer not null default 0;
+alter table phasec_position add column if not exists no_route_first_at timestamptz;
+alter table phasec_position add column if not exists no_route_last_at timestamptz;
+
+create table if not exists phasec_quote_failure (
+  id bigserial primary key,
+  position_id bigint,
+  mint text not null,
+  purpose text not null,
+  observed_at timestamptz not null,
+  http_status integer,
+  reason text not null,
+  body text,
+  source text
+);
+create index if not exists phasec_quote_failure_position_idx
+  on phasec_quote_failure (position_id, observed_at desc);
+
+create table if not exists phasec_candidate (
+  id bigserial primary key,
+  pass_at timestamptz not null,
+  mint text not null,
+  stage text not null,
+  group_name text not null,
+  verdict text not null,
+  reason text not null,
+  recorded_only boolean not null,
+  during_pause boolean not null,
+  alert_price_usd double precision,
+  outcome_due_at timestamptz not null,
+  outcome_price_usd double precision,
+  outcome_net double precision,
+  outcome_status text not null default 'pending'
+);
+create index if not exists phasec_candidate_due_idx
+  on phasec_candidate (outcome_due_at) where outcome_status = 'pending';
+alter table phasec_candidate add column if not exists ingest_gap boolean not null default false;
+alter table phasec_candidate add column if not exists decision_facts jsonb;
+create unique index if not exists phasec_candidate_mint_idx on phasec_candidate (mint);
+
+create table if not exists phasec_config_history (
+  fingerprint text primary key,
+  body text not null,
+  recorded_at timestamptz not null
+);
+
+create table if not exists phasec_execution (
+  mint text primary key,
+  group_name text not null,
+  enrolled_at timestamptz not null,
+  entry_at timestamptz not null,
+  event_at timestamptz,
+  venue text not null,
+  intended_spend_usd double precision not null,
+  route text not null,
+  fee_high_usd double precision,
+  fee_low_usd double precision,
+  acquired_qty_high double precision,
+  acquired_qty_low double precision,
+  entry_out_amount text,
+  entry_quote_usd double precision,
+  entry_quoted_at timestamptz,
+  reverse_quote_usd double precision,
+  reverse_quoted_at timestamptz,
+  reverse_out_amount text,
+  decision_latency_ms double precision,
+  decision_facts jsonb
+);
+
+create table if not exists phasec_observation (
+  mint text not null,
+  label text not null,
+  role text not null,
+  due_at timestamptz not null,
+  observed_at timestamptz,
+  late boolean,
+  price_usd double precision,
+  status text not null default 'pending',
+  claimed_at timestamptz,
+  primary key (mint, label)
+);
+create index if not exists phasec_observation_due_idx
+  on phasec_observation (due_at) where status = 'pending';
+alter table phasec_observation add column if not exists claimed_at timestamptz;
+alter table phasec_observation add column if not exists claim_token text;
+alter table phasec_execution add column if not exists entry_due_at timestamptz;
+alter table phasec_execution add column if not exists latest_entry_at timestamptz;
+alter table phasec_execution add column if not exists chain text not null default 'solana';
+alter table phasec_execution add column if not exists process_instance_id text;
+alter table phasec_execution add column if not exists enrollment_id text;
+alter table phasec_execution add column if not exists run_id text;
+create unique index if not exists phasec_execution_run_chain_mint_idx
+  on phasec_execution (run_id, chain, mint)
+  where run_id is not null;
+
+create table if not exists phasec_quote_attempt (
+  id bigserial primary key,
+  mint text not null,
+  label text not null,
+  requested_at timestamptz not null,
+  responded_at timestamptz,
+  qty text,
+  status text not null,
+  evidence text
+);
+
+create table if not exists phasec_wallet_list_version (
+  list_hash text primary key,
+  recorded_at timestamptz not null,
+  wallet_count integer not null,
+  freeze_at timestamptz
+);
+
+alter table ingest_backfill add column if not exists recovery_completed_at timestamptz;
+
+create table if not exists ingest_recovery_checkpoint (
+  id bigserial primary key,
+  program_id text not null,
+  from_slot bigint not null,
+  to_slot bigint not null,
+  page_before text,
+  signatures_seen integer not null,
+  finished boolean not null,
+  recovery_completed_at timestamptz,
+  recorded_at timestamptz not null
+);
+
+create or replace view phasec_gap_period as
+select id, program_id, observed_at, gap_from_slot, gap_to_slot, reason
+from ingest_backfill
+where unrecovered;
 alter table phasec_position add column if not exists quote_source text;
 alter table phasec_position add column if not exists restarted_at timestamptz;
 alter table phasec_alert add column if not exists fingerprint text;
@@ -577,6 +714,8 @@ create table if not exists phasec_market_snapshot (
 alter table phasec_market_snapshot add column if not exists volume_24h double precision;
 alter table phasec_mint_cache add column if not exists exit_impact_pct double precision;
 alter table phasec_mint_cache add column if not exists exit_impact_at timestamptz;
+alter table phasec_mint_cache add column if not exists entry_impact_pct double precision;
+alter table phasec_mint_cache add column if not exists entry_impact_at timestamptz;
 alter table phasec_mint_cache add column if not exists top10_method text;
 create index if not exists wallet_fill_slot_idx on wallet_fill (slot);
 alter table candidates add column if not exists created_slot bigint;
@@ -616,6 +755,8 @@ export async function migrate(pool: pg.Pool): Promise<void> {
   const client = await pool.connect();
   try {
     await client.query("begin");
+    await client.query("set local lock_timeout = '3s'");
+    await client.query("set local statement_timeout = '60s'");
     await client.query(MIGRATION);
     await client.query(
       "insert into schema_migrations (id) values ($1) on conflict (id) do nothing",
@@ -824,6 +965,42 @@ export async function migrate(pool: pg.Pool): Promise<void> {
       ["022_sniper_created_slot"],
     );
     await client.query(
+      "insert into schema_migrations (id) values ($1) on conflict (id) do nothing",
+      ["023_scale_booking"],
+    );
+    await client.query(
+      "insert into schema_migrations (id) values ($1) on conflict (id) do nothing",
+      ["024_quote_failure"],
+    );
+    await client.query(
+      "insert into schema_migrations (id) values ($1) on conflict (id) do nothing",
+      ["025_wallet_fill_amounts"],
+    );
+    await client.query(
+      "insert into schema_migrations (id) values ($1) on conflict (id) do nothing",
+      ["026_candidate_log"],
+    );
+    await client.query(
+      "insert into schema_migrations (id) values ($1) on conflict (id) do nothing",
+      ["027_execution_record"],
+    );
+    await client.query(
+      "insert into schema_migrations (id) values ($1) on conflict (id) do nothing",
+      ["028_wide_recovery"],
+    );
+    await client.query(
+      "insert into schema_migrations (id) values ($1) on conflict (id) do nothing",
+      ["029_review3_records"],
+    );
+    await client.query(
+      "insert into schema_migrations (id) values ($1) on conflict (id) do nothing",
+      ["030_observation_claim"],
+    );
+    await client.query(
+      "insert into schema_migrations (id) values ($1) on conflict (id) do nothing",
+      ["031_run_identity"],
+    );
+    await client.query(
       `update ingest_recall_audit a
        set skipped = true,
            error_reason = 'before_coverage'
@@ -853,7 +1030,7 @@ export class IngestRepository {
     observation: Observation,
     byteLength: number,
     receivedAt: Date,
-    source: "stream" | "audit" = "stream",
+    source: "stream" | "backfill" | "audit" = "stream",
   ): Promise<boolean> {
     const result = await this.pool.query(
       `insert into raw_events
@@ -886,7 +1063,7 @@ export class IngestRepository {
     observation: Observation;
     byteLength: number;
     receivedAt: Date;
-    source: "stream" | "audit";
+    source: "stream" | "backfill" | "audit";
   }): Promise<boolean> {
     const client = await this.pool.connect();
     try {
@@ -1346,13 +1523,14 @@ export class IngestRepository {
     gapFromSlot: number | null;
     gapToSlot: number | null;
     reason: string | null;
+    recoveryCompletedAt?: Date | null;
   }): Promise<void> {
     await this.pool.query(
       `insert into ingest_backfill
         (observed_at, program_id, gap_seconds, gap_slots, events_recovered, pages_fetched,
          signatures_seen, transactions_fetched, reached_checkpoint, credit_cap_hit,
-         unrecovered, gap_from_slot, gap_to_slot, reason)
-       values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)`,
+         unrecovered, gap_from_slot, gap_to_slot, reason, recovery_completed_at)
+       values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)`,
       [
         input.observedAt.toISOString(),
         input.programId,
@@ -1368,6 +1546,35 @@ export class IngestRepository {
         input.gapFromSlot,
         input.gapToSlot,
         input.reason,
+        input.recoveryCompletedAt?.toISOString() ?? null,
+      ],
+    );
+  }
+
+  async insertRecoveryCheckpoint(input: {
+    programId: string;
+    fromSlot: number;
+    toSlot: number;
+    pageBefore: string | null;
+    signaturesSeen: number;
+    finished: boolean;
+    recoveryCompletedAt: Date | null;
+    recordedAt: Date;
+  }): Promise<void> {
+    await this.pool.query(
+      `insert into ingest_recovery_checkpoint
+        (program_id, from_slot, to_slot, page_before, signatures_seen, finished,
+         recovery_completed_at, recorded_at)
+       values ($1,$2,$3,$4,$5,$6,$7,$8)`,
+      [
+        input.programId,
+        input.fromSlot,
+        input.toSlot,
+        input.pageBefore,
+        input.signaturesSeen,
+        input.finished,
+        input.recoveryCompletedAt?.toISOString() ?? null,
+        input.recordedAt.toISOString(),
       ],
     );
   }
@@ -1895,12 +2102,17 @@ export class IngestRepository {
     wallet: string;
     side: "buy" | "sell" | "swap";
     venue: string;
+    solAmount?: number | null;
+    tokenAmount?: number | null;
   }): Promise<void> {
     const inserted = await this.pool.query(
       `insert into wallet_fill
-        (signature, event_index, slot, mint, wallet, side, venue)
-       values ($1,$2,$3,$4,$5,$6,$7)
-       on conflict (signature, event_index, wallet) do nothing`,
+        (signature, event_index, slot, mint, wallet, side, venue, sol_amount, token_amount)
+       values ($1,$2,$3,$4,$5,$6,$7,$8,$9)
+       on conflict (signature, event_index, wallet) do update set
+         sol_amount = coalesce(wallet_fill.sol_amount, excluded.sol_amount),
+         token_amount = coalesce(wallet_fill.token_amount, excluded.token_amount)
+       returning (xmax = 0) as inserted`,
       [
         input.signature,
         input.eventIndex,
@@ -1909,9 +2121,11 @@ export class IngestRepository {
         input.wallet,
         input.side,
         input.venue,
+        input.solAmount ?? null,
+        input.tokenAmount ?? null,
       ],
     );
-    if ((inserted.rowCount ?? 0) === 0) return;
+    if (inserted.rows[0]?.inserted !== true) return;
     await this.pool.query(
       `insert into coin_wallet_signal
         (mint, tracked_buyers, tracked_buys, tracked_sells, updated_at)

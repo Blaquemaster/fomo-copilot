@@ -1,4 +1,5 @@
 import { PROVEN_WALLET_RULE, SCORING_VERSION } from "../ingest/wallets.js";
+import { EXPERIMENT_PROTOCOL } from "./experimentProtocol.js";
 
 /** Frozen at the first screener pass. A later config change does not retune a running test. */
 
@@ -62,7 +63,32 @@ export interface PhaseCConfig {
   marketPollMinutes: number;
   xEnabled: boolean;
   destination: "test" | "admin";
-  fomoFeeSchedule: "solana_lowest_fee" | "solana_other";
+  fomoFeeSchedule: "solana_lowest_fee" | "solana_other" | "fixed_usd";
+  /** Fixed dollars per transaction when the schedule is fixed_usd. Default 0.95. */
+  txCostUsd?: number;
+  otherMinUsd?: number;
+  otherRate?: number;
+  /** Consecutive true no-route answers required before a -100% dead close. Default 3. */
+  deadNoRouteStreak?: number;
+  /** Minimum spacing between those answers. Default 60 seconds. */
+  deadNoRouteGapMs?: number;
+  /** Immediate buy-then-sell loss, in percent, that skips the fill. Default 10. */
+  maxRoundTripImpactPct?: number;
+  /** Position size may not exceed this share of pool liquidity. Default 0.01. */
+  maxSizePoolShare?: number;
+  /** Scale-out is off unless this is exactly true. The accounting function stays. */
+  scaleOutEnabled?: boolean;
+  /** When set, every stage uses this dollar size. Graduated coins are not sized larger. */
+  fixedNotionalUsd?: number;
+  /** Adopted experiment defaults: graduated pools, no stop, unfilled entry is zero. */
+  experimentProtocol?: boolean;
+  /** False disables the price stop. Undefined keeps the older paper stop. */
+  stopsEnabled?: boolean;
+  /** Venues accepted for a match. Empty means none are validated yet. */
+  venueAllowlist?: readonly string[];
+  /** Set when the experiment config contradicts the frozen protocol. */
+  configRefused?: string | null;
+  walletListVersion?: string | null;
 }
 
 export function defaultSizePct(): Record<Stage, number> {
@@ -98,6 +124,34 @@ export function protocolBody(config: PhaseCConfig, rules?: unknown): string {
     weights: SCORE_WEIGHTS,
     exitTreatments: EXIT_TREATMENTS,
     fomoFeeSchedule: config.fomoFeeSchedule,
+    txCostUsd: config.txCostUsd ?? 0.95,
+    otherMinUsd: config.otherMinUsd ?? 0.95,
+    otherRate: config.otherRate ?? 0.005,
+    deadNoRouteStreak: config.deadNoRouteStreak ?? 3,
+    deadNoRouteGapMs: config.deadNoRouteGapMs ?? 60_000,
+    maxRoundTripImpactPct: config.maxRoundTripImpactPct ?? 10,
+    maxSizePoolShare: config.maxSizePoolShare ?? 0.01,
+    scaleOutEnabled: config.scaleOutEnabled === true,
+    fixedNotionalUsd: config.fixedNotionalUsd ?? null,
+    walletCohort: "exploratory_activity_graduation_selected",
+    parserVersion: "fill-v3",
+    excludedProtocol: "c1d34366",
+    voidedPositions: 79,
+    effectiveConfig: {
+      protocolVersion: "v2",
+      stage: "freshly_graduated",
+      venueAllowlist: config.venueAllowlist ?? [],
+      notionalUsd: config.fixedNotionalUsd ?? null,
+      entryDelaySec: config.entryDelaySec,
+      horizonMs: config.horizonMs,
+      matching: "contemporaneous_bounded_seeded",
+      walletListVersion: config.walletListVersion ?? null,
+      mode: config.configRefused ? "refused" : "shadow_draft",
+      refused: config.configRefused ?? null,
+    },
+    experiment: EXPERIMENT_PROTOCOL,
+    experimentProtocol: config.experimentProtocol === true,
+    stopsEnabled: config.stopsEnabled !== false,
     scoringVersion: SCORING_VERSION,
     walletMinEntries: PROVEN_WALLET_RULE.minEntries,
     sniperUnmeasured: "watch_until_measured",

@@ -1,5 +1,7 @@
 export { ConfigError } from "./config/error.js";
 export { loadEnv, secretValuesFromEnv, type Env } from "./config/env.js";
+export { serviceEnabled, serviceStartDecision } from "./runtime/serviceGate.js";
+export { readTokenExtensions } from "./phasec/token2022.js";
 export { loadThresholds, thresholdsSchema, type Thresholds } from "./config/thresholds.js";
 export { createLogger, type Logger } from "./log/logger.js";
 export { isSensitiveKey, redact, redactString } from "./log/redact.js";
@@ -273,9 +275,24 @@ export {
   quoteKey,
   type QuotePurpose,
   quotedRoundTrip,
+  roundTripImpactPct,
   stageSizeUsd,
   type SizeBid,
 } from "./phasec/quote.js";
+export { collectJupiterBids, type JupiterRequest } from "./phasec/jupiterCollect.js";
+export {
+  DIAGNOSTIC_DB_ROLE,
+  DIAGNOSTIC_HELIUS_METHODS,
+  EXHAUSTION_EFFECT,
+  HELIUS_DIAGNOSTIC_ENDPOINTS,
+  boundedScanBudget,
+  chargeDiagnostic,
+  heliusDiagnosticCredits,
+  reconcileDiagnosticScan,
+  type SpendCaps,
+} from "./phasec/diagnosticSpend.js";
+export { coverageReadiness } from "./phasec/diagnosticSpec.js";
+export { qualificationGate } from "./phasec/review3.js";
 export {
   deadCoinObservation,
   mihaoObservation,
@@ -284,6 +301,35 @@ export {
   type SecondWaveObservation,
 } from "./phasec/secondWave.js";
 export { runPhaseCPass, type PassCoin, type PassPosition } from "./phasec/pass.js";
+export {
+  observationLabel,
+  outcomeFromPrices,
+  OUTCOME_DELAY_MS,
+  scheduleObservations,
+  LATENESS_GRACE_MS,
+} from "./phasec/outcomes.js";
+export {
+  EXPERIMENT_ALLOCATED_USD,
+  EXPERIMENT_LATENESS_MS,
+  classifyExitObservation,
+  creatorExposure,
+  delaySummary,
+  reverseNotionalUsd,
+  walletListHash,
+} from "./phasec/experimentProtocol.js";
+export {
+  shadowAcceptance,
+  shadowDependency,
+  type ShadowMeasurements,
+} from "./phasec/shadowReport.js";
+export {
+  acceptEntryObservation,
+  chooseFirstValidExit,
+  recallWalletSwaps,
+} from "./phasec/review3.js";
+export { blockLagAlert, inUnrecoveredGap, venueStaleAlert } from "./ingest/feedAlerts.js";
+export { fetchSignaturePage, reconcileWideGap, walkSignatureGap } from "./ingest/wideRecovery.js";
+export { capSizeToLiquidity } from "./phasec/risk.js";
 export { isFlapMint, stageForCoin } from "./phasec/score.js";
 export {
   allowsEntry,
@@ -307,6 +353,11 @@ export {
   protocolFingerprint,
   type PhaseCConfig,
 } from "./phasec/protocol.js";
-export { classifyJupiterHttp } from "./phasec/quote.js";
+export { classifyJupiterHttp, quoteErrorBody } from "./phasec/quote.js";
+export {
+  DRAINED_SOL_LAMPORTS,
+  tradabilityFromReserves,
+  type PoolTradability,
+} from "./phasec/dead.js";
 export type { PhaseCStore } from "./phasec/store.js";
 export { etDay, etDayRange, etWeekStart, inQuietHours, nextEtMidnight } from "./phasec/time.js";

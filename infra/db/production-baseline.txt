@@ -1,0 +1,23 @@
+# schema_migrations ids on main 6555907. Read-only inventory input. Not a dump.
+001_ingest
+002_liveness_backfill
+003_unrecovered_gap
+004_heap_sample
+005_backfill_reason
+006_frame_hourly
+007_event_source
+008_recall_audit
+009_recall_error
+010_pump_coin
+011_audit_coverage
+012_skip_stale_audits
+013_multi_venue
+014_launchpad_tags
+015_bsc_flap
+016_bsc_reliability
+017_wallet_signal
+018_wallet_backfill
+019_wallet_balance
+020_scoring_version
+021_phase_c
+022_sniper_created_slot

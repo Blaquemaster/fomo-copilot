@@ -92,8 +92,8 @@ describe.skipIf(!databaseUrl)("phasec positions against postgres", () => {
       await repo.closePosition({
         id: ids[1] ?? "",
         quote: 0,
-        net: 0,
-        net2x: 0,
+        net: -1,
+        net2x: -1,
         reason: "unpriced",
         impactPct: null,
         feeUsd: null,
@@ -111,9 +111,10 @@ describe.skipIf(!databaseUrl)("phasec positions against postgres", () => {
       );
       expect(rows.rows.map((row) => row.status)).toEqual(["closed", "unpriced"]);
       expect(Number(rows.rows[0]?.net_return)).toBeCloseTo(0.8);
-      expect(rows.rows[1]?.net_return).toBeNull();
+      expect(Number(rows.rows[1]?.net_return)).toBeCloseTo(-1);
       const resolved = await repo.resolvedReturns();
       expect(resolved.some((row) => Math.abs(row.net - 0.8) < 1e-9)).toBe(true);
+      expect(resolved.some((row) => row.net === -1)).toBe(true);
     } finally {
       await pool.end();
     }
@@ -189,9 +190,18 @@ describe.skipIf(!databaseUrl)("phasec live wallet signal against postgres", () =
       const fill = async (wallet: string, mint: string, side: string, slot: number) => {
         index += 1;
         await pool.query(
-          `insert into wallet_fill (signature, event_index, slot, mint, wallet, side, venue)
-           values ($1, 0, $2, $3, $4, $5, 'pump')`,
-          [`sig-${index.toString()}`, slot, mint, wallet, side],
+          `insert into wallet_fill
+             (signature, event_index, slot, mint, wallet, side, venue, sol_amount, token_amount)
+           values ($1, 0, $2, $3, $4, $5, 'pump', $6, $7)`,
+          [
+            `sig-${index.toString()}`,
+            slot,
+            mint,
+            wallet,
+            side,
+            side === "sell" ? 0.05 : -0.05,
+            side === "sell" ? -1000 : 1000,
+          ],
         );
       };
       // A flip bot that touched 41 mints today, including the bot-only coin.
@@ -205,6 +215,15 @@ describe.skipIf(!databaseUrl)("phasec live wallet signal against postgres", () =
       // Bought about two hours ago: still held but no longer a fresh signal.
       await fill("StaleWallet", mints.stale, "buy", TIP - 18_000);
       await fill("TipWallet", "TipMint", "buy", TIP);
+      for (const wallet of ["BotWallet", "FreshWallet", "SoldWallet", "StaleWallet", "TipWallet"]) {
+        await pool.query(
+          `insert into tracked_wallet
+             (address, hit_rate, early_entries, early_wins, derivation, active, selected_at, scoring_version)
+           values ($1, 0.7, 10, 7, 'test', true, '2026-11-21T14:00:00Z', 3)
+           on conflict (address) do update set active = true, selected_at = '2026-11-21T14:00:00Z'`,
+          [wallet],
+        );
+      }
 
       const coins = await repo.coins(200, { maxMintsPerDay: 40, freshMinutes: 60 });
       const buyers = new Map(coins.map((coin) => [coin.mint, coin.trackedBuyers]));
@@ -291,6 +310,189 @@ describe.skipIf(!databaseUrl)("phasec closedBetween against postgres", () => {
         [voidedId],
       );
       expect(voided.rows[0]?.restarted_at).not.toBeNull();
+    } finally {
+      await pool.end();
+    }
+  }, 30_000);
+
+  it("keeps the scale-out booking after the paper window is marked restarted", async () => {
+    const pool = createPool(databaseUrl ?? "");
+    try {
+      await migrate(pool);
+      const repo = new PhaseCRepository(pool);
+      const at = new Date("2026-11-22T17:10:00.000Z");
+      const mint = "ScalePersist11111111111111111111111111111";
+      await repo.insertEntry({
+        mint,
+        stage: "trench",
+        arm: "wallets_x_screen",
+        sizePct: 0.5,
+        strength: 0.55,
+        exitPlan: "plan",
+        text: "entry",
+        held: false,
+        alertAt: at,
+        entryAfter: at,
+      });
+      const row = await pool.query<{ id: string }>(
+        "select id from phasec_position where mint = $1 order by id desc limit 1",
+        [mint],
+      );
+      const id = String(row.rows[0]?.id);
+      await repo.openPosition(id, 1, 1, 0, 10, "100", 0.2, "jupiter", at);
+      await repo.markScaled(
+        [{ id, quote: 1.5, impactPct: 2, proceedsUsd: 7.35, feeUsd: 0.15 }],
+        at,
+      );
+      const loaded = await repo.positions();
+      const open = loaded.find((position) => position.id === id);
+      expect(open?.scaleQuote).toBeCloseTo(1.5);
+      expect(open?.scaleProceedsUsd).toBeCloseTo(7.35);
+      expect(open?.scaledAt?.toISOString()).toBe(at.toISOString());
+      await repo.voidPaperWindow(at);
+      const stored = await pool.query<{
+        scale_quote: number;
+        scale_proceeds_usd: number;
+        restarted_at: Date;
+      }>(
+        "select scale_quote, scale_proceeds_usd, restarted_at from phasec_position where id = $1",
+        [id],
+      );
+      expect(Number(stored.rows[0]?.scale_quote)).toBeCloseTo(1.5);
+      expect(Number(stored.rows[0]?.scale_proceeds_usd)).toBeCloseTo(7.35);
+      expect(stored.rows[0]?.restarted_at).not.toBeNull();
+    } finally {
+      await pool.end();
+    }
+  }, 30_000);
+
+  it("counts a tracked buyer only for an active listed wallet selected before the freeze", async () => {
+    const pool = createPool(databaseUrl ?? "");
+    try {
+      await migrate(pool);
+      const repo = new PhaseCRepository(pool);
+      const freeze = new Date("2026-11-21T14:30:00.000Z");
+      const now = new Date();
+      const slot = 500_000_000;
+      const rows = [
+        {
+          mint: "ListedMint111111111111111111111111111111",
+          wallet: "listed-wallet",
+          active: true,
+          selected: "2026-11-21T14:00:00.000Z",
+        },
+        {
+          mint: "UnlistedMint11111111111111111111111111111",
+          wallet: "unlisted-wallet",
+          active: false,
+          selected: null,
+        },
+        {
+          mint: "InactiveMint11111111111111111111111111111",
+          wallet: "inactive-wallet",
+          active: false,
+          selected: "2026-11-21T14:00:00.000Z",
+        },
+        {
+          mint: "LateMint111111111111111111111111111111111",
+          wallet: "late-wallet",
+          active: true,
+          selected: "2026-11-22T00:00:00.000Z",
+        },
+      ];
+      for (const [index, row] of rows.entries()) {
+        await pool.query(
+          `insert into candidates
+            (mint, pool, pool_type, first_seen_slot, first_seen_at, source_signature, source)
+           values ($1, $2, 'pump', $3, $4, $5, 'stream')`,
+          [
+            row.mint,
+            `pool-${index.toString()}`,
+            slot,
+            now.toISOString(),
+            `sig-${index.toString()}`,
+          ],
+        );
+        if (row.selected) {
+          await pool.query(
+            `insert into tracked_wallet
+              (address, hit_rate, early_entries, early_wins, derivation, active, selected_at, scoring_version)
+             values ($1, 0.7, 10, 7, 'test', $2, $3, 3)`,
+            [row.wallet, row.active, row.selected],
+          );
+        }
+        await pool.query(
+          `insert into wallet_fill
+             (signature, event_index, slot, mint, wallet, side, venue, sol_amount, token_amount)
+           values ($1, 0, $2, $3, $4, 'buy', 'pump', -0.05, 1000)`,
+          [`fill-${index.toString()}`, slot, row.mint, row.wallet],
+        );
+      }
+      const coins = await repo.coins(50, {
+        maxMintsPerDay: 40,
+        freshMinutes: 60,
+        freezeAt: freeze,
+      });
+      const buyers = new Map(coins.map((coin) => [coin.mint, coin.trackedBuyers]));
+      expect(buyers.get("ListedMint111111111111111111111111111111")).toBe(1);
+      expect(buyers.get("UnlistedMint11111111111111111111111111111") ?? 0).toBe(0);
+      expect(buyers.get("InactiveMint11111111111111111111111111111") ?? 0).toBe(0);
+      expect(buyers.get("LateMint111111111111111111111111111111111") ?? 0).toBe(0);
+    } finally {
+      await pool.end();
+    }
+  }, 30_000);
+
+  it("does not replace a stored wallet fill amount with null", async () => {
+    const pool = createPool(databaseUrl ?? "");
+    try {
+      await migrate(pool);
+      const { IngestRepository } = await import("../index.js");
+      const repo = new IngestRepository(pool);
+      await repo.insertWalletFill({
+        signature: "amount-sig",
+        eventIndex: 0,
+        slot: 10,
+        mint: "AmountMint111111111111111111111111111111",
+        wallet: "amount-wallet",
+        side: "buy",
+        venue: "pump",
+        solAmount: -0.2,
+        tokenAmount: 42,
+      });
+      await repo.insertWalletFill({
+        signature: "amount-sig",
+        eventIndex: 0,
+        slot: 10,
+        mint: "AmountMint111111111111111111111111111111",
+        wallet: "amount-wallet",
+        side: "buy",
+        venue: "pump",
+      });
+      const kept = await pool.query<{ sol_amount: number; token_amount: number }>(
+        "select sol_amount, token_amount from wallet_fill where signature = 'amount-sig'",
+      );
+      expect(Number(kept.rows[0]?.sol_amount)).toBeCloseTo(-0.2);
+      expect(Number(kept.rows[0]?.token_amount)).toBe(42);
+      await pool.query(
+        "update wallet_fill set sol_amount = null, token_amount = null where signature = 'amount-sig'",
+      );
+      await repo.insertWalletFill({
+        signature: "amount-sig",
+        eventIndex: 0,
+        slot: 10,
+        mint: "AmountMint111111111111111111111111111111",
+        wallet: "amount-wallet",
+        side: "buy",
+        venue: "pump",
+        solAmount: -0.1,
+        tokenAmount: 7,
+      });
+      const filled = await pool.query<{ sol_amount: number; token_amount: number }>(
+        "select sol_amount, token_amount from wallet_fill where signature = 'amount-sig'",
+      );
+      expect(Number(filled.rows[0]?.sol_amount)).toBeCloseTo(-0.1);
+      expect(Number(filled.rows[0]?.token_amount)).toBe(7);
     } finally {
       await pool.end();
     }

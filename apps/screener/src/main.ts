@@ -4,6 +4,7 @@ import {
   PhaseCRepository,
   resolveAlertChat,
   sendTelegramMessage,
+  serviceEnabled,
   startApp,
 } from "@fomo/core";
 
@@ -17,6 +18,13 @@ await startApp({
   run: async ({ env, thresholds, logger }) => {
     if (process.argv.includes("--crash-test")) {
       throw new Error("intentional crash test");
+    }
+    if (!serviceEnabled(env.PAPER_ENABLED)) {
+      logger.warn(
+        { paperEnabled: env.PAPER_ENABLED ?? "unset" },
+        "screener stayed stopped: PAPER_ENABLED is not true",
+      );
+      return;
     }
     const pool = createPool(env.DATABASE_URL);
     const store = new PhaseCRepository(pool);
@@ -64,7 +72,7 @@ await startApp({
           const destination = resolveAlertChat({
             destination: env.ALERT_DESTINATION ?? "test",
             testChatId: env.TELEGRAM_TEST_CHAT_ID ?? null,
-            adminChatId: env.TELEGRAM_ADMIN_CHAT_ID,
+            adminChatId: env.TELEGRAM_ADMIN_CHAT_ID ?? "",
           });
           await runPhaseCCycle({
             now: new Date(),
@@ -76,7 +84,7 @@ await startApp({
             send: async (text) => {
               if ("blocked" in destination) return;
               await sendTelegramMessage({
-                token: env.TELEGRAM_BOT_TOKEN,
+                token: env.TELEGRAM_BOT_TOKEN ?? "",
                 chatId: destination.chatId,
                 text,
               });

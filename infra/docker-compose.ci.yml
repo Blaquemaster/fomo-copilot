@@ -1,0 +1,19 @@
+# CI only. Layers extra env files onto the services under test.
+# Postgres stays without an env file and without host ports.
+services:
+  ingestor:
+    env_file:
+      - path: ${CI_APP_ENV:?set CI_APP_ENV}
+        required: true
+  screener:
+    env_file:
+      - path: ${CI_APP_ENV:?set CI_APP_ENV}
+        required: true
+  alerter:
+    env_file:
+      - path: ${CI_APP_ENV:?set CI_APP_ENV}
+        required: true
+  shadow:
+    env_file:
+      - path: ${CI_SHADOW_ENV:?set CI_SHADOW_ENV}
+        required: true

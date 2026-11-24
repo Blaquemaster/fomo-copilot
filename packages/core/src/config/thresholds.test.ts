@@ -23,6 +23,8 @@ describe("loadThresholds", () => {
       freeze_authority_active: true,
       transfer_fee_bps_above: 300,
       exit_quote_impact_pct_above: 5,
+      entry_impact_pct_above: 10,
+      round_trip_impact_pct_above: 10,
       top10_holders_pct_above: 50,
       sniper_bundle_pct_above: 60,
       required_source_error: "WATCH",
@@ -31,6 +33,7 @@ describe("loadThresholds", () => {
       trench_min_tracked_buyers: 1,
       wallet_max_mints_per_day: 40,
       wallet_buy_fresh_minutes: 60,
+      max_size_pool_share: 0.01,
     });
     expect(thresholds.screen.soft).toEqual({
       top10_holders_pct_warn: 35,
@@ -45,7 +48,13 @@ describe("loadThresholds", () => {
       daily_loss_cutoff_usd: "set-by-me",
       no_averaging_down: true,
     });
-    expect(thresholds.paper).toEqual({ assumed_slippage_bps: 150, assumed_fee_bps: 50 });
+    expect(thresholds.paper).toEqual({
+      assumed_slippage_bps: 150,
+      fee_schedule: "solana_lowest_fee",
+      tx_cost_usd: 0.95,
+      other_min_usd: 0.95,
+      other_rate: 0.005,
+    });
   });
 
   it("accepts numeric risk rules and a quiet-hours window", () => {
@@ -74,7 +83,8 @@ risk_rules:
   no_averaging_down: true
 paper:
   assumed_slippage_bps: 150
-  assumed_fee_bps: 50
+  fee_schedule: solana_lowest_fee
+  tx_cost_usd: 0.95
 `);
     const thresholds = loadThresholds(file);
     expect(thresholds.alerts.quiet_hours).toBe("22:00-07:00");

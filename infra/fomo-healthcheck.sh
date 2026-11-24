@@ -4,7 +4,9 @@ set -u
 . /etc/fomo-healthcheck.env   # HC_URL, BASE_RESTARTS (default 0)
 BASE_RESTARTS=${BASE_RESTARTS:-0}
 verdict=PASS; notes=()
-for c in ingestor screener alerter postgres; do
+# Screener and alerter are stopped unless ENABLE_PAPER=true. A missing or
+# exited paper service is the expected state and is not a failure.
+for c in ingestor postgres; do
   n=fomo-copilot-$c-1
   s=$(docker inspect -f '{{.State.Status}} {{.RestartCount}} {{.State.OOMKilled}}' "$n" 2>/dev/null) || { verdict=FAIL; notes+=("$c missing"); continue; }
   read st rc oom <<<"$s"

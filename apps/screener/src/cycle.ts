@@ -1,5 +1,6 @@
 import {
   admitAutobuy,
+  capSizeToLiquidity,
   DEFAULT_WALLET_SIGNAL,
   shouldFetchSniper,
   autobuyLimits,
@@ -27,6 +28,7 @@ import {
   secondWaveSignal,
   stageForCoin,
   stageSizeUsd,
+  walletListHash,
   type Env,
   type MarketQuote,
   type PhaseCStore,
@@ -42,6 +44,7 @@ import {
   screenCreditProjection,
 } from "./accounts.js";
 import { collectJupiterBids, fetchSolPriceUsd, type JupiterRequest } from "./jupiter.js";
+import { readPoolStates } from "./poolRead.js";
 
 const ENRICH_PER_PASS = 16;
 
@@ -91,6 +94,7 @@ export async function runPhaseCCycle(input: {
   const coins = await input.store.coins(200, {
     maxMintsPerDay: rules.walletMaxMintsPerDay ?? DEFAULT_WALLET_SIGNAL.maxMintsPerDay,
     freshMinutes: rules.walletBuyFreshMinutes ?? DEFAULT_WALLET_SIGNAL.freshMinutes,
+    freezeAt: input.env.WALLET_LIST_FREEZE_AT ? new Date(input.env.WALLET_LIST_FREEZE_AT) : null,
   });
   if (config.xEnabled) {
     const counts = await input.store.mentionCounts(coins.map((coin) => coin.mint));
@@ -235,8 +239,12 @@ export async function runPhaseCCycle(input: {
     const size = stageSizeUsd(config.bankroll, position.sizePct);
     if (size === null || solPrice === null) continue;
     if (position.status === "pending" && input.now.getTime() >= position.entryAfter.getTime()) {
-      const amount = lamportsForUsd(size, solPrice);
-      const amount2 = lamportsForUsd(size * 2, solPrice);
+      const coin = coins.find((item) => item.mint === position.mint);
+      const capped =
+        capSizeToLiquidity(size, coin?.liquidityUsd ?? null, config.maxSizePoolShare ?? 0.01) ??
+        size;
+      const amount = lamportsForUsd(capped, solPrice);
+      const amount2 = lamportsForUsd(capped * 2, solPrice);
       if (amount) {
         requests.push({
           mint: position.mint,
@@ -244,7 +252,7 @@ export async function runPhaseCCycle(input: {
           purpose: "entry",
           amount,
           which: "1x",
-          sizeUsd: size,
+          sizeUsd: capped,
           solPriceUsd: solPrice,
           priority: 1,
         });
@@ -256,7 +264,7 @@ export async function runPhaseCCycle(input: {
           purpose: "entry",
           amount: amount2,
           which: "2x",
-          sizeUsd: size * 2,
+          sizeUsd: capped * 2,
           solPriceUsd: solPrice,
           priority: 1,
         });
@@ -303,7 +311,12 @@ export async function runPhaseCCycle(input: {
   let probes = 0;
   for (const coin of coins) {
     if (probes >= probeRoom) break;
-    if (coin.exitQuoteImpactPct !== null || solPrice === null) continue;
+    if (
+      (coin.exitQuoteImpactPct !== null && coin.entryQuoteImpactPct != null) ||
+      solPrice === null
+    ) {
+      continue;
+    }
     const size = stageSizeUsd(
       config.bankroll,
       config.sizePct[coin.graduatedAt ? "post_graduation" : "trench"],
@@ -396,6 +409,7 @@ export async function runPhaseCCycle(input: {
         bid = modeled;
       }
     }
+    if (probe?.ok) coin.entryQuoteImpactPct = probe.impactPct;
     if (bid?.ok) {
       coin.exitQuoteImpactPct = bid.impactPct;
       freshExit.set(coin.mint, bid.impactPct);
@@ -448,6 +462,7 @@ export async function runPhaseCCycle(input: {
       if (!coin) continue;
       coin.mintAuthorityActive = row.mintAuthorityActive;
       coin.freezeAuthorityActive = row.freezeAuthorityActive;
+      coin.tokenExtension = row.tokenExtension;
     }
     const holders = await loadTopHolders({
       apiKey: input.env.HELIUS_API_KEY,
@@ -490,6 +505,57 @@ export async function runPhaseCCycle(input: {
     await input.store.recordScreenCredits(spent, input.now);
   }
   Object.assign(quoted.bids, sold.bids);
+  const fillSells: JupiterRequest[] = [];
+  for (const position of positions) {
+    if (position.status !== "pending" || input.now.getTime() < position.entryAfter.getTime()) {
+      continue;
+    }
+    const buy = quoted.bids[quoteKey(position.mint, "entry", "1x")];
+    if (!buy?.ok || solPrice === null) continue;
+    fillSells.push({
+      mint: position.mint,
+      side: "sell",
+      purpose: "fill_sell",
+      amount: buy.outAmount,
+      which: "1x",
+      sizeUsd: buy.sizeUsd,
+      solPriceUsd: solPrice,
+      priority: 1,
+    });
+  }
+  if (fillSells.length > 0) {
+    const filled = await collectJupiterBids({
+      requests: fillSells,
+      fetchImpl: input.fetchImpl,
+      apiKey: input.env.JUPITER_API_KEY ?? null,
+      nowMs: input.now.getTime(),
+      bucket: sold.bucket,
+    });
+    Object.assign(quoted.bids, filled.bids);
+  }
+  const pools = await input.store.openPools(positions.map((position) => position.mint));
+  const poolByMint = new Map(pools.map((row) => [row.mint, row]));
+  const poolState = await readPoolStates({
+    rows: positions.flatMap((position) => {
+      const pool = poolByMint.get(position.mint);
+      if (!pool) return [];
+      let sellAmountRaw = 1n;
+      try {
+        if (position.entryOutAmount) sellAmountRaw = BigInt(position.entryOutAmount);
+      } catch {
+        sellAmountRaw = 1n;
+      }
+      return [
+        {
+          mint: position.mint,
+          pool: pool.pool,
+          poolType: pool.poolType,
+          sellAmountRaw,
+        },
+      ];
+    }),
+    fetchImpl: input.fetchImpl,
+  });
   const entriesStart = stored ? readEntriesStart(stored.body) : nextEtMidnight(input.now);
   const result = runPhaseCPass({
     now: input.now,
@@ -501,6 +567,7 @@ export async function runPhaseCCycle(input: {
     coins,
     quotes: [...input.quotes],
     bids: quoted.bids,
+    poolState,
     positions,
     closedToday: await input.store.closedBetween(day.start, day.end),
     paused: await input.store.isPaused(day.day),
@@ -525,6 +592,13 @@ export async function runPhaseCCycle(input: {
   }
   if (result.lock) {
     await input.store.saveProtocol(result.lock.fingerprint, result.lock.body, input.now);
+    const wallets = await input.store.wallets();
+    await input.store.recordWalletList(
+      walletListHash(wallets.map((wallet) => wallet.address)),
+      wallets.length,
+      input.now,
+      input.env.WALLET_LIST_FREEZE_AT ? new Date(input.env.WALLET_LIST_FREEZE_AT) : null,
+    );
   }
   if (result.pauseReason) await input.store.pause(etDay(input.now), result.pauseReason, input.now);
   for (const open of result.opens) {
@@ -571,10 +645,13 @@ export async function runPhaseCCycle(input: {
   const destination = resolveAlertChat({
     destination: config.destination,
     testChatId: input.env.TELEGRAM_TEST_CHAT_ID ?? null,
-    adminChatId: input.env.TELEGRAM_ADMIN_CHAT_ID,
+    adminChatId: input.env.TELEGRAM_ADMIN_CHAT_ID ?? "",
   });
   await input.store.markSellWarned(result.sellWarnings);
   await input.store.markScaled(result.scaled, input.now);
+  await input.store.saveQuoteFailures(result.quoteFailures, input.now);
+  await input.store.saveNoRouteStreaks(result.streaks);
+  await input.store.insertCandidates(result.candidates, input.now);
   let autobuyMode: "off" | "dry_run" = "off";
   try {
     autobuyMode = resolveAutobuyMode({
@@ -653,7 +730,8 @@ export async function runPhaseCCycle(input: {
           coin.top10HoldersPct !== null ||
           coin.sniperBundlePct !== null ||
           (coin.graduatedAt === null && coin.liquidityUsd !== null) ||
-          freshExit.has(coin.mint),
+          freshExit.has(coin.mint) ||
+          coin.entryQuoteImpactPct != null,
       )
       .map((coin) => ({
         mint: coin.mint,
@@ -663,6 +741,7 @@ export async function runPhaseCCycle(input: {
         sniperPct: coin.sniperBundlePct,
         curveLiquidityUsd: coin.graduatedAt ? null : coin.liquidityUsd,
         exitImpactPct: freshExit.get(coin.mint) ?? null,
+        entryImpactPct: coin.entryQuoteImpactPct ?? null,
       })),
     input.now,
   );

@@ -1,0 +1,26 @@
+{
+  "revision": "cfefbf2955ecc7de46b21593ba780e5eb05476e0",
+  "files": {
+    "infra/docker-compose.yml": "741c1b6cd2e628b125358d126f0d55c1cd99561f0f9c353e55d2c2638f4d01d4",
+    ".github/workflows/deploy.yml": "5178c13fc4b3f05d61f1bc7cd169475e49eb7f11f858a026b76942360b06e693",
+    ".github/workflows/publish.yml": "9a74192b28373e13c4c02fcd816d18ba0c31ed6515f776a56000bc3907290a6a",
+    "scripts/replace-ingestor.sh": "510252c8ecfdadebd7b72dbdbd102c5dae774ba62b3db7b83477a607718d658c",
+    "scripts/approved-rollback.sh": "68df6c025d31720e1c66dba2578cd403ae05676bd8c8f95105ad055cbfaa58ec",
+    "scripts/install-rollback-controller.sh": "fccf8188be7fb52837524bd5f2dbd6a512c4ee9e665665f9b5fbb1a156c94fc7",
+    "scripts/preflight.sh": "62c568620a836b1994be156c4cd4a6537d8cdb0eaa2f266630c87f9552885b99",
+    "scripts/restore-and-upgrade.sh": "c4be60f28b006624ff886045b13d14370df2a3a0faf61f7270af624b36e94e87",
+    "scripts/pre-merge-deploy-check.sh": "4256d713fbdc6cff593ed15088e9c2159bbae4529115a01ba133399cc67fba7b",
+    "scripts/halt-on-schema-drift.sh": "a4496a016214f3f44382cb48a1b4ab4dbf0beae2f92d47a0f800d8d1fdbc76c9",
+    "scripts/verify-published-image.sh": "0fd2174b1a7674da48733a025923a3fd75bbef221c2c2bbd833060364ace1ae9",
+    "scripts/setup-deploy-user.sh": "a5d7e829387a37ad2f32303cf65c4c47c506b9e2f90424ba24059d5d5d31f5d0",
+    "scripts/fomo-deploy-helper": "4b018e22560367231f81a34b63529ca8e6b3ea588118542157618c8a8fd5fd82",
+    "scripts/cutover-report.sh": "857f3483bec8bcb8bdd963d7d3379d011a306d285a73dbedc68429e4015e1f38",
+    "scripts/copy-tested-oci.sh": "ab2ba48b4a3defcf59acc63cd0f7f69c1094017d2e105818017ceecbe300a456",
+    "scripts/verify-release-handoff.sh": "079438cd67714b16ab9a30afbeea08ea76b8762eef01f3fb4c10ba5164bcfdd7",
+    "scripts/check-deploy-triggers.mjs": "eb889547028abc31faf175430ba47d35f3903022cd652fb3642e593bdbad01f7",
+    "scripts/hold-deploy-workflow.sh": "1d2c588ec01ca309ce23955bc629452bb857f83b70edc600e403628cac2fce82",
+    "scripts/check-merged-tree.sh": "8170b1b0998fc9deb66e6f86a8e02940d654b396bb00bec9eb3b948c8d6c11d0",
+    "infra/sql/fomo-shadow-diagnostic.sql": "a61f128dc9534de4bd52c33c02cf5a6a77a6a92695c6ee2e227454831c454328",
+    "infra/refused-digests.txt": "b1d23a56afc3a810a9939937974d29c6a25f0dbd30d47ed2d23ae899607df8a0"
+  }
+}

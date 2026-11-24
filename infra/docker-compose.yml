@@ -72,11 +72,14 @@ services:
         max-size: "10m"
         max-file: "3"
 
+  # Paper trading and Telegram alerts stay off unless the deploy flag
+  # ENABLE_PAPER=true is set. `docker compose up` does not start this profile.
   screener:
+    profiles: ["paper"]
     build:
       context: ..
       dockerfile: apps/screener/Dockerfile
-    restart: unless-stopped
+    restart: "no"
     env_file:
       - path: ../.env
         required: false
@@ -136,11 +139,101 @@ services:
         max-size: "10m"
         max-file: "3"
 
+  # Scheduled exit quotes. Off unless this profile is requested. It does not send alerts.
+  outcomes:
+    profiles: ["outcomes"]
+    build:
+      context: ..
+      dockerfile: apps/screener/Dockerfile
+    command: ["node", "apps/screener/dist/outcomeWorker.js"]
+    restart: "no"
+    env_file:
+      - path: ../.env
+        required: false
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks:
+      - internal
+    init: true
+    read_only: true
+    tmpfs:
+      - /tmp:size=32m
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    deploy:
+      resources:
+        limits:
+          memory: 96M
+    logging:
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  # Collection-only shadow. Off unless this profile is requested. No alerts, no trades.
+  shadow:
+    profiles: ["shadow"]
+    build:
+      context: ..
+      dockerfile: apps/screener/Dockerfile
+    command: ["node", "apps/screener/dist/shadowWorker.js"]
+    restart: "no"
+    # Not the app env. That file holds the Telegram token. This file is not in git.
+    env_file:
+      - path: ../shadow.env
+        required: false
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks:
+      - internal
+    init: true
+    read_only: true
+    tmpfs:
+      - /tmp:size=32m
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    deploy:
+      resources:
+        limits:
+          memory: 96M
+    logging:
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  # Opt-in restart check. `docker compose up` does not start this profile.
+  stack-test:
+    profiles: ["test"]
+    build:
+      context: ..
+      dockerfile: apps/screener/Dockerfile
+    command: ["node", "apps/screener/dist/stackRestart.js"]
+    restart: "no"
+    env_file:
+      - path: ../.env
+        required: false
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks:
+      - internal
+    init: true
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+
   alerter:
+    profiles: ["paper"]
     build:
       context: ..
       dockerfile: apps/alerter/Dockerfile
-    restart: unless-stopped
+    restart: "no"
     env_file:
       - path: ../.env
         required: false

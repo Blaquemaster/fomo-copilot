@@ -1,5 +1,17 @@
 import { EXIT_PLAN, type Stage } from "./protocol.js";
 
+/** Cap a stage size to a share of pool liquidity. Unknown liquidity is left unchanged. */
+export function capSizeToLiquidity(
+  sizeUsd: number | null,
+  liquidityUsd: number | null,
+  share: number,
+): number | null {
+  if (sizeUsd === null) return null;
+  if (!(sizeUsd > 0) || !(share > 0) || liquidityUsd === null || !(liquidityUsd > 0))
+    return sizeUsd;
+  return Math.min(sizeUsd, liquidityUsd * share);
+}
+
 export function sizeForStage(
   stage: Stage,
   sizePct: Record<Stage, number>,

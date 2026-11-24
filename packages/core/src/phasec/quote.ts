@@ -7,7 +7,10 @@ export interface SizeBidOk {
   execPriceUsd: number;
   midPriceUsd: number;
   impactPct: number;
+  /** Jupiter pool fee in USD. Zero when the quote has no fee field. Not added on top of outAmount. */
   feeUsd: number;
+  /** True only when the quote body included a feeAmount. Current Jupiter quotes do not. */
+  feeQuoted?: boolean;
   sizeUsd: number;
   liquidityUsd: number | null;
   inAmount: string;
@@ -17,7 +20,19 @@ export interface SizeBidOk {
 
 export interface SizeBidFail {
   ok: false;
-  reason: "no_liquidity" | "no_route" | "no_quote" | "rate_limited" | "transient";
+  reason:
+    | "no_liquidity"
+    | "no_route"
+    | "no_quote"
+    | "rate_limited"
+    | "transient"
+    | "http_400"
+    | "http_404"
+    | "api_error";
+  /** Raw Jupiter status. Absent when the request never got an HTTP response. */
+  httpStatus?: number | null;
+  /** Truncated, redacted response body. Absent on a transport failure. */
+  errorBody?: string | null;
 }
 
 export type SizeBid = SizeBidOk | SizeBidFail;
@@ -33,7 +48,7 @@ export function jupiterRatePerMin(hasApiKey: boolean): number {
   return hasApiKey ? 48 : 24;
 }
 
-export type QuotePurpose = "screen" | "entry" | "exit" | "scale" | "probe";
+export type QuotePurpose = "screen" | "entry" | "exit" | "scale" | "probe" | "fill_sell";
 
 export function quoteKey(mint: string, purpose: QuotePurpose, size: "1x" | "2x"): string {
   return `${mint}|${purpose}|${size}`;
@@ -44,14 +59,19 @@ export function lamportsForUsd(sizeUsd: number, solPriceUsd: number): string | n
   return Math.round((sizeUsd / solPriceUsd) * 1_000_000_000).toString();
 }
 
-export function jupiterQuoteUrl(inputMint: string, outputMint: string, amount: string): string {
+export function jupiterQuoteUrl(
+  inputMint: string,
+  outputMint: string,
+  amount: string,
+  base: string = JUPITER_QUOTE_URL,
+): string {
   const params = new URLSearchParams({
     inputMint,
     outputMint,
     amount,
     swapMode: "ExactIn",
   });
-  return `${JUPITER_QUOTE_URL}?${params.toString()}`;
+  return `${base}?${params.toString()}`;
 }
 
 export function impactPercent(raw: number): number {
@@ -63,9 +83,17 @@ export function impactPercent(raw: number): number {
 export function classifyJupiterHttp(status: number): SizeBidFail["reason"] | "ok" {
   if (status === 429) return "rate_limited";
   if (status >= 500) return "transient";
-  if (status === 400 || status === 404) return "no_route";
+  if (status === 400) return "http_400";
+  if (status === 404) return "http_404";
+  if (status >= 400 && status < 500) return "api_error";
   if (status >= 200 && status < 300) return "ok";
   return "transient";
+}
+
+/** Keep a failed quote body small and free of credentials. */
+export function quoteErrorBody(body: string, limit = 512): string {
+  const trimmed = body.replace(/\s+/g, " ").trim();
+  return trimmed.length <= limit ? trimmed : trimmed.slice(0, limit);
 }
 
 /** Jupiter /swap/v1/quote body. The request is quote-only. */
@@ -98,7 +126,8 @@ export function parseJupiterQuote(
       if (Number.isFinite(fee) && fee > 0) feeRaw += fee;
     }
   }
-  const feeUsd = (feeRaw / inAmount) * sizeUsd;
+  const feeQuoted = feeRaw > 0;
+  const feeUsd = feeQuoted ? (feeRaw / inAmount) * sizeUsd : 0;
   const execPriceUsd =
     side === "sell" && solPriceUsd > 0
       ? ((outAmount / 1_000_000_000) * solPriceUsd) / inAmount
@@ -110,6 +139,7 @@ export function parseJupiterQuote(
     midPriceUsd,
     impactPct,
     feeUsd,
+    feeQuoted,
     sizeUsd,
     liquidityUsd: side === "sell" ? liquidityFromSellImpact(sizeUsd, impactPct) : null,
     inAmount: String(record["inAmount"]),
@@ -126,35 +156,76 @@ export function liquidityFromSellImpact(sizeUsd: number, impactPct: number): num
   return sizeUsd / (impactPct / 100);
 }
 
+/** Percent of notional lost by buying and selling immediately. Null when either quote is missing. */
+export function roundTripImpactPct(buy: SizeBid, sell: SizeBid): number | null {
+  if (!buy.ok || !sell.ok || !(buy.execPriceUsd > 0) || !(sell.execPriceUsd > 0)) return null;
+  return (1 - sell.execPriceUsd / buy.execPriceUsd) * 100;
+}
+
 export function stageSizeUsd(bankroll: number | null, sizePct: number): number | null {
   if (bankroll === null || !(bankroll > 0) || !(sizePct > 0)) return null;
   return (bankroll * sizePct) / 100;
 }
 
-export type FomoFeeSchedule = "solana_lowest_fee" | "solana_other";
+export type FomoFeeSchedule = "solana_lowest_fee" | "solana_other" | "fixed_usd";
+
+/** Selectable route cost. Every number has the published default when omitted. */
+export interface FomoFeeTerms {
+  schedule: FomoFeeSchedule;
+  /** Used when schedule is fixed_usd. Default 0.95. */
+  fixedUsd?: number;
+  otherMinUsd?: number;
+  otherRate?: number;
+  lowestUnder5Usd?: number;
+  lowestMidRate?: number;
+  lowestMidUntilUsd?: number;
+  lowestFlatUsd?: number;
+  lowestFlatUntilUsd?: number;
+  lowestHighRate?: number;
+}
+
+export type FomoFeeInput = FomoFeeSchedule | FomoFeeTerms;
+
+export function feeTerms(input: FomoFeeInput = "solana_lowest_fee"): Required<FomoFeeTerms> {
+  const given = typeof input === "string" ? { schedule: input } : input;
+  return {
+    schedule: given.schedule,
+    fixedUsd: given.fixedUsd ?? 0.95,
+    otherMinUsd: given.otherMinUsd ?? 0.95,
+    otherRate: given.otherRate ?? 0.005,
+    lowestUnder5Usd: given.lowestUnder5Usd ?? 0.1,
+    lowestMidRate: given.lowestMidRate ?? 0.02,
+    lowestMidUntilUsd: given.lowestMidUntilUsd ?? 47.5,
+    lowestFlatUsd: given.lowestFlatUsd ?? 0.95,
+    lowestFlatUntilUsd: given.lowestFlatUntilUsd ?? 190,
+    lowestHighRate: given.lowestHighRate ?? 0.005,
+  };
+}
 
 /**
- * FOMO's published Solana schedule. Lowest-fee route: 0.10 under $5,
- * 2% from $5 through $47.50, $0.95 from there through $190, 0.50% above that.
- * The brackets meet at the boundaries. Other routes are 0.50% with a $0.95 minimum.
+ * FOMO's published Solana schedule, or a fixed dollar per transaction.
+ * Lowest-fee route: 0.10 under $5, 2% from $5 through $47.50, $0.95 through $190, 0.50% above.
+ * Other routes: otherRate with otherMinUsd (default 0.50% and $0.95).
+ * Network and priority fees are not added: FOMO pays those on Solana.
  */
-export function fomoFeeUsd(
-  notionalUsd: number,
-  schedule: FomoFeeSchedule = "solana_lowest_fee",
-): number {
+export function fomoFeeUsd(notionalUsd: number, input: FomoFeeInput = "solana_lowest_fee"): number {
   if (!(notionalUsd > 0)) return 0;
-  if (schedule === "solana_other") return Math.max(0.95, notionalUsd * 0.005);
-  if (notionalUsd < 5) return 0.1;
-  if (notionalUsd <= 47.5) return notionalUsd * 0.02;
-  if (notionalUsd <= 190) return 0.95;
-  return notionalUsd * 0.005;
+  const terms = feeTerms(input);
+  if (terms.schedule === "fixed_usd") return terms.fixedUsd;
+  if (terms.schedule === "solana_other") {
+    return Math.max(terms.otherMinUsd, notionalUsd * terms.otherRate);
+  }
+  if (notionalUsd < 5) return terms.lowestUnder5Usd;
+  if (notionalUsd <= terms.lowestMidUntilUsd) return notionalUsd * terms.lowestMidRate;
+  if (notionalUsd <= terms.lowestFlatUntilUsd) return terms.lowestFlatUsd;
+  return notionalUsd * terms.lowestHighRate;
 }
 
 /** Jupiter fee stays in the quote. FOMO's fee is extra, on the entry notional and the exit proceeds. */
 export function roundTripFomoFee(
   entry: SizeBid,
   exit: SizeBid,
-  schedule: FomoFeeSchedule = "solana_lowest_fee",
+  schedule: FomoFeeInput = "solana_lowest_fee",
 ): number {
   if (!entry.ok || !exit.ok || !(entry.execPriceUsd > 0) || !(entry.sizeUsd > 0)) return 0;
   const tokens = (entry.sizeUsd - entry.feeUsd) / entry.execPriceUsd;
@@ -167,40 +238,74 @@ export function roundTripFomoFee(
 export function quotedRoundTrip(
   entry: SizeBid,
   exit: SizeBid,
-  schedule: FomoFeeSchedule = "solana_lowest_fee",
+  schedule: FomoFeeInput = "solana_lowest_fee",
 ): number {
   if (!entry.ok || !(entry.execPriceUsd > 0) || !(entry.sizeUsd > 0)) return FULL_LOSS;
   if (!exit.ok || exit.liquidityUsd === 0 || !(exit.execPriceUsd > 0)) return FULL_LOSS;
-  const tokens = (entry.sizeUsd - entry.feeUsd) / entry.execPriceUsd;
+  // Pool fees are already inside outAmount. Subtracting quote.feeUsd again would double-count.
+  const tokens = entry.sizeUsd / entry.execPriceUsd;
   if (!(tokens > 0)) return FULL_LOSS;
-  const proceeds =
-    tokens * exit.execPriceUsd - exit.feeUsd - fomoFeeUsd(tokens * exit.execPriceUsd, schedule);
+  const gross = tokens * exit.execPriceUsd;
+  const proceeds = gross - fomoFeeUsd(gross, schedule);
   const entryFee = fomoFeeUsd(entry.sizeUsd, schedule);
   return (proceeds - entryFee) / entry.sizeUsd - 1;
 }
 
+/** Half sold when scaledAt is set. Proceeds are net of that half's own fee. */
+export interface StoredScaleHalf {
+  proceedsUsd: number;
+}
+
+export interface ScaleHalfBooking {
+  quote: number;
+  impactPct: number;
+  proceedsUsd: number;
+  feeUsd: number;
+}
+
 /**
- * Scale-out sells half at the +50% trigger when the quote has reached it.
- * The other half uses the exit quote. A dead exit loses the unsold half.
+ * Book half the position at the trigger quote's own price.
+ * The trigger is the sell that first reached +50%, not a synthetic 1.5x and not the later close.
+ */
+export function bookScaleHalf(
+  entry: SizeBid,
+  trigger: SizeBid,
+  schedule: FomoFeeInput = "solana_lowest_fee",
+): ScaleHalfBooking | null {
+  if (!entry.ok || !trigger.ok || !(entry.execPriceUsd > 0) || !(entry.sizeUsd > 0)) return null;
+  if (!(trigger.execPriceUsd >= entry.execPriceUsd * 1.5)) return null;
+  const half = entry.sizeUsd / 2;
+  const gross = half * (trigger.execPriceUsd / entry.execPriceUsd);
+  const feeUsd = fomoFeeUsd(Math.max(0, gross), schedule);
+  return {
+    quote: trigger.execPriceUsd,
+    impactPct: trigger.impactPct,
+    proceedsUsd: gross - feeUsd,
+    feeUsd,
+  };
+}
+
+/**
+ * Scale-out uses the half booked when scaledAt was set.
+ * The other half uses the exit quote. A dead or missing exit loses only the unsold half.
+ * With no stored half, the close is an ordinary round trip, even if the close itself is above +50%.
  */
 export function scaleOutRoundTrip(
   entry: SizeBid,
   exit: SizeBid,
-  schedule: FomoFeeSchedule = "solana_lowest_fee",
+  schedule: FomoFeeInput = "solana_lowest_fee",
+  stored: StoredScaleHalf | null = null,
 ): number {
-  if (!entry.ok || !(entry.execPriceUsd > 0)) return FULL_LOSS;
-  const triggered = exit.ok && exit.execPriceUsd >= entry.execPriceUsd * 1.5;
-  if (!triggered) return quotedRoundTrip(entry, exit, schedule);
-  const half = entry.sizeUsd / 2;
-  const triggerPrice = entry.execPriceUsd * 1.5;
-  const feeRate = entry.sizeUsd > 0 ? entry.feeUsd / entry.sizeUsd : 0;
-  const scaledGross = half * (triggerPrice / entry.execPriceUsd) - half * feeRate;
-  const scaled = scaledGross - fomoFeeUsd(scaledGross, schedule);
+  if (!entry.ok || !(entry.execPriceUsd > 0) || !(entry.sizeUsd > 0)) return FULL_LOSS;
+  if (!stored) return quotedRoundTrip(entry, exit, schedule);
   const entryFee = fomoFeeUsd(entry.sizeUsd, schedule);
-  if (!exit.ok || exit.liquidityUsd === 0)
+  const scaled = stored.proceedsUsd;
+  if (!exit.ok || exit.liquidityUsd === 0 || !(exit.execPriceUsd > 0)) {
     return (scaled - entry.sizeUsd - entryFee) / entry.sizeUsd;
+  }
+  const half = entry.sizeUsd / 2;
   const restTokens = half / entry.execPriceUsd;
-  const restGross = restTokens * exit.execPriceUsd - exit.feeUsd / 2;
+  const restGross = restTokens * exit.execPriceUsd;
   const rest = restGross - fomoFeeUsd(Math.max(0, restGross), schedule);
   return (scaled + rest - entry.sizeUsd - entryFee) / entry.sizeUsd;
 }
@@ -247,6 +352,7 @@ export function modeledSellQuote(input: {
     midPriceUsd,
     impactPct,
     feeUsd: 0,
+    feeQuoted: false,
     sizeUsd: input.sizeUsd,
     liquidityUsd: (Number(solIn) / 1_000_000_000) * input.solPriceUsd,
     inAmount: amount.toString(),
@@ -259,7 +365,7 @@ export function modeledSellQuote(input: {
 export function netFromDelayedMarks(
   delayedMarkUsd: number,
   exitMarkUsd: number,
-  schedule: FomoFeeSchedule = "solana_lowest_fee",
+  schedule: FomoFeeInput = "solana_lowest_fee",
 ): number | null {
   if (!(delayedMarkUsd > 0) || !(exitMarkUsd > 0)) return null;
   const notional = 100;

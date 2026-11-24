@@ -5,6 +5,7 @@ import { describe, expect, it } from "vitest";
 import { MICROS_PER_CREDIT, allowanceCredits } from "./budget.js";
 import {
   LAUNCHLAB_PROGRAM_ID,
+  PUMP_AMM_PROGRAM_ID,
   PUMP_PROGRAM_ID,
   WALLET_SUB_CHUNK,
   WALLET_TRADE_NAMES,
@@ -372,6 +373,14 @@ describe("proven wallets", () => {
     expect(mayApplyV3List({ paperOpen: true, rankedCount: 4, testClosed: true })).toBe(false);
     expect(mayApplyV3List({ paperOpen: false, rankedCount: 4, testClosed: false })).toBe(false);
     expect(mayApplyV3List({ paperOpen: false, rankedCount: 4, testClosed: true })).toBe(true);
+    expect(
+      mayApplyV3List({
+        paperOpen: false,
+        rankedCount: 4,
+        testClosed: true,
+        listFrozen: true,
+      }),
+    ).toBe(false);
     const rows: EarlyBuy[] = [];
     for (let index = 0; index < 8; index += 1) {
       rows.push({
@@ -478,6 +487,73 @@ describe("proven wallets", () => {
       ["buy", "launchlab", "other-mint"],
     ]);
     expect(fills.every((fill) => fill.wallet === "tracked-wallet")).toBe(true);
+    expect(fills.every((fill) => fill.solAmount === null && fill.tokenAmount === null)).toBe(true);
+  });
+
+  it("stores signed SOL and token deltas for a buy, a sell, and a routed swap", () => {
+    const tracked = new Set(["tracked-wallet"]);
+    const message = notification([
+      instruction(PUMP_PROGRAM_ID, "buy", [
+        ["user", "tracked-wallet"],
+        ["mint", "coin-mint"],
+      ]),
+    ]) as {
+      params: { result: { value: Record<string, unknown> } };
+    };
+    message.params.result.value["accountKeys"] = ["tracked-wallet", "pool"];
+    message.params.result.value["meta"] = {
+      preBalances: [2_000_000_000, 0],
+      postBalances: [1_900_000_000, 100_000_000],
+      preTokenBalances: [],
+      postTokenBalances: [
+        { mint: "coin-mint", owner: "tracked-wallet", uiTokenAmount: { uiAmount: 1000 } },
+      ],
+    };
+    const buy = walletFillsFromParsed(message, tracked);
+    expect(buy[0]?.solAmount).toBeCloseTo(-0.1);
+    expect(buy[0]?.tokenAmount).toBe(1000);
+
+    const sellMessage = notification([
+      instruction(PUMP_AMM_PROGRAM_ID, "sell", [
+        ["user", "tracked-wallet"],
+        ["mint", "coin-mint"],
+      ]),
+    ]) as { params: { result: { value: Record<string, unknown> } } };
+    sellMessage.params.result.value["accountKeys"] = ["tracked-wallet"];
+    sellMessage.params.result.value["meta"] = {
+      preBalances: [1_000_000_000],
+      postBalances: [1_050_000_000],
+      preTokenBalances: [
+        { mint: "coin-mint", owner: "tracked-wallet", uiTokenAmount: { uiAmount: 1000 } },
+      ],
+      postTokenBalances: [
+        { mint: "coin-mint", owner: "tracked-wallet", uiTokenAmount: { uiAmount: 400 } },
+      ],
+    };
+    const sell = walletFillsFromParsed(sellMessage, tracked);
+    expect(sell[0]?.side).toBe("sell");
+    expect(sell[0]?.solAmount).toBeCloseTo(0.05);
+    expect(sell[0]?.tokenAmount).toBe(-600);
+
+    const swapMessage = notification([
+      instruction(LAUNCHLAB_PROGRAM_ID, "swap", [
+        ["user", "tracked-wallet"],
+        ["mint", "coin-mint"],
+      ]),
+    ]) as { params: { result: { value: Record<string, unknown> } } };
+    swapMessage.params.result.value["accountKeys"] = ["tracked-wallet"];
+    swapMessage.params.result.value["meta"] = {
+      preBalances: [3_000_000_000],
+      postBalances: [2_500_000_000],
+      preTokenBalances: [],
+      postTokenBalances: [
+        { mint: "coin-mint", owner: "tracked-wallet", uiTokenAmount: { uiAmount: 250 } },
+      ],
+    };
+    const swap = walletFillsFromParsed(swapMessage, tracked);
+    expect(swap[0]?.side).toBe("swap");
+    expect(swap[0]?.solAmount).toBeCloseTo(-0.5);
+    expect(swap[0]?.tokenAmount).toBe(250);
   });
 });
 

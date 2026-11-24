@@ -1,3 +1,12 @@
+import {
+  DEFAULT_DEAD_GAP_MS,
+  DEFAULT_DEAD_STREAK,
+  isTrueNoRoute,
+  nextNoRouteStreak,
+  shouldBookDead,
+  type NoRouteStreak,
+  type PoolTradability,
+} from "./dead.js";
 import { formatDigest, formatEntry, quietHold } from "./deliver.js";
 import { planExit } from "./exit.js";
 import type { MarketQuote } from "./market.js";
@@ -13,17 +22,23 @@ import {
 } from "./protocol.js";
 import {
   FULL_LOSS,
+  bookScaleHalf,
   fomoFeeUsd,
+  roundTripImpactPct,
   quoteKey,
   quotedRoundTrip,
   roundTripFomoFee,
+  type FomoFeeTerms,
   scaleOutRoundTrip,
   stageSizeUsd,
   type QuoteSource,
+  type ScaleHalfBooking,
   type SizeBid,
+  type StoredScaleHalf,
 } from "./quote.js";
 import {
   bankrollLossPct,
+  capSizeToLiquidity,
   entryDecision,
   exitPlanText,
   planTierPromotions,
@@ -39,6 +54,9 @@ import {
   type ScreenFacts,
   type ScreenRules,
 } from "./screen.js";
+import { exitStateFor } from "./quoteState.js";
+import { poolCanHoldNotional } from "./review3.js";
+import { buildCandidateLog, type CandidateLogRow } from "./outcomes.js";
 import { inQuietHours, nextEtMidnight } from "./time.js";
 
 export interface PassCoin extends ScoreCoin {
@@ -56,6 +74,8 @@ export interface PassCoin extends ScoreCoin {
   poolType?: string | null;
   createdSlot?: number | null;
   quoteSource?: "jupiter" | "curve_modeled";
+  entryQuoteImpactPct?: number | null;
+  tokenExtension?: "classic" | "clear" | "dangerous" | "unknown" | null;
 }
 
 export interface PassPosition {
@@ -73,6 +93,13 @@ export interface PassPosition {
   entryInAmount?: string | null;
   entryOutAmount?: string | null;
   scaledAt?: Date | null;
+  scaleQuote?: number | null;
+  scaleImpactPct?: number | null;
+  scaleProceedsUsd?: number | null;
+  scaleFeeUsd?: number | null;
+  noRouteStreak?: number;
+  noRouteFirstAt?: Date | null;
+  noRouteLastAt?: Date | null;
   sellWarned?: boolean;
   sizePct: number;
   exitPlan: string;
@@ -88,6 +115,8 @@ export interface PassInput {
   quotes: MarketQuote[];
   /** Jupiter bids keyed by quoteKey(mint, purpose, size). Purposes do not share a slot. */
   bids?: Readonly<Record<string, SizeBid>>;
+  /** On-chain read of the pool the exit would trade. Missing means unknown, which is not dead. */
+  poolState?: Readonly<Record<string, PoolTradability>>;
   positions: PassPosition[];
   closedToday: readonly { sizePct: number; netReturn: number }[];
   paused: boolean;
@@ -117,6 +146,7 @@ export interface PlannedEntry {
   fingerprint: string;
   sniperUnmeasured: boolean;
   entryAfter: Date;
+  alertPriceUsd: number | null;
 }
 
 export interface PlannedOpen {
@@ -130,16 +160,51 @@ export interface PlannedOpen {
   quoteSource: QuoteSource;
 }
 
+export interface PlannedScale extends ScaleHalfBooking {
+  id: string;
+}
+
+export interface PlannedQuoteFailure {
+  positionId: string;
+  mint: string;
+  purpose: string;
+  httpStatus: number | null;
+  reason: string;
+  body: string | null;
+  source: string | null;
+}
+
+export interface PlannedStreak {
+  id: string;
+  streak: number;
+  firstAt: Date | null;
+  lastAt: Date | null;
+}
+
 export interface PlannedClose {
   id: string;
-  reason: "invalidation" | "stop" | "horizon" | "dead" | "unpriced";
+  reason:
+    | "invalidation"
+    | "stop"
+    | "horizon"
+    | "dead"
+    | "unpriced"
+    | "unresolved"
+    | "provider_failure"
+    | "routing_failure"
+    | "near_zero_recovery"
+    | "transfer_restriction"
+    | "platform_restriction"
+    | "skipped_impact"
+    | "skipped_exit_impact"
+    | "unfilled";
   quote: number;
-  net: number;
-  net2x: number;
+  net: number | null;
+  net2x: number | null;
   impactPct: number | null;
   feeUsd: number | null;
   failure: string | null;
-  fomoFeeUsd: number;
+  fomoFeeUsd: number | null;
   quoteSource: QuoteSource | null;
   text: string;
 }
@@ -159,16 +224,39 @@ export interface PassResult {
   tierRequests: Array<{ wallet: string; from: "base"; to: "high"; text: string; held: boolean }>;
   paper: PaperEvaluation;
   sellWarnings: string[];
-  scaled: string[];
+  scaled: PlannedScale[];
+  quoteFailures: PlannedQuoteFailure[];
+  streaks: PlannedStreak[];
+  candidates: CandidateLogRow[];
   restart: boolean;
+}
+
+function alertPrice(coin: PassCoin, input: PassInput): number | null {
+  const probe = input.bids?.[quoteKey(coin.mint, "probe", "1x")];
+  if (probe?.ok && probe.execPriceUsd > 0) return probe.execPriceUsd;
+  const market = input.quotes.find((quote) => quote.mint === coin.mint);
+  return market && market.priceUsd > 0 ? market.priceUsd : null;
+}
+
+function feeInput(config: PhaseCConfig): FomoFeeTerms {
+  return {
+    schedule: config.fomoFeeSchedule,
+    fixedUsd: config.txCostUsd,
+    otherMinUsd: config.otherMinUsd,
+    otherRate: config.otherRate,
+  };
 }
 
 function sizeFor(config: PhaseCConfig, sizePct: number): number {
   return stageSizeUsd(config.bankroll, sizePct) ?? sizePct;
 }
 
-function isDead(bid: SizeBid): boolean {
-  return !bid.ok && (bid.reason === "no_liquidity" || bid.reason === "no_route");
+function rememberedStreak(position: PassPosition): NoRouteStreak {
+  return {
+    streak: position.noRouteStreak ?? 0,
+    firstAt: position.noRouteFirstAt ?? null,
+    lastAt: position.noRouteLastAt ?? null,
+  };
 }
 
 function bidFor(
@@ -209,6 +297,8 @@ function screenOf(coin: PassCoin, liquidity: number | null, rules: ScreenRules) 
     uniqueMakers1h: coin.uniqueMakers1h,
     creatorSells: coin.creatorSells,
     quoteError: coin.quoteError,
+    entryQuoteImpactPct: coin.entryQuoteImpactPct,
+    tokenExtension: coin.tokenExtension,
     sniperFetchable: sniperIsFetchable(coin),
   };
   return screenCoin(facts, rules);
@@ -235,7 +325,7 @@ export function runPhaseCPass(input: PassInput): PassResult {
         }
       : null;
   const started = entriesStart === null || input.now.getTime() >= entriesStart.getTime();
-  const allowEntries = !registering && !restart && started;
+  const allowEntries = !registering && !restart && started && !config.configRefused;
   const quotes = new Map(input.quotes.map((quote) => [quote.mint, quote]));
   const coins = input.coins;
 
@@ -245,65 +335,208 @@ export function runPhaseCPass(input: PassInput): PassResult {
     if (screen.verdict === "fail") failedMints.add(coin.mint);
   }
 
+  const requiredStreak = config.deadNoRouteStreak ?? DEFAULT_DEAD_STREAK;
+  const deadGapMs = config.deadNoRouteGapMs ?? DEFAULT_DEAD_GAP_MS;
   const sellWarnings: string[] = [];
-  const scaled: string[] = [];
+  const scaled: PlannedScale[] = [];
+  const quoteFailures: PlannedQuoteFailure[] = [];
+  const streaks: PlannedStreak[] = [];
   const opens: PlannedOpen[] = [];
   const openIds = new Set<string>();
   const closes: PlannedClose[] = [];
   const immediate: string[] = [];
   const closedIds = new Set<string>();
 
+  const remember = (position: PassPosition, next: NoRouteStreak): NoRouteStreak => {
+    position.noRouteStreak = next.streak;
+    position.noRouteFirstAt = next.firstAt;
+    position.noRouteLastAt = next.lastAt;
+    streaks.push({ id: position.id, ...next });
+    return next;
+  };
+  const observe = (position: PassPosition, bid: SizeBid, purpose: string): NoRouteStreak => {
+    if (!bid.ok) {
+      quoteFailures.push({
+        positionId: position.id,
+        mint: position.mint,
+        purpose,
+        httpStatus: bid.httpStatus ?? null,
+        reason: bid.reason,
+        body: bid.errorBody ?? null,
+        source: null,
+      });
+    }
+    return remember(
+      position,
+      nextNoRouteStreak({
+        previous: rememberedStreak(position),
+        now: input.now,
+        gapMs: deadGapMs,
+        event: !bid.ok && isTrueNoRoute(bid.reason) ? "no_route" : "other",
+      }),
+    );
+  };
+  const bookDead = (position: PassPosition, streak: NoRouteStreak): boolean =>
+    shouldBookDead({
+      streak,
+      now: input.now,
+      requiredStreak,
+      gapMs: deadGapMs,
+      pool: input.poolState?.[position.mint] ?? null,
+    });
+
+  const asEntryResult = (
+    reason: PlannedClose["reason"],
+    net: number,
+  ): { reason: PlannedClose["reason"]; net: number } =>
+    config.experimentProtocol === true ? { reason: "unfilled", net: 0 } : { reason, net };
+
   for (const position of input.positions) {
     if (position.status !== "pending") continue;
     const due = input.now.getTime() >= position.entryAfter.getTime();
     const expired = input.now.getTime() >= position.entryAfter.getTime() + config.horizonMs;
     if (!due) continue;
-    const one = bidFor(position.mint, input.bids, "entry", "1x");
+    const entryKey = quoteKey(position.mint, "entry", "1x");
+    const quotedEntry = input.bids?.[entryKey];
+    if (!quotedEntry) {
+      if (expired) {
+        const booked = asEntryResult("unpriced", FULL_LOSS);
+        closes.push({
+          id: position.id,
+          reason: booked.reason,
+          quote: 0,
+          net: booked.net,
+          net2x: booked.net,
+          impactPct: null,
+          feeUsd: null,
+          failure: "no_quote",
+          fomoFeeUsd: null,
+          quoteSource: null,
+          text:
+            booked.reason === "unfilled"
+              ? `unfilled ${position.mint} cash unchanged`
+              : `unpriced ${position.mint} counted as full loss`,
+        });
+        closedIds.add(position.id);
+      }
+      continue;
+    }
+    const one = quotedEntry;
+    const entryStreak = observe(position, one, "entry");
     if (one.ok && one.liquidityUsd !== 0) {
+      const entryCap = input.rules.entryImpactPctAbove ?? 10;
+      if (one.impactPct > entryCap) {
+        const booked = asEntryResult("skipped_impact", 0);
+        closes.push({
+          id: position.id,
+          reason: booked.reason,
+          quote: one.execPriceUsd,
+          net: booked.net,
+          net2x: booked.net,
+          impactPct: one.impactPct,
+          feeUsd: one.feeUsd,
+          failure: "entry_impact",
+          fomoFeeUsd: null,
+          quoteSource: one.source ?? "jupiter",
+          text: `skip impact ${position.mint} ${one.impactPct.toFixed(2)}%`,
+        });
+        closedIds.add(position.id);
+        continue;
+      }
+      const fillSell = input.bids?.[quoteKey(position.mint, "fill_sell", "1x")];
+      if (fillSell) {
+        const roundTrip = roundTripImpactPct(one, fillSell);
+        const roundCap = config.maxRoundTripImpactPct ?? 10;
+        const blocked = !fillSell.ok || roundTrip === null || roundTrip > roundCap;
+        const waiting =
+          !fillSell.ok && (fillSell.reason === "rate_limited" || fillSell.reason === "transient");
+        if (waiting) continue;
+        if (blocked) {
+          if (!fillSell.ok) {
+            quoteFailures.push({
+              positionId: position.id,
+              mint: position.mint,
+              purpose: "fill_sell",
+              httpStatus: fillSell.httpStatus ?? null,
+              reason: fillSell.reason,
+              body: fillSell.errorBody ?? null,
+              source: null,
+            });
+          }
+          const booked = asEntryResult("skipped_exit_impact", 0);
+          closes.push({
+            id: position.id,
+            reason: booked.reason,
+            quote: one.execPriceUsd,
+            net: booked.net,
+            net2x: booked.net,
+            impactPct: roundTrip,
+            feeUsd: null,
+            failure: fillSell.ok ? "round_trip" : fillSell.reason,
+            fomoFeeUsd: null,
+            quoteSource: fillSell.ok ? (fillSell.source ?? "jupiter") : null,
+            text: `skip round trip ${position.mint}`,
+          });
+          closedIds.add(position.id);
+          continue;
+        }
+      }
       opens.push({
         id: position.id,
         quote: one.execPriceUsd,
         impactPct: one.impactPct,
-        feeUsd: one.feeUsd,
+        feeUsd: fomoFeeUsd(one.sizeUsd, feeInput(config)),
         sizeUsd: one.sizeUsd,
         outAmount: one.outAmount,
-        fomoFeeUsd: fomoFeeUsd(one.sizeUsd, config.fomoFeeSchedule),
+        fomoFeeUsd: fomoFeeUsd(one.sizeUsd, feeInput(config)),
         quoteSource: one.source ?? "jupiter",
       });
       openIds.add(position.id);
       continue;
     }
-    if (isDead(one)) {
+    if (!one.ok && bookDead(position, entryStreak)) {
+      const booked = asEntryResult("dead", FULL_LOSS);
       closes.push({
         id: position.id,
-        reason: "dead",
+        reason: booked.reason,
         quote: 0,
-        net: FULL_LOSS,
-        net2x: FULL_LOSS,
+        net: booked.net,
+        net2x: booked.net,
         impactPct: null,
         feeUsd: null,
-        failure: one.ok ? "no_liquidity" : one.reason,
-        fomoFeeUsd: 0,
-        quoteSource: one.ok ? (one.source ?? "jupiter") : null,
-        text: `exit dead ${position.mint} net ${FULL_LOSS.toFixed(4)} 1x and 2x`,
+        failure: one.reason,
+        fomoFeeUsd: null,
+        quoteSource: null,
+        text:
+          booked.reason === "unfilled"
+            ? `unfilled ${position.mint} cash unchanged`
+            : `exit dead ${position.mint} net ${FULL_LOSS.toFixed(4)} 1x and 2x`,
       });
       closedIds.add(position.id);
-      immediate.push(`exit dead ${position.mint} full loss`);
+      immediate.push(
+        booked.reason === "unfilled"
+          ? `unfilled ${position.mint} cash unchanged`
+          : `exit dead ${position.mint} full loss`,
+      );
       continue;
     }
     if (expired) {
+      const booked = asEntryResult("unpriced", FULL_LOSS);
       closes.push({
         id: position.id,
-        reason: "unpriced",
+        reason: booked.reason,
         quote: 0,
-        net: 0,
-        net2x: 0,
+        net: booked.net,
+        net2x: booked.net,
         impactPct: null,
         feeUsd: null,
         failure: one.ok ? "no_liquidity" : one.reason,
-        fomoFeeUsd: 0,
+        fomoFeeUsd: null,
         quoteSource: null,
-        text: `unpriced ${position.mint} excluded`,
+        text:
+          booked.reason === "unfilled"
+            ? `unfilled ${position.mint} cash unchanged`
+            : `unpriced ${position.mint} counted as full loss`,
       });
       closedIds.add(position.id);
     }
@@ -315,55 +548,102 @@ export function runPhaseCPass(input: PassInput): PassResult {
     if (position.status === "pending" && !openIds.has(position.id)) continue;
     if (!openedAt) continue;
     const entry = entryBid(position, sizeFor(config, position.sizePct));
-    const exitOne = bidFor(position.mint, input.bids, "exit", "1x");
+    const exitKey = quoteKey(position.mint, "exit", "1x");
+    const quotedExit = input.bids?.[exitKey];
+    const exitOne = quotedExit ?? bidFor(position.mint, input.bids, "exit", "1x");
     const exitTwo = bidFor(position.mint, input.bids, "exit", "2x");
+    const exitStreak = quotedExit
+      ? observe(position, quotedExit, "exit")
+      : rememberedStreak(position);
     const latest = exitOne.ok ? exitOne.execPriceUsd : null;
     const horizonReached = input.now.getTime() >= openedAt.getTime() + config.horizonMs;
     const treatment = assignExitTreatment(position.mint);
+    let storedHalf: StoredScaleHalf | null =
+      position.scaleProceedsUsd !== null && position.scaleProceedsUsd !== undefined
+        ? { proceedsUsd: position.scaleProceedsUsd }
+        : null;
     if (
+      config.scaleOutEnabled === true &&
       treatment === "scale_out" &&
       !position.scaledAt &&
-      exitOne.ok &&
-      entry.ok &&
-      exitOne.execPriceUsd >= entry.execPriceUsd * 1.5
+      entry.ok
     ) {
-      immediate.push(
-        `scale-out ${position.mint} half at ${exitOne.execPriceUsd.toString()} impact ${exitOne.impactPct.toFixed(2)}%`,
-      );
-      position.scaledAt = input.now;
-      scaled.push(position.id);
+      const halfBid = input.bids?.[quoteKey(position.mint, "scale", "1x")];
+      const trigger =
+        halfBid?.ok === true && halfBid.execPriceUsd >= entry.execPriceUsd * 1.5
+          ? halfBid
+          : exitOne.ok && exitOne.execPriceUsd >= entry.execPriceUsd * 1.5
+            ? exitOne
+            : null;
+      const booking = trigger ? bookScaleHalf(entry, trigger, feeInput(config)) : null;
+      if (booking) {
+        storedHalf = { proceedsUsd: booking.proceedsUsd };
+        position.scaledAt = input.now;
+        position.scaleQuote = booking.quote;
+        position.scaleImpactPct = booking.impactPct;
+        position.scaleProceedsUsd = booking.proceedsUsd;
+        position.scaleFeeUsd = booking.feeUsd;
+        scaled.push({ id: position.id, ...booking });
+        immediate.push(
+          `scale-out ${position.mint} half at ${booking.quote.toString()} impact ${booking.impactPct.toFixed(2)}%`,
+        );
+      }
     }
-    if (isDead(exitOne)) {
+    if (!exitOne.ok && bookDead(position, exitStreak)) {
+      const net = storedHalf
+        ? scaleOutRoundTrip(entry, exitOne, feeInput(config), storedHalf)
+        : FULL_LOSS;
+      const net2x = storedHalf
+        ? scaleOutRoundTrip(entry, exitTwo, feeInput(config), storedHalf)
+        : FULL_LOSS;
       closes.push({
         id: position.id,
         reason: "dead",
         quote: 0,
-        net: FULL_LOSS,
-        net2x: FULL_LOSS,
-        impactPct: null,
-        feeUsd: null,
-        failure: exitOne.ok ? "no_liquidity" : exitOne.reason,
-        fomoFeeUsd: 0,
-        quoteSource: exitOne.ok ? (exitOne.source ?? "jupiter") : null,
-        text: `exit dead ${position.mint} net ${FULL_LOSS.toFixed(4)} 1x and 2x`,
-      });
-      closedIds.add(position.id);
-      immediate.push(`exit dead ${position.mint} full loss`);
-      continue;
-    }
-    if (!exitOne.ok && horizonReached) {
-      closes.push({
-        id: position.id,
-        reason: "unpriced",
-        quote: 0,
-        net: 0,
-        net2x: 0,
+        net,
+        net2x,
         impactPct: null,
         feeUsd: null,
         failure: exitOne.reason,
-        fomoFeeUsd: 0,
+        fomoFeeUsd: null,
         quoteSource: null,
-        text: `unpriced ${position.mint} excluded`,
+        text: `exit dead ${position.mint} net ${net.toFixed(4)} 1x and 2x`,
+      });
+      closedIds.add(position.id);
+      immediate.push(
+        storedHalf
+          ? `exit dead ${position.mint} unsold half lost, scaled half kept`
+          : `exit dead ${position.mint} full loss`,
+      );
+      continue;
+    }
+    if (!exitOne.ok && horizonReached) {
+      const state = exitStateFor({
+        bid: exitOne,
+        horizonReached: true,
+        onChainUntradable: false,
+        transferRestricted: false,
+        netIfPriced: null,
+      });
+      const net = storedHalf
+        ? scaleOutRoundTrip(entry, exitOne, feeInput(config), storedHalf)
+        : state.net;
+      closes.push({
+        id: position.id,
+        reason: storedHalf ? "unpriced" : state.state === "priced" ? "unpriced" : state.state,
+        quote: 0,
+        net,
+        net2x: storedHalf
+          ? scaleOutRoundTrip(entry, exitTwo, feeInput(config), storedHalf)
+          : state.net,
+        impactPct: null,
+        feeUsd: null,
+        failure: exitOne.reason,
+        fomoFeeUsd: null,
+        quoteSource: null,
+        text: storedHalf
+          ? `unpriced ${position.mint} unsold half, scaled half kept`
+          : `${state.state} ${position.mint}`,
       });
       closedIds.add(position.id);
       continue;
@@ -373,19 +653,19 @@ export function runPhaseCPass(input: PassInput): PassResult {
       now: input.now,
       entryQuote: entry.ok ? entry.execPriceUsd : 0,
       latestQuote: latest,
-      stopPct: config.exitStopPct,
+      stopPct: config.stopsEnabled === false ? Number.POSITIVE_INFINITY : config.exitStopPct,
       horizonMs: config.horizonMs,
       screenFailed: position.screenFailed || failedMints.has(position.mint),
     });
     if (!decision.exit || latest === null) continue;
-    const net =
-      treatment === "scale_out"
-        ? scaleOutRoundTrip(entry, exitOne, config.fomoFeeSchedule)
-        : quotedRoundTrip(entry, exitOne, config.fomoFeeSchedule);
-    const net2x =
-      treatment === "scale_out"
-        ? scaleOutRoundTrip(entry, exitTwo, config.fomoFeeSchedule)
-        : quotedRoundTrip(entry, exitTwo, config.fomoFeeSchedule);
+    const useScale =
+      storedHalf !== null || (config.scaleOutEnabled === true && treatment === "scale_out");
+    const net = useScale
+      ? scaleOutRoundTrip(entry, exitOne, feeInput(config), storedHalf)
+      : quotedRoundTrip(entry, exitOne, feeInput(config));
+    const net2x = useScale
+      ? scaleOutRoundTrip(entry, exitTwo, feeInput(config), storedHalf)
+      : quotedRoundTrip(entry, exitTwo, feeInput(config));
     const text = `exit ${decision.reason} ${position.mint} ${treatment} net1x ${net.toFixed(4)} net2x ${net2x.toFixed(4)}`;
     closes.push({
       id: position.id,
@@ -394,9 +674,9 @@ export function runPhaseCPass(input: PassInput): PassResult {
       net,
       net2x,
       impactPct: exitOne.ok ? exitOne.impactPct : null,
-      feeUsd: exitOne.ok ? exitOne.feeUsd : null,
+      feeUsd: exitOne.ok ? fomoFeeUsd(Math.max(0, exitOne.sizeUsd), feeInput(config)) : null,
       failure: null,
-      fomoFeeUsd: roundTripFomoFee(entry, exitOne, config.fomoFeeSchedule),
+      fomoFeeUsd: roundTripFomoFee(entry, exitOne, feeInput(config)),
       quoteSource: exitOne.ok ? (exitOne.source ?? "jupiter") : null,
       text,
     });
@@ -418,7 +698,7 @@ export function runPhaseCPass(input: PassInput): PassResult {
     ...input.closedToday,
     ...closes.flatMap((row) => {
       const position = input.positions.find((item) => item.id === row.id);
-      if (position?.arm === "random_pass") return [];
+      if (position?.arm === "random_pass" || row.net === null) return [];
       return [{ sizePct: position?.sizePct ?? 0, netReturn: row.net }];
     }),
   ]);
@@ -446,6 +726,7 @@ export function runPhaseCPass(input: PassInput): PassResult {
       if (isFlapMint(coin.mint)) continue;
       const stage = stageForCoin(coin, input.now);
       if (!stage || seen.has(`${coin.mint}:${stage}`)) continue;
+      if (config.experimentProtocol === true && stage !== "post_graduation") continue;
       const screen = screenOf(coin, quotes.get(coin.mint)?.liquidityUsd ?? null, input.rules);
       if (screen.verdict === "fail") continue;
       const arm = assignArm(coin.mint, stage, coin.trackedBuyers, coin.xMentions);
@@ -458,7 +739,41 @@ export function runPhaseCPass(input: PassInput): PassResult {
         continue;
       }
       const strength = scoreStrength(stage, coin);
-      const size = sizeForStage(stage, config.sizePct, config.bankroll);
+      const stageSize =
+        config.fixedNotionalUsd !== undefined && config.fixedNotionalUsd > 0
+          ? {
+              amount: config.fixedNotionalUsd,
+              pct:
+                config.bankroll && config.bankroll > 0
+                  ? (config.fixedNotionalUsd / config.bankroll) * 100
+                  : config.sizePct[stage],
+            }
+          : sizeForStage(stage, config.sizePct, config.bankroll);
+      if (
+        config.experimentProtocol === true &&
+        !poolCanHoldNotional(
+          coin.liquidityUsd,
+          config.fixedNotionalUsd ?? 20,
+          config.maxSizePoolShare ?? 0.01,
+        )
+      ) {
+        continue;
+      }
+      const capped =
+        config.experimentProtocol === true
+          ? stageSize.amount
+          : capSizeToLiquidity(
+              stageSize.amount,
+              coin.liquidityUsd,
+              config.maxSizePoolShare ?? 0.01,
+            );
+      const size = {
+        amount: capped,
+        pct:
+          config.bankroll && capped !== null && config.bankroll > 0
+            ? (capped / config.bankroll) * 100
+            : stageSize.pct,
+      };
       const treatment = assignExitTreatment(coin.mint);
       const control = arm === "random_pass";
       const decision = control
@@ -510,6 +825,7 @@ export function runPhaseCPass(input: PassInput): PassResult {
         fingerprint: currentFingerprint,
         sniperUnmeasured: screen.sniperUnmeasured,
         entryAfter: new Date(input.now.getTime() + config.entryDelaySec * 1000),
+        alertPriceUsd: alertPrice(coin, input),
       });
       if (!held) immediate.push(text);
       busy.add(coin.mint);
@@ -544,6 +860,22 @@ export function runPhaseCPass(input: PassInput): PassResult {
     return { ...request, text, held };
   });
 
+  const prices = new Map<string, number | null>();
+  for (const quote of input.quotes) prices.set(quote.mint, quote.priceUsd);
+  for (const entry of entries) {
+    if (entry.alertPriceUsd !== null) prices.set(entry.mint, entry.alertPriceUsd);
+  }
+  const candidates = buildCandidateLog({
+    now: input.now,
+    coins,
+    rules: input.rules,
+    paused,
+    entries,
+    prices,
+    experiment: config.experimentProtocol === true,
+    venueAllowlist: config.venueAllowlist,
+  });
+
   const paper = evaluatePaper({
     // The window runs from the first allowed entry, not from registration, so a test that
     // registers mid-day and starts at the next ET midnight still gets its full window.
@@ -556,7 +888,7 @@ export function runPhaseCPass(input: PassInput): PassResult {
     returns: [
       ...input.resolved,
       ...closes.flatMap((row) => {
-        if (row.reason === "unpriced") return [];
+        if (row.reason.startsWith("skipped") || row.net === null) return [];
         const position = input.positions.find((item) => item.id === row.id);
         return [
           {
@@ -586,6 +918,9 @@ export function runPhaseCPass(input: PassInput): PassResult {
     paper,
     sellWarnings,
     scaled,
+    quoteFailures,
+    streaks,
+    candidates,
     restart,
   };
 }

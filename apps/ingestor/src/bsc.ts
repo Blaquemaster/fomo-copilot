@@ -21,6 +21,16 @@ export const LOG_PAGE_BLOCKS = 500;
 const AUDIT_HOUR_BLOCKS = 8_000;
 const AUDIT_QUIET_BLOCKS = 20;
 const AUDIT_EVERY_MS = 6 * 60 * 60 * 1000;
+
+/** Delay until the next recall. A reconnect does not restart the 6 hour clock. */
+export function nextBscAuditDelay(
+  lastAuditAt: number,
+  now: number,
+  every = AUDIT_EVERY_MS,
+): number {
+  if (lastAuditAt <= 0) return every;
+  return Math.max(0, every - (now - lastAuditAt));
+}
 const HEARTBEAT_MS = 20_000;
 /** Safety-net eth_getLogs. Inside the 2–5 minute window. */
 export const BSC_SWEEP_MS = 3 * 60 * 1000;
@@ -90,13 +100,14 @@ export async function runBscIngest(input: {
   if (!input.env.BSC_WSS_URL) return;
   let attempt = 1;
   let connected = false;
+  const auditClock = { at: 0 };
   while (!input.signal.aborted) {
     try {
       if (connected) {
         const reconnects = await input.repo.noteChainReconnect(BSC_CHAIN);
         input.logger.info({ chain: BSC_CHAIN, reconnects }, "bsc reconnect");
       }
-      await connectBsc(input);
+      await connectBsc(input, auditClock);
       connected = true;
       attempt = 1;
     } catch (error) {
@@ -217,13 +228,16 @@ interface PortalLog {
   logIndex: number;
 }
 
-async function connectBsc(input: {
-  env: Env;
-  repo: IngestRepository;
-  logger: Logger;
-  signal: AbortSignal;
-  deps?: { openSocket?: (url: string) => WebSocket };
-}): Promise<void> {
+async function connectBsc(
+  input: {
+    env: Env;
+    repo: IngestRepository;
+    logger: Logger;
+    signal: AbortSignal;
+    deps?: { openSocket?: (url: string) => WebSocket };
+  },
+  auditClock: { at: number },
+): Promise<void> {
   const url = input.env.BSC_WSS_URL;
   if (!url) return;
   const ws = input.deps?.openSocket ? input.deps.openSocket(url) : new WebSocket(url);
@@ -292,7 +306,7 @@ async function connectBsc(input: {
   };
   ws.on("message", onMessage);
   let heartbeat: ReturnType<typeof setInterval> | undefined;
-  let audit: ReturnType<typeof setInterval> | undefined;
+  let audit: ReturnType<typeof setTimeout> | undefined;
   let enrichTimer: ReturnType<typeof setInterval> | undefined;
   let sweepTimer: ReturnType<typeof setInterval> | undefined;
   let sweeping = false;
@@ -345,11 +359,14 @@ async function connectBsc(input: {
           sweeping = false;
         });
     }, BSC_SWEEP_MS);
-    audit = setInterval(() => {
+    const runAudit = (): void => {
+      auditClock.at = Date.now();
       void auditBscLogs(input, send).catch((error: unknown) => {
         input.logger.error({ err: error }, "bsc recall failed");
       });
-    }, AUDIT_EVERY_MS);
+      audit = setTimeout(runAudit, AUDIT_EVERY_MS);
+    };
+    audit = setTimeout(runAudit, nextBscAuditDelay(auditClock.at, Date.now()));
     enrichTimer = setInterval(() => {
       void retryEnrichments(input, send).catch((error: unknown) => {
         input.logger.error({ err: error }, "bsc enrich retry failed");
@@ -361,7 +378,7 @@ async function connectBsc(input: {
     });
   } finally {
     if (heartbeat) clearInterval(heartbeat);
-    if (audit) clearInterval(audit);
+    if (audit) clearTimeout(audit);
     if (enrichTimer) clearInterval(enrichTimer);
     if (sweepTimer) clearInterval(sweepTimer);
     ws.off("message", onMessage);

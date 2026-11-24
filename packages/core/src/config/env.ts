@@ -12,7 +12,7 @@ export const envSchema = z.object({
   POSTGRES_PASSWORD: z.string().min(8).max(256),
   POSTGRES_DB: simpleName,
   DATABASE_URL: z.string().min(1).max(2048),
-  TELEGRAM_BOT_TOKEN: z.string().min(8).max(256),
+  TELEGRAM_BOT_TOKEN: z.string().min(8).max(256).optional(),
   TELEGRAM_ADMIN_CHAT_ID: z
     .string()
     .trim()
@@ -24,8 +24,26 @@ export const envSchema = z.object({
       } catch {
         return false;
       }
-    }),
+    })
+    .optional(),
   HELIUS_API_KEY: z.string().min(8).max(256),
+  /** Unset uses mainnet.helius-rpc.com. A CI mock may set an http origin. */
+  HELIUS_HTTP_BASE: z.string().min(8).max(2048).optional(),
+  /** Unset uses the Helius websocket host. A CI mock may set a ws origin. */
+  HELIUS_WS_BASE: z.string().min(8).max(2048).optional(),
+  /** Diagnostic hard stop. A larger value is rejected. Unset uses the code ceiling. */
+  DIAGNOSTIC_MAX_HELIUS_CREDITS: z.coerce.number().int().positive().max(50_000).optional(),
+  DIAGNOSTIC_MAX_JUPITER_QUOTES_PER_DAY: z.coerce.number().int().positive().max(2_000).optional(),
+  DIAGNOSTIC_MAX_PUBLIC_RPC_CALLS_PER_DAY: z.coerce
+    .number()
+    .int()
+    .positive()
+    .max(20_000)
+    .optional(),
+  /** Unset uses https://api.mainnet-beta.solana.com. A CI mock may set an http origin. */
+  PUBLIC_RPC_URL: z.string().min(8).max(2048).optional(),
+  /** Unset uses the public Jupiter quote URL. A CI mock may set that path on another origin. */
+  JUPITER_QUOTE_BASE: z.string().min(8).max(2048).optional(),
   THRESHOLDS_PATH: z.string().min(1).max(512).optional(),
   // Developer until the owner switches this to free (planned 2026-12-07).
   HELIUS_PLAN: z.enum(["developer", "free"]).default("developer"),
@@ -131,9 +149,47 @@ export const envSchema = z.object({
   PAPER_MAX_DRAWDOWN_PCT: z.coerce.number().min(0).max(100).optional(),
   PAPER_WINDOW_DAYS: z.coerce.number().int().min(1).max(365).optional(),
   PAPER_ENTRY_DELAY_SEC: z.coerce.number().int().min(0).max(86_400).optional(),
-  FOMO_FEE_SCHEDULE: z.enum(["solana_lowest_fee", "solana_other"]).optional(),
+  FOMO_FEE_SCHEDULE: z.enum(["solana_lowest_fee", "solana_other", "fixed_usd"]).optional(),
+  /** Fixed dollars per transaction when FOMO_FEE_SCHEDULE is fixed_usd. */
+  FOMO_TX_COST_USD: z.coerce.number().nonnegative().max(1000).optional(),
+  /** True no-route answers required before a dead -100% close. Default 3. */
+  DEAD_NO_ROUTE_STREAK: z.coerce.number().int().min(1).max(20).optional(),
+  /** Minimum seconds between those answers. Default 60. */
+  DEAD_NO_ROUTE_GAP_SEC: z.coerce.number().int().min(1).max(86_400).optional(),
   WALLET_SCORE_CUTOFF: z.string().datetime().optional(),
+  /** true freezes the tracked list. Unset is frozen for the test window. "false" allows v3. */
+  WALLET_LIST_FROZEN: z.enum(["true", "false"]).optional(),
+  /** Active tracked_wallet rows selected after this time do not count. */
+  WALLET_LIST_FREEZE_AT: z.string().datetime().optional(),
   SECOND_WAVE_MIN_CHANGE_PCT: z.coerce.number().min(0).max(10_000).optional(),
+  /**
+   * Screener paper loop. Unset or anything other than "true" means the process
+   * exits without screening, quoting, or sending an alert.
+   */
+  PAPER_ENABLED: z.enum(["true", "false"]).optional(),
+  /**
+   * Alerter long-poll. Unset or anything other than "true" means the process
+   * exits without polling Telegram.
+   */
+  ALERTS_ENABLED: z.enum(["true", "false"]).optional(),
+  /** Outcome worker. Unset means the process exits without quoting. */
+  OUTCOMES_ENABLED: z.enum(["true", "false"]).optional(),
+  /** Collection-only shadow. Unset means the process exits without reading returns. */
+  SHADOW_ENABLED: z.enum(["true", "false"]).optional(),
+  /**
+   * Pages public-RPC signatures for a gap wider than 600 slots. Unset keeps the
+   * old unrecovered gap. This does not start by itself.
+   */
+  INGEST_WIDE_RECOVERY: z.enum(["true", "false"]).optional(),
+  /** Exact true is refused. Scale-out is not part of this experiment. */
+  EXPERIMENT_SCALE_OUT: z.enum(["true", "false"]).optional(),
+  /** shadow is the draft. scored refuses until commit, venue, and wallet list are set. */
+  EXPERIMENT_MODE: z.enum(["shadow", "scored"]).optional(),
+  EXPERIMENT_COMMIT: z.string().min(7).max(64).optional(),
+  /** Comma-separated venues that have passed an independent recall. Empty means none. */
+  EXPERIMENT_VENUES: z.string().max(200).optional(),
+  /** One dollar size for every stage. Unset keeps the stage table. */
+  EXPERIMENT_FIXED_NOTIONAL_USD: z.coerce.number().positive().max(1_000_000).optional(),
   /** off, dry_run, or live. Default off. Live cannot start in this build. */
   AUTOBUY_MODE: z.enum(["off", "dry_run", "live"]).optional(),
   /** Must be the exact word yes, and a signer must exist. Neither is configured here. */
@@ -195,7 +251,7 @@ export function loadEnv(source: NodeJS.ProcessEnv = process.env): Env {
   if (!parsed.success) {
     throw new ConfigError(`env: ${formatZodIssues(parsed.error)}`);
   }
-  if (/\s/.test(parsed.data.TELEGRAM_BOT_TOKEN)) {
+  if (parsed.data.TELEGRAM_BOT_TOKEN && /\s/.test(parsed.data.TELEGRAM_BOT_TOKEN)) {
     throw new ConfigError("env: TELEGRAM_BOT_TOKEN: invalid_token");
   }
   assertDatabaseUrl(parsed.data);
@@ -208,7 +264,8 @@ export function loadEnv(source: NodeJS.ProcessEnv = process.env): Env {
 
 /** Values that must never appear in logs or crash alerts. Longest first. */
 export function secretValuesFromEnv(env: Env): string[] {
-  const values = [env.TELEGRAM_BOT_TOKEN, env.HELIUS_API_KEY, env.POSTGRES_PASSWORD];
+  const values = [env.HELIUS_API_KEY, env.POSTGRES_PASSWORD];
+  if (env.TELEGRAM_BOT_TOKEN) values.push(env.TELEGRAM_BOT_TOKEN);
   if (env.JUPITER_API_KEY) values.push(env.JUPITER_API_KEY);
   if (env.BSC_WSS_URL && !env.BSC_WSS_URL.includes("bsc-rpc.publicnode.com")) {
     values.push(env.BSC_WSS_URL);
