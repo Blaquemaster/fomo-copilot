@@ -21,6 +21,6 @@
     "scripts/hold-deploy-workflow.sh": "1d2c588ec01ca309ce23955bc629452bb857f83b70edc600e403628cac2fce82",
     "scripts/check-merged-tree.sh": "8170b1b0998fc9deb66e6f86a8e02940d654b396bb00bec9eb3b948c8d6c11d0",
     "infra/sql/fomo-shadow-diagnostic.sql": "a61f128dc9534de4bd52c33c02cf5a6a77a6a92695c6ee2e227454831c454328",
-    "infra/refused-digests.txt": "fc2f99e0899bb0c79e68800b221a7ceb12fca01863179530bd716a4bc160eac3"
+    "infra/refused-digests.txt": "23c4c4706b895a59fa846d70d75422ebb625459f93ff90ad560b486be27b8a8f"
   }
 }

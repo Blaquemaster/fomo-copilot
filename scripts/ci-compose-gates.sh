@@ -722,8 +722,8 @@ deploy_dir=$(mktemp -d)
 deploy_key="$deploy_dir/id_ed25519"
 ssh-keygen -t ed25519 -f "$deploy_key" -N '' -q
 root_before=""
-if [[ -f /root/.ssh/authorized_keys ]]; then
-  root_before=$(sha256sum /root/.ssh/authorized_keys | awk '{print $1}')
+if sudo test -f /root/.ssh/authorized_keys; then
+  root_before=$(sudo sha256sum /root/.ssh/authorized_keys | awk '{print $1}')
 fi
 sudo bash scripts/setup-deploy-user.sh "${deploy_key}.pub"
 sudo bash scripts/setup-deploy-user.sh "${deploy_key}.pub"
@@ -733,8 +733,8 @@ if id -nG fomo-deploy | tr ' ' '\n' | grep -qx docker; then
   exit 1
 fi
 sudo passwd -S fomo-deploy | awk '{ exit ($2 == "L" ? 0 : 1) }'
-grep -Fq 'NOPASSWD: /usr/local/lib/fomo/fomo-deploy-helper' /etc/sudoers.d/fomo-deploy
-cmp -s "${deploy_key}.pub" /home/fomo-deploy/.ssh/authorized_keys
+sudo grep -Fq 'NOPASSWD: /usr/local/lib/fomo/fomo-deploy-helper' /etc/sudoers.d/fomo-deploy
+sudo cmp -s "${deploy_key}.pub" /home/fomo-deploy/.ssh/authorized_keys
 test "$(stat -c '%U' /usr/local/lib/fomo/fomo-deploy-helper)" = "root"
 sudo -u fomo-deploy test -w /usr/local/lib/fomo/fomo-deploy-helper && exit 1
 sudo -u fomo-deploy test -w /etc/fomo/deploy-authorization.json && exit 1
@@ -744,7 +744,7 @@ docker_code=$?
 set -e
 test "$docker_code" -ne 0
 if [[ -n "$root_before" ]]; then
-  test "$(sha256sum /root/.ssh/authorized_keys | awk '{print $1}')" = "$root_before"
+  test "$(sudo sha256sum /root/.ssh/authorized_keys | awk '{print $1}')" = "$root_before"
 fi
 sudo -n true
 docker volume create fomo-copilot_pgdata >/dev/null
