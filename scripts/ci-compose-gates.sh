@@ -495,12 +495,17 @@ if (counts.scan !== 1 || counts.publicRpc !== 1 || counts.jupiter !== 2 || count
   process.exit(1);
 }
 " "$shared_counts"
-compose exec -T postgres psql -v ON_ERROR_STOP=1 -U fomo -d fomo -At -c \
-  "select helius_credits::text || ',' || jupiter_quotes::text || ',' || public_rpc_calls::text from diagnostic_spend where scope = 'shared'" \
-  | grep -qx '20,2,1'
-compose exec -T postgres psql -v ON_ERROR_STOP=1 -U fomo -d fomo -At -c \
-  "select string_agg(distinct method, ',' order by method) from diagnostic_spend_event where scope = 'shared' and accepted" \
-  | grep -qx 'getSignaturesForAddress,parsedEventsScan,quote'
+shared_spend=$(compose exec -T postgres psql -v ON_ERROR_STOP=1 -U fomo -d fomo -At -c \
+  "select helius_credits::text || ',' || jupiter_quotes::text || ',' || public_rpc_calls::text from diagnostic_spend where scope = 'shared'")
+echo "shared spend $shared_spend"
+test "$shared_spend" = "20,2,1"
+shared_methods=$(compose exec -T postgres psql -v ON_ERROR_STOP=1 -U fomo -d fomo -At -c \
+  "select string_agg(distinct method, ',' order by method) from diagnostic_spend_event where scope = 'shared' and accepted and method <> 'parsedEventsScanReconcile'")
+echo "shared methods $shared_methods"
+test "$shared_methods" = "getSignaturesForAddress,parsedEventsScan,quote"
+reconciled=$(compose exec -T postgres psql -v ON_ERROR_STOP=1 -U fomo -d fomo -At -c \
+  "select count(*) from diagnostic_spend_event where scope = 'shared' and method = 'parsedEventsScanReconcile'")
+test "$reconciled" = "1"
 run_diag "$shadow_url" fomo_shadow shared c 20 2 1 >/tmp/fomo-diag-c.txt
 cat /tmp/fomo-diag-c.txt
 grep -q '"denied":3' /tmp/fomo-diag-c.txt
