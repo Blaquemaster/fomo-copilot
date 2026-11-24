@@ -718,7 +718,8 @@ echo "$missing_log" | grep -q "pull failed"
 docker rm -f fomo-ci-registry >/dev/null 2>&1 || true
 
 echo "one-time deploy user"
-deploy_key=$(mktemp)
+deploy_dir=$(mktemp -d)
+deploy_key="$deploy_dir/id_ed25519"
 ssh-keygen -t ed25519 -f "$deploy_key" -N '' -q
 root_before=""
 if [[ -f /root/.ssh/authorized_keys ]]; then
@@ -782,7 +783,7 @@ unprivileged=$?
 set -e
 test "$unprivileged" -ne 0
 grep -q 'only root step' /tmp/fomo-deploy-unprivileged.txt
-rm -f "$deploy_key" "${deploy_key}.pub"
+rm -rf "$deploy_dir"
 node scripts/check-deploy-triggers.mjs
 bash scripts/hold-deploy-workflow.sh --fixture-disabled >/dev/null
 set +e
