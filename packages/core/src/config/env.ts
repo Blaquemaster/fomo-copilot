@@ -27,6 +27,14 @@ export const envSchema = z.object({
     })
     .optional(),
   HELIUS_API_KEY: z.string().min(8).max(256),
+  /** Unset uses mainnet.helius-rpc.com. A CI mock may set an http origin. */
+  HELIUS_HTTP_BASE: z.string().min(8).max(2048).optional(),
+  /** Unset uses the Helius websocket host. A CI mock may set a ws origin. */
+  HELIUS_WS_BASE: z.string().min(8).max(2048).optional(),
+  /** Diagnostic hard stop. A larger value is rejected. Unset uses the code ceiling. */
+  DIAGNOSTIC_MAX_HELIUS_CREDITS: z.coerce.number().int().positive().max(50_000).optional(),
+  DIAGNOSTIC_MAX_JUPITER_QUOTES_PER_DAY: z.coerce.number().int().positive().max(2_000).optional(),
+  DIAGNOSTIC_MAX_PUBLIC_RPC_CALLS_PER_DAY: z.coerce.number().int().positive().max(20_000).optional(),
   THRESHOLDS_PATH: z.string().min(1).max(512).optional(),
   // Developer until the owner switches this to free (planned 2026-12-07).
   HELIUS_PLAN: z.enum(["developer", "free"]).default("developer"),

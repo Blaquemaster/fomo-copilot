@@ -142,8 +142,8 @@ jobs:
             echo "deploy held: production auto-deploy is off"
             exit 1
           fi
-          if ! [[ "$IMAGE_DIGEST" =~ ^sha256:[0-9a-f]{64}$ ]]; then
-            echo "deploy held: refusing to build whatever is on main"
+          if ! [[ "$IMAGE_DIGEST" =~ ^ghcr\.io/blaquemaster/fomo-copilot/ingestor@sha256:[0-9a-f]{64}$ ]]; then
+            echo "deploy held: refusing a reference that is not the tested registry digest"
             exit 1
           fi
           umask 077
@@ -437,14 +437,13 @@ jobs:
           fi
           mv .env.incoming .env
           chmod 600 .env
-          digest=$(tr -d '[:space:]' < /opt/fomo-copilot/.release-digest)
-          if ! [[ "$digest" =~ ^sha256:[0-9a-f]{64}$ ]]; then
-            echo "deploy held: image id missing" >&2
+          ref=$(tr -d '[:space:]' < /opt/fomo-copilot/.release-digest)
+          if ! [[ "$ref" =~ ^ghcr\.io/blaquemaster/fomo-copilot/ingestor@sha256:[0-9a-f]{64}$ ]]; then
+            echo "deploy held: image reference missing" >&2
             exit 1
           fi
-          docker image inspect "$digest" >/dev/null
-          docker tag "$digest" fomo-release:tested
-          printf 'services:\n  ingestor:\n    image: %s\n    pull_policy: never\n' "$digest" > /opt/fomo-copilot/infra/ingestor-image.yml
+          docker pull "$ref"
+          printf 'services:\n  ingestor:\n    image: %s\n    pull_policy: always\n' "$ref" > /opt/fomo-copilot/infra/ingestor-image.yml
           compose=(docker compose --env-file .env -f infra/docker-compose.yml -f infra/ingestor-image.yml)
           # Postgres stays up. Only the ingestor container is replaced, and only
           # with the loaded image. Do not build from the checkout.

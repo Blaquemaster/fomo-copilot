@@ -386,6 +386,53 @@ grep -q 'forward-fix-only' "$root/release-digest.json"
 echo "replace only the ingestor and keep postgres"
 bash scripts/replace-ingestor.sh --oneshot --project fomo-ci --env-file "$app_env" --record /tmp/fomo-ingestor-replacement.txt
 grep -q 'wide_recovery=disabled' /tmp/fomo-ingestor-replacement.txt
-grep -q 'postgres_id=' /tmp/fomo-ingestor-replacement.txt
+grep -q 'result=ok' /tmp/fomo-ingestor-replacement.txt
+
+echo "mock feed for the long-running ingestor"
+node scripts/ci-mock-feed.mjs 8787 >/tmp/fomo-mock-feed.log 2>&1 &
+mock_pid=$!
+sleep 1
+network=$(docker network ls --format '{{.Name}}' | grep '^fomo-ci' | head -1)
+gateway=$(docker network inspect "$network" -f '{{(index .IPAM.Config 0).Gateway}}')
+cat >>"$app_env" <<EOF
+AUTOBUY_MODE=dry_run
+HELIUS_HTTP_BASE=http://${gateway}:8787
+HELIUS_WS_BASE=ws://${gateway}:8787
+BSC_WSS_URL=ws://${gateway}:8787
+EOF
+bash scripts/replace-ingestor.sh --live --project fomo-ci --env-file "$app_env" --record /tmp/fomo-live-replacement.txt
+grep -q 'result=ok' /tmp/fomo-live-replacement.txt
+compose stop ingestor
+kill "$mock_pid" || true
+
+echo "startup failure preserves the database"
+rows_before=$(compose exec -T postgres psql -U fomo -d fomo -At -c "select count(*) from raw_events")
+set +e
+bash scripts/replace-ingestor.sh --expect-failure --project fomo-ci --env-file "$app_env" --record /tmp/fomo-failed-replacement.txt
+fail_code=$?
+set -e
+test "$fail_code" -ne 0
+grep -q 'result=failed' /tmp/fomo-failed-replacement.txt
+rows_after=$(compose exec -T postgres psql -U fomo -d fomo -At -c "select count(*) from raw_events")
+test "$rows_after" = "$rows_before"
+
+echo "restore a pre-upgrade backup and apply 023-031 before dispatch"
+pre_dump=$(mktemp)
+compose exec -T postgres psql -v ON_ERROR_STOP=1 -U fomo -d postgres \
+  -c "drop database if exists fomo_pre_upgrade" \
+  -c "create database fomo_pre_upgrade"
+{
+  echo "create table schema_migrations (id text primary key);"
+  grep -v '^#' infra/db/production-baseline.txt | grep -v '^$' | while read -r id; do
+    echo "insert into schema_migrations (id) values ('$id');"
+  done
+} | compose exec -T postgres psql -v ON_ERROR_STOP=1 -U fomo -d fomo_pre_upgrade
+compose exec -T postgres pg_dump -U fomo -d fomo_pre_upgrade -Fc >"$pre_dump"
+bash scripts/restore-and-upgrade.sh --dump "$pre_dump" --database fomo_cutover --project fomo-ci --env-file "$app_env"
+rm -f "$pre_dump"
+
+echo "abort when a deploy is already queued"
+bash scripts/pre-merge-deploy-check.sh
+bash scripts/verify-release-pins.sh
 
 echo "compose gates passed"

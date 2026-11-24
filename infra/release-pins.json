@@ -1,0 +1,13 @@
+{
+  "revision": "cursor/review-8-approval-8ff7",
+  "files": {
+    "infra/docker-compose.yml": "741c1b6cd2e628b125358d126f0d55c1cd99561f0f9c353e55d2c2638f4d01d4",
+    ".github/workflows/deploy.yml": "6301790f4854d406dfde883669514f70b2f0e42c1bbe7df2b06b853b9e9579dd",
+    "scripts/replace-ingestor.sh": "c10648369e60b25f34ecde4d1e7e1f1990903ab270b9cdb7738f785b0bc3a7d2",
+    "scripts/approved-rollback.sh": "68df6c025d31720e1c66dba2578cd403ae05676bd8c8f95105ad055cbfaa58ec",
+    "scripts/install-rollback-controller.sh": "fccf8188be7fb52837524bd5f2dbd6a512c4ee9e665665f9b5fbb1a156c94fc7",
+    "scripts/preflight.sh": "62c568620a836b1994be156c4cd4a6537d8cdb0eaa2f266630c87f9552885b99",
+    "scripts/restore-and-upgrade.sh": "c4be60f28b006624ff886045b13d14370df2a3a0faf61f7270af624b36e94e87",
+    "scripts/pre-merge-deploy-check.sh": "c3ce890098c735bb13a27afd3f5cfad601a47f3d5b2ec83e87a35d8050c821a8"
+  }
+}

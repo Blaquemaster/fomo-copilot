@@ -322,6 +322,18 @@ describe("preflight checker", () => {
   });
 });
 
+describe("release pins and deploy hold", () => {
+  it("accepts a clear deploy queue and rejects a busy one", () => {
+    const script = path.join(root, "scripts/pre-merge-deploy-check.sh");
+    expect(execFileSync("bash", [script, "--fixture-clear"], { encoding: "utf8" })).toContain(
+      "no queued",
+    );
+    expect(() => execFileSync("bash", [script, "--fixture-busy"], { encoding: "utf8" })).toThrow(
+      /queued or running/,
+    );
+  });
+});
+
 describe("migration inventory", () => {
   it("lists the release ids that production main does not have", () => {
     const stdout = execFileSync(

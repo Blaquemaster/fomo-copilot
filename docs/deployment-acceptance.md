@@ -6,7 +6,7 @@ The release candidate is the branch `cursor/release-candidate-8ff7`. It contains
 
 ## What you can approve now
 
-A bounded rollout and a diagnostic collection:
+Conditional on the checks in this revision: a bounded rollout and a diagnostic collection. Steps 1 through 7 below are the approval checklist. Do not dispatch until the pre-dispatch restore has succeeded.
 
 - One merge of this release candidate. The merge does not deploy. See below.
 - An off-host backup while the current ingestor is still running.
@@ -62,9 +62,25 @@ docker image inspect sha256:THE_RECORDED_ID >/dev/null
 
 `sudo` is only for creating `/usr/local/lib/fomo` and `/etc/fomo`. The controller and the preflight command do not need root after that. The installed manifest is forward-fix-only: `targets` is empty. The command stops services and asks for a forward fix. It will not start an older image. The production image from before this release has not been tested against migrations through `031_run_identity`.
 
-5. Dispatch the deploy workflow with `image_digest` set to that id and `confirm` set to `promote-tested-digest`. The workflow writes `AUTOBUY_MODE=dry_run` into the env file before it starts the container. It does not fix the mode afterward. `live` is refused. It stops the screener and the alerter, leaves Postgres running, and runs `docker compose up -d --no-deps --no-build ingestor` with the loaded image.
-6. Record the replacement with `scripts/replace-ingestor.sh` if you run the replacement by hand instead of the dispatch. Pull or load the image first. The script records checkpoint counts, the interruption time, and that wide recovery is disabled. An unrecovered gap stays recorded and blocks readiness. Do not delete checkpoint rows.
-7. Start the diagnostic phase only. Do not start paper, alerts, or the qualification clock.
+5. On the host, before any script runs, verify the reviewed revision:
+
+```bash
+git checkout "$(node -e 'process.stdout.write(require("./infra/release-pins.json").revision)')"
+bash scripts/verify-release-pins.sh
+bash scripts/pre-merge-deploy-check.sh
+```
+
+`verify-release-pins.sh` checks the compose file and the host scripts. A mismatch stops you. `pre-merge-deploy-check.sh` lists queued and running deploy workflow runs and aborts if any exist, and it aborts if `deploy.yml` has a push trigger.
+
+Publish the recorded registry reference, then dispatch. The reference looks like `ghcr.io/blaquemaster/fomo-copilot/ingestor@sha256:…`. It is the manifest digest CI computed, not the local image id. This repository does not push the image. The dispatch runs `docker pull` on that reference. If the reference is not in the registry, the pull fails and nothing is replaced. `confirm` must be `promote-tested-digest`. The workflow writes `AUTOBUY_MODE=dry_run` before the container starts. `live` is refused. It stops the screener and the alerter, leaves Postgres running, and starts only that pulled image.
+
+Before the dispatch, restore the production backup into an isolated Postgres 16 and apply migrations `023` through `031`:
+
+```bash
+bash scripts/restore-and-upgrade.sh --dump /var/backups/fomo-TIMESTAMP.dump --database fomo_cutover
+```
+
+A restore failure, a database that already has `031_run_identity`, or an upgrade failure prints `sequence stopped` and exits non-zero. Do not dispatch after that. 6. Record the replacement with `scripts/replace-ingestor.sh` if you run the replacement by hand instead of the dispatch. Pull or load the image first. The script records checkpoint counts, the interruption time, and that wide recovery is disabled. An unrecovered gap stays recorded and blocks readiness. Do not delete checkpoint rows. 7. Start the diagnostic phase only. Do not start paper, alerts, or the qualification clock.
 
 ## Migrations
 
@@ -100,11 +116,41 @@ The accepted file's `imageDigest` and `configFingerprint` must be the digest and
 
 The 7-day clock starts only after a later live preflight passes and the later yes items are set. Diagnostic days do not count.
 
+## If the replacement fails
+
+The old ingestor stays in place until the planned swap. Postgres, `raw_events`, checkpoints, and the failure log stay. Diagnostics stop. The qualification clock stays inhibited. A forward fix has to pass the same CI gates, including the long-running mock-feed replacement. Do not restore an older database snapshot to undo an application deploy: that snapshot would discard events stored after the backup.
+
+With wide recovery off, any gap opened while ingestion is down stays unrecovered. Ingestion can remain down until a fixed release is built and pulled. An operator has to be available for the whole cutover.
+
 ## Diagnostic phase
 
 Permitted jobs: reference scans, reconciliation, and quote collection under the restricted role. Paper and alerts stay off. The qualification clock stays inhibited.
 
-Candidate venues, none selected: `pump`, `pumpswap`, `launchlab`, `meteora`.
+The wallet-list version for this window is frozen now as `diagnostic-cohort-2026-11-24`. Load that cohort at the start and do not rotate it. It is not yet the qualification version.
+
+The window is 24 hours of complete wallet-history warm-up, then 7 complete diagnostic days. The end time is fixed when the warm-up ends. There is one selection, at that end time. There is no automatic extension. The only early stop is an integrity failure or a budget ceiling.
+
+Candidate sources, none selected. PumpSwap is the destination of a Pump graduation, not a second candidate:
+
+- `pump`: program `6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P`, graduation `pump_migrate`, destination program `pAMMBay6oceH9fJKBRHGP5D4bD4sWpmSwMn52FMfXEA` (PumpSwap).
+- `launchlab`: program `LanMV9sAd7wArD4vJFi2qDdfnVhFxYSUg6eADduJ3uj`, graduation `launchlab_migrate`.
+- `meteora`: program `dbcij3LWUppWqq96dh6gJWwBifmcGfLSB5D4DuSMaqN`, graduation `dbc_migration_damm_v2`, destination `cpamdpZCGKUy5JxQXB4dcpGPiikHawvSWAd6mEn1sGG`.
+
+Each candidate needs at least 300 unique reference events in every critical class, including graduation or migration; at least 300 independently referenced wallet buys and 300 sells for the frozen cohort, counted across venues; and completed reference scans of the whole window on the 6-hour interval. The one-sided 95 percent exact-binomial lower limit on recall has to be at least 99 percent. 300 successes in 300 trials is about 0.99006. The tie-breaker runs only among full passers and uses the larger recall denominator. A tie, or no passer, is `insufficient_evidence`. Do not loosen a bar.
+
+Hard ceilings, rejected by config if set higher: 50,000 Helius credits for the window, 2,000 Jupiter quotes a day, 20,000 public-RPC calls a day, and 24 Jupiter quotes a minute without a key. Hitting one stops the diagnostic.
+
+## External APIs and the cost ceiling
+
+- Helius parsed websocket and HTTPS RPC (`mainnet.helius-rpc.com`, `beta.helius-rpc.com`): the running ingestor. Parsed events are 1 credit. `getSlot`, `getTransaction`, and `getSignaturesForAddress` are 1 credit. A parsed-events scan is 10 credits plus 1 per page. The existing plan pauses at 90 percent of 10,000,000 credits. The diagnostic ceiling is the tighter 50,000 credits.
+- Public Solana RPC `https://api.mainnet-beta.solana.com`: venue reference scans. No Helius charge. Ceiling 20,000 calls a day.
+- Jupiter `https://api.jup.ag/swap/v1/quote`: quote collection. Keyless limit is 30 requests a minute; the code stays at 24. Ceiling 2,000 quotes a day.
+- DexScreener and GeckoTerminal are used by the screener market poll. The screener stays stopped, so the diagnostic does not call them.
+- BSC `wss://bsc-rpc.publicnode.com` is the default Flap socket. Flap trading stays parked. The diagnostic does not add a paid BSC provider.
+
+Expected volume is the existing quiet parsed subscription, one wallet-history warm-up inside the 3,300-credit run cap, 6-hour reference scans for three sources across 8 days, and the Jupiter ceiling. Host time for 8 days of the $6 droplet is about $1.60. If the 50,000 Helius credits are overage they are about $0.25 at $5 per million. The number to approve as the incremental-cost ceiling is **$25**. That is the stop. It is not an authorization to buy a new service, and it is below the $150 proposal.
+
+## Diagnostic phase (jobs)
 
 Observation window: 7 days from diagnostic start. The same wallet cohort is used for every candidate venue. It is the list loaded at the start. It is not rotated during the window. It is not a frozen qualification version yet.
 
@@ -120,11 +166,9 @@ A venue is judged only on operations:
 
 Returns, winners, and wallet outperformance are not criteria. If two venues meet every operational bar, the tie-breaker is the larger completed reference-scan denominator. If that is also tied, stop and ask. Do not pick a winner from returns.
 
-Few reference events are weak evidence. If no venue passes, stop. Do not loosen a bar.
+A venue that misses the 300-event or 99 percent recall bar is not a passer. No passer means insufficient evidence. Do not loosen a bar and do not extend the window.
 
-Stop the diagnostic if paper or alerts would turn on, if wide recovery would be enabled, if a prohibited write succeeds, or if continuing would need a new paid service or Helius overage.
-
-Cost against the $150 proposal: the droplet is $6 a month, so 7 days of host time is about $1.40. This phase adds no new API subscription. Public-RPC reference scans add no Helius charge. Existing credit caps still pause intake. $150 is not approved as new spend by this runbook.
+Stop the diagnostic if paper or alerts would turn on, if wide recovery would be enabled, if a prohibited write succeeds, or if a budget ceiling is hit. The incremental-cost ceiling for this approval is $25.
 
 Activation order, and the clock is not eligible until the last step, which is a later decision:
 

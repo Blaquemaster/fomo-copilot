@@ -7,6 +7,8 @@ set -euo pipefail
 root=$(cd "$(dirname "$0")/.." && pwd)
 cd "$root"
 oneshot=0
+live=0
+expect_failure=0
 project=${COMPOSE_PROJECT_NAME:-fomo-ci}
 app_env=${CI_APP_ENV:-}
 record=${REPLACEMENT_RECORD:-/tmp/fomo-ingestor-replacement.txt}
@@ -15,6 +17,14 @@ while [[ $# -gt 0 ]]; do
   case "$1" in
     --oneshot)
       oneshot=1
+      shift
+      ;;
+    --live)
+      live=1
+      shift
+      ;;
+    --expect-failure)
+      expect_failure=1
       shift
       ;;
     --project)
@@ -51,9 +61,68 @@ test -n "$postgres_id"
 before=$(compose exec -T postgres psql -U fomo -d fomo -At -c "select count(*) from ingest_checkpoint" || echo 0)
 interrupted_at=$(date -u +%Y-%m-%dT%H:%M:%SZ)
 
+marker=$(compose exec -T postgres psql -U fomo -d fomo -At -c "select count(*) from raw_events" || echo 0)
+
+if [[ "$expect_failure" == "1" ]]; then
+  override=$(mktemp)
+  cat >"$override" <<'EOF'
+services:
+  ingestor:
+    restart: "no"
+    command: ["node", "apps/ingestor/dist/main.js", "--crash-test"]
+EOF
+  set +e
+  compose -f "$override" up -d --no-deps --no-build ingestor
+  for _ in $(seq 1 20); do
+    status=$(docker inspect -f '{{.State.Status}}' "${project}-ingestor-1" 2>/dev/null || echo missing)
+    if [[ "$status" == "exited" ]]; then
+      break
+    fi
+    sleep 1
+  done
+  set -e
+  status=$(docker inspect -f '{{.State.Status}}' "${project}-ingestor-1" 2>/dev/null || echo missing)
+  after_id=$(docker ps -q --filter "name=${project}" --filter name=postgres --filter status=running | head -1)
+  after_marker=$(compose exec -T postgres psql -U fomo -d fomo -At -c "select count(*) from raw_events" || echo 0)
+  cat >"$record" <<EOF
+result=failed
+interrupted_at=$interrupted_at
+postgres_id=$postgres_id
+postgres_after=$after_id
+raw_events_before=$marker
+raw_events_after=$after_marker
+container=$status
+EOF
+  rm -f "$override"
+  if [[ "$after_id" != "$postgres_id" || "$after_marker" != "$marker" || "$status" != "exited" ]]; then
+    echo "replacement failure did not preserve the database" >&2
+    exit 1
+  fi
+  echo "ingestor replacement failed and the database was preserved"
+  exit 1
+fi
+
 if [[ "$oneshot" == "1" ]]; then
   compose run --rm --no-deps --entrypoint node ingestor \
     apps/ingestor/dist/main.js --spot-check
+elif [[ "$live" == "1" ]]; then
+  compose up -d --no-deps --no-build ingestor
+  healthy=0
+  for _ in $(seq 1 40); do
+    if compose logs ingestor 2>/dev/null | grep -q "starting helius ingest"; then
+      rows=$(compose exec -T postgres psql -U fomo -d fomo -At -c "select count(*) from raw_events")
+      if [[ "$rows" -gt "$marker" ]]; then
+        healthy=1
+        break
+      fi
+    fi
+    sleep 1
+  done
+  test "$healthy" = "1"
+  test "$(docker inspect -f '{{.State.Status}}' "${project}-ingestor-1")" = "running"
+  docker inspect -f '{{range .Config.Env}}{{println .}}{{end}}' "${project}-ingestor-1" | grep -q '^AUTOBUY_MODE=dry_run$'
+  running=$(docker ps --format '{{.Names}}' | grep -E 'screener|alerter|outcome|shadow' || true)
+  test -z "$running"
 else
   compose up -d --no-deps --no-build ingestor
 fi
@@ -62,6 +131,7 @@ after_id=$(docker ps -q --filter "name=${project}" --filter name=postgres --filt
 test "$after_id" = "$postgres_id"
 after=$(compose exec -T postgres psql -U fomo -d fomo -At -c "select count(*) from ingest_checkpoint" || echo 0)
 cat >"$record" <<EOF
+result=ok
 interrupted_at=$interrupted_at
 postgres_id=$postgres_id
 checkpoints_before=$before

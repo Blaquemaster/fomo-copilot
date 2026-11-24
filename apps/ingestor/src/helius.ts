@@ -18,9 +18,12 @@ export async function heliusRpc(input: {
   params: unknown[];
   fetchImpl?: typeof fetch;
   meter?: RpcMeter;
+  /** Default is the public Helius host. CI sets a mock origin. */
+  baseUrl?: string;
 }): Promise<unknown> {
   input.meter?.(input.method);
-  const url = `https://mainnet.helius-rpc.com/?api-key=${encodeURIComponent(input.apiKey)}`;
+  const root = (input.baseUrl ?? "https://mainnet.helius-rpc.com").replace(/\/$/, "");
+  const url = `${root}/?api-key=${encodeURIComponent(input.apiKey)}`;
   let response: Response;
   try {
     response = await (input.fetchImpl ?? fetch)(url, {
@@ -63,6 +66,7 @@ export async function getTransaction(
   apiKey: string,
   signature: string,
   meter?: RpcMeter,
+  baseUrl?: string,
 ): Promise<unknown> {
   const config = (version: number) => ({
     encoding: "json",
@@ -75,6 +79,7 @@ export async function getTransaction(
       method: "getTransaction",
       params: [signature, config(0)],
       meter,
+      baseUrl,
     });
   } catch (error) {
     const retry = nextTransactionVersion(error instanceof HeliusRpcError ? error.code : null, 0);
@@ -84,16 +89,22 @@ export async function getTransaction(
       method: "getTransaction",
       params: [signature, config(retry)],
       meter,
+      baseUrl,
     });
   }
 }
 
-export async function getSlot(apiKey: string, meter?: RpcMeter): Promise<number | null> {
+export async function getSlot(
+  apiKey: string,
+  meter?: RpcMeter,
+  baseUrl?: string,
+): Promise<number | null> {
   const result = await heliusRpc({
     apiKey,
     method: "getSlot",
     params: [{ commitment: "confirmed" }],
     meter,
+    baseUrl,
   });
   return typeof result === "number" ? result : null;
 }
@@ -121,6 +132,7 @@ export async function scanInstructionHistory(input: {
   /** Requests of up to 10,000 transactions. Startup backfill uses 4. */
   maxPages?: number;
   fetchImpl?: typeof fetch;
+  baseUrl?: string;
 }): Promise<{ matches: ScanMatch[]; creditsCharged: number; complete: boolean }> {
   const matches: ScanMatch[] = [];
   let creditsCharged = 0;
@@ -148,7 +160,8 @@ export async function scanInstructionHistory(input: {
       budget: { maxScannedTransactions: 10_000 },
     };
     if (paginationToken) body["paginationToken"] = paginationToken;
-    const url = `https://mainnet.helius-rpc.com/v1/parsed-events/scan?api-key=${encodeURIComponent(input.apiKey)}`;
+    const root = (input.baseUrl ?? "https://mainnet.helius-rpc.com").replace(/\/$/, "");
+    const url = `${root}/v1/parsed-events/scan?api-key=${encodeURIComponent(input.apiKey)}`;
     let response: Response;
     try {
       response = await (input.fetchImpl ?? fetch)(url, {

@@ -1788,14 +1788,22 @@ async function callRpc(
     return input.deps.callRpc(method, params);
   }
   if (method === "getTransaction" && typeof params[0] === "string") {
-    return getTransaction(input.env.HELIUS_API_KEY, params[0], input.meter);
+    return getTransaction(
+      input.env.HELIUS_API_KEY,
+      params[0],
+      input.meter,
+      input.env.HELIUS_HTTP_BASE,
+    );
   }
-  if (method === "getSlot") return getSlot(input.env.HELIUS_API_KEY, input.meter);
+  if (method === "getSlot") {
+    return getSlot(input.env.HELIUS_API_KEY, input.meter, input.env.HELIUS_HTTP_BASE);
+  }
   return heliusRpc({
     apiKey: input.env.HELIUS_API_KEY,
     method,
     params,
     meter: input.meter,
+    baseUrl: input.env.HELIUS_HTTP_BASE,
   });
 }
 
@@ -1844,7 +1852,11 @@ function openSocket(input: {
   choice: { method: ResolvedWsMethod };
   deps?: IngestDeps;
 }): SocketLike {
-  const url = websocketUrlSafe(input.env.HELIUS_API_KEY, input.choice.method);
+  const url = websocketUrlSafe(
+    input.env.HELIUS_API_KEY,
+    input.choice.method,
+    input.env.HELIUS_WS_BASE,
+  );
   if (input.deps?.openSocket) return input.deps.openSocket(url);
   return wrapWs(new WebSocket(url));
 }
@@ -1900,7 +1912,8 @@ function rpcReply(message: unknown, id: number): { matched: boolean; slot: numbe
   return { matched: false, slot: null };
 }
 
-function websocketUrlSafe(apiKey: string, method: ResolvedWsMethod): string {
+function websocketUrlSafe(apiKey: string, method: ResolvedWsMethod, base?: string): string {
+  if (base) return `${base.replace(/\/$/, "")}/?api-key=${encodeURIComponent(apiKey)}`;
   const host = method === "parsed" ? "beta.helius-rpc.com" : "mainnet.helius-rpc.com";
   return `wss://${host}/?api-key=${encodeURIComponent(apiKey)}`;
 }
