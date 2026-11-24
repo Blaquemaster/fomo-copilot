@@ -70,6 +70,28 @@ export interface PhaseCStore {
   markScaled(rows: readonly PlannedScale[], at: Date): Promise<void>;
   saveQuoteFailures(rows: readonly PlannedQuoteFailure[], at: Date): Promise<void>;
   insertCandidates(rows: readonly CandidateLogRow[], at: Date): Promise<void>;
+  recordWalletList(
+    listHash: string,
+    walletCount: number,
+    at: Date,
+    freezeAt: Date | null,
+  ): Promise<void>;
+  dueObservations(
+    now: Date,
+    limit: number,
+  ): Promise<
+    Array<{ mint: string; label: string; role: string; dueAt: Date; entryOutAmount: string | null }>
+  >;
+  observationBacklog(now: Date): Promise<{ due: number; pending: number }>;
+  saveObservation(input: {
+    mint: string;
+    label: string;
+    observedAt: Date;
+    late: boolean;
+    priceUsd: number | null;
+    status: "priced" | "missing" | "late";
+    outAmount?: string | null;
+  }): Promise<void>;
   dueCandidates(
     now: Date,
     limit: number,

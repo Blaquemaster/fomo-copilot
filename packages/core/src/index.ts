@@ -287,8 +287,25 @@ export {
   type SecondWaveObservation,
 } from "./phasec/secondWave.js";
 export { runPhaseCPass, type PassCoin, type PassPosition } from "./phasec/pass.js";
-export { outcomeFromPrices, OUTCOME_DELAY_MS } from "./phasec/outcomes.js";
+export {
+  observationLabel,
+  outcomeFromPrices,
+  OUTCOME_DELAY_MS,
+  scheduleObservations,
+  LATENESS_GRACE_MS,
+} from "./phasec/outcomes.js";
+export {
+  EXPERIMENT_ALLOCATED_USD,
+  EXPERIMENT_LATENESS_MS,
+  classifyExitObservation,
+  creatorExposure,
+  delaySummary,
+  reverseNotionalUsd,
+  walletListHash,
+} from "./phasec/experimentProtocol.js";
+export { shadowAcceptance, type ShadowMeasurements } from "./phasec/shadowReport.js";
 export { blockLagAlert, inUnrecoveredGap, venueStaleAlert } from "./ingest/feedAlerts.js";
+export { fetchSignaturePage, walkSignatureGap } from "./ingest/wideRecovery.js";
 export { capSizeToLiquidity } from "./phasec/risk.js";
 export { isFlapMint, stageForCoin } from "./phasec/score.js";
 export {

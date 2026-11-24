@@ -3,7 +3,10 @@ import { describe, expect, it } from "vitest";
 import {
   allocatedReturn,
   blockBootstrapDelta,
+  bootstrapCoverage,
   classifyExitObservation,
+  creatorExposure,
+  delaySummary,
   drawBenchmark,
   enrollmentTimeline,
   experimentCall,
@@ -12,6 +15,7 @@ import {
   pairedDifferences,
   threeScenarios,
   walletBuyQualifies,
+  walletListHash,
   type StratumCoin,
 } from "./experimentProtocol.js";
 
@@ -81,7 +85,8 @@ describe("experiment protocol defaults", () => {
       { wallet: 0, control: -0.095 },
       { wallet: null, control: 0.1 },
     ]);
-    expect(pairs.mean).toBeCloseTo(0.095);
+    expect(pairs.mean).toBeCloseTo(0.0475);
+    expect(pairs.completeMean).toBeCloseTo(0.095);
     expect(pairs.complete).toBe(1);
     expect(pairs.missing).toBe(1);
   });
@@ -200,5 +205,31 @@ describe("experiment protocol defaults", () => {
     const scenarios = threeScenarios({ walletMultiple: 1, controlMultiple: 1 });
     expect(scenarios.bothHigh).toBeCloseTo(0);
     expect(scenarios.adverse).toBeLessThan(0);
+  });
+
+  it("covers a known difference in a block-bootstrap simulation and summarizes delay", () => {
+    const quiet = bootstrapCoverage({
+      trueDelta: 0.2,
+      noise: 0,
+      days: 4,
+      pairsPerDay: 2,
+      sims: 6,
+      replicates: 10,
+      seed: 3,
+    });
+    expect(quiet.coverage).toBe(1);
+    const noisy = bootstrapCoverage({
+      trueDelta: 0.2,
+      noise: 0.02,
+      days: 6,
+      pairsPerDay: 4,
+      sims: 12,
+      replicates: 30,
+      seed: 11,
+    });
+    expect(noisy.coverage).toBeGreaterThan(0.5);
+    expect(delaySummary([100, 200, 900]).p50).toBe(200);
+    expect(creatorExposure({ creatorTokenShare: 0.12, creatorSells: 2 }).sold).toBe(true);
+    expect(walletListHash(["b", "a"])).toBe(walletListHash(["a", "b"]));
   });
 });

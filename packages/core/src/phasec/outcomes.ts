@@ -2,7 +2,8 @@ import {
   DIAGNOSTIC_DELAYS_MS,
   EXPERIMENT_HORIZON_MS,
   EXPERIMENT_LATENESS_MS,
-  drawBenchmark,
+  enrollmentTimeline,
+  executionRecord,
   matchOneToOne,
   type StratumCoin,
 } from "./experimentProtocol.js";
@@ -62,6 +63,22 @@ export interface CandidateLogRow {
   duringPause: boolean;
   alertPriceUsd: number | null;
   outcomeDueAt: Date;
+  /** Same quote plan for a wallet, its control, and the pre-screen benchmark. */
+  execution?: {
+    enrolledAt: Date;
+    entryAt: Date;
+    eventAt: Date | null;
+    venue: string;
+    intendedSpendUsd: number;
+    route: "unknown";
+    feeHighUsd: number;
+    feeLowUsd: number;
+    acquiredQtyHigh: number | null;
+    acquiredQtyLow: number | null;
+    entryQuoteUsd: number | null;
+    decisionLatencyMs: number | null;
+    facts: Record<string, unknown>;
+  };
 }
 
 /**
@@ -152,7 +169,7 @@ export function buildCandidateLog(input: {
   const walletCount = rows.filter((row) => row.group === "wallet").length;
   const walletMints = new Set(rows.filter((row) => row.group === "wallet").map((row) => row.mint));
   if (input.experiment === true) {
-    applyExperimentControls(rows, input);
+    applyExperimentControls(rows, { ...input, prices: input.prices });
     return rows;
   }
   const pool = input.coins.filter((coin) => {
@@ -186,6 +203,7 @@ function applyExperimentControls(
     now: Date;
     coins: readonly (ScoreCoin & ScreenFacts & { poolType?: string | null })[];
     rules: ScreenRules;
+    prices: ReadonlyMap<string, number | null>;
   },
 ): void {
   const stratumFor = (coin: ScoreCoin & { poolType?: string | null }): StratumCoin | null => {
@@ -225,18 +243,55 @@ function applyExperimentControls(
     ...wallets.map((row) => row.mint),
     ...matched.pairs.map((pair) => pair.control),
   ]);
-  for (const mint of drawBenchmark({
-    coins: input.coins.filter((coin) => stratumFor(coin) !== null),
-    exclude,
-    count: wallets.length,
-    now: input.now,
-  })) {
-    const row = byMint.get(mint);
+  const benchmarkPool = input.coins.flatMap((coin) => {
+    const stratum = stratumFor(coin);
+    if (!stratum || exclude.has(coin.mint)) return [];
+    return [stratum];
+  });
+  const benchmark = matchOneToOne({ wallets, screened: benchmarkPool, now: input.now });
+  for (const pair of benchmark.pairs) {
+    const row = byMint.get(pair.control);
     if (!row || row.group === "wallet" || row.group === "screened_control") continue;
-    row.reason = `pre_screen benchmark; prior ${row.group}`;
+    row.reason = `pre_screen benchmark; ${pair.fallback}; prior ${row.group}`;
     row.group = "pre_screen";
     row.recordedOnly = true;
   }
+  const stamp = (mint: string) => {
+    const row = byMint.get(mint);
+    const coin = input.coins.find((item) => item.mint === mint);
+    if (!row || !coin?.graduatedAt) return;
+    const timeline = enrollmentTimeline({
+      graduatedAt: coin.graduatedAt,
+      infoReceivedAt: input.now,
+    });
+    if (!timeline.eligible) return;
+    const price = input.prices.get(mint) ?? row.alertPriceUsd;
+    const record = executionRecord({
+      entryQuoteUsd: price,
+      eventAt: coin.graduatedAt,
+      decidedAt: timeline.enrolledAt,
+    });
+    row.execution = {
+      enrolledAt: timeline.enrolledAt,
+      entryAt: timeline.entryAt,
+      eventAt: coin.graduatedAt,
+      venue: coin.poolType ?? "unknown",
+      ...record,
+      facts: {
+        group: row.group,
+        venue: coin.poolType ?? "unknown",
+        liquidityUsd: coin.liquidityUsd,
+        top10HoldersPct: coin.top10HoldersPct,
+        sniperBundlePct: coin.sniperBundlePct,
+        creatorSells: coin.creatorSells,
+        trackedBuyers: coin.trackedBuyers,
+      },
+    };
+    row.outcomeDueAt = new Date(timeline.entryAt.getTime() + EXPERIMENT_HORIZON_MS);
+  };
+  for (const mint of wallets.map((row) => row.mint)) stamp(mint);
+  for (const pair of matched.pairs) stamp(pair.control);
+  for (const pair of benchmark.pairs) stamp(pair.control);
 }
 
 /** A missing follow-up quote is missing, not a loss. */

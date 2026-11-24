@@ -172,6 +172,61 @@ services:
         max-size: "10m"
         max-file: "3"
 
+  # Collection-only shadow. Off unless this profile is requested. No alerts, no trades.
+  shadow:
+    profiles: ["shadow"]
+    build:
+      context: ..
+      dockerfile: apps/screener/Dockerfile
+    command: ["node", "apps/screener/dist/shadowWorker.js"]
+    restart: "no"
+    env_file:
+      - path: ../.env
+        required: false
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks:
+      - internal
+    init: true
+    read_only: true
+    tmpfs:
+      - /tmp:size=32m
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    deploy:
+      resources:
+        limits:
+          memory: 96M
+    logging:
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  # Opt-in restart check. `docker compose up` does not start this profile.
+  stack-test:
+    profiles: ["test"]
+    build:
+      context: ..
+      dockerfile: apps/screener/Dockerfile
+    command: ["node", "apps/screener/dist/stackRestart.js"]
+    restart: "no"
+    env_file:
+      - path: ../.env
+        required: false
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks:
+      - internal
+    init: true
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+
   alerter:
     profiles: ["paper"]
     build:

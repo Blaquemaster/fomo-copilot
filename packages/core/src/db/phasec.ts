@@ -1,6 +1,6 @@
 import pg from "pg";
 
-import type { CandidateLogRow } from "../phasec/outcomes.js";
+import { scheduleObservations, type CandidateLogRow } from "../phasec/outcomes.js";
 import type {
   PassCoin,
   PassPosition,
@@ -500,8 +500,8 @@ export class PhaseCRepository implements PhaseCStore {
       await this.pool.query(
         `insert into phasec_candidate
           (pass_at, mint, stage, group_name, verdict, reason, recorded_only, during_pause,
-           alert_price_usd, outcome_due_at, outcome_status, ingest_gap)
-         values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,'pending',
+           alert_price_usd, outcome_due_at, outcome_status, decision_facts, ingest_gap)
+         values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,'pending',$11,
            exists (
              select 1 from ingest_backfill b
              where b.unrecovered
@@ -520,7 +520,152 @@ export class PhaseCRepository implements PhaseCStore {
           row.duringPause,
           row.alertPriceUsd,
           row.outcomeDueAt.toISOString(),
+          row.execution ? JSON.stringify(row.execution.facts) : null,
         ],
+      );
+      if (!row.execution) continue;
+      const execution = row.execution;
+      await this.pool.query(
+        `insert into phasec_execution
+          (mint, group_name, enrolled_at, entry_at, event_at, venue, intended_spend_usd, route,
+           fee_high_usd, fee_low_usd, acquired_qty_high, acquired_qty_low, entry_quote_usd,
+           decision_latency_ms, decision_facts)
+         values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)
+         on conflict (mint) do nothing`,
+        [
+          row.mint,
+          row.group,
+          execution.enrolledAt.toISOString(),
+          execution.entryAt.toISOString(),
+          execution.eventAt?.toISOString() ?? null,
+          execution.venue,
+          execution.intendedSpendUsd,
+          execution.route,
+          execution.feeHighUsd,
+          execution.feeLowUsd,
+          execution.acquiredQtyHigh,
+          execution.acquiredQtyLow,
+          execution.entryQuoteUsd,
+          execution.decisionLatencyMs,
+          JSON.stringify(execution.facts),
+        ],
+      );
+      const observations = [
+        { label: "entry_high", role: "entry", dueAt: execution.entryAt },
+        { label: "entry_low", role: "entry", dueAt: execution.entryAt },
+        { label: "reverse_high", role: "reverse", dueAt: execution.entryAt },
+        { label: "reverse_low", role: "reverse", dueAt: execution.entryAt },
+        ...scheduleObservations(execution.entryAt).map((item) => ({
+          label: item.label,
+          role: item.role,
+          dueAt: item.dueAt,
+        })),
+      ];
+      for (const item of observations) {
+        await this.pool.query(
+          `insert into phasec_observation (mint, label, role, due_at)
+           values ($1,$2,$3,$4)
+           on conflict (mint, label) do nothing`,
+          [row.mint, item.label, item.role, item.dueAt.toISOString()],
+        );
+      }
+    }
+  }
+
+  async recordWalletList(
+    listHash: string,
+    walletCount: number,
+    at: Date,
+    freezeAt: Date | null,
+  ): Promise<void> {
+    await this.pool.query(
+      `insert into phasec_wallet_list_version (list_hash, recorded_at, wallet_count, freeze_at)
+       values ($1,$2,$3,$4)
+       on conflict (list_hash) do nothing`,
+      [listHash, at.toISOString(), walletCount, freezeAt?.toISOString() ?? null],
+    );
+  }
+
+  async dueObservations(
+    now: Date,
+    limit: number,
+  ): Promise<
+    Array<{ mint: string; label: string; role: string; dueAt: Date; entryOutAmount: string | null }>
+  > {
+    const result = await this.pool.query<{
+      mint: string;
+      label: string;
+      role: string;
+      due_at: Date;
+      entry_out_amount: string | null;
+    }>(
+      `select o.mint, o.label, o.role, o.due_at, e.entry_out_amount
+       from phasec_observation o
+       join phasec_execution e on e.mint = o.mint
+       where o.status = 'pending' and o.due_at <= $1
+       order by o.due_at, o.mint, o.label
+       limit $2`,
+      [now.toISOString(), limit],
+    );
+    return result.rows.map((row) => ({
+      mint: row.mint,
+      label: row.label,
+      role: row.role,
+      dueAt: date(row.due_at),
+      entryOutAmount: row.entry_out_amount,
+    }));
+  }
+
+  async observationBacklog(now: Date): Promise<{ due: number; pending: number }> {
+    const result = await this.pool.query<{ due: string; pending: string }>(
+      `select count(*) filter (where due_at <= $1)::text as due,
+              count(*)::text as pending
+       from phasec_observation
+       where status = 'pending'`,
+      [now.toISOString()],
+    );
+    return {
+      due: Number(result.rows[0]?.due ?? 0),
+      pending: Number(result.rows[0]?.pending ?? 0),
+    };
+  }
+
+  async saveObservation(input: {
+    mint: string;
+    label: string;
+    observedAt: Date;
+    late: boolean;
+    priceUsd: number | null;
+    status: "priced" | "missing" | "late";
+    outAmount?: string | null;
+  }): Promise<void> {
+    await this.pool.query(
+      `update phasec_observation
+       set observed_at = $3, late = $4, price_usd = $5, status = $6
+       where mint = $1 and label = $2 and status = 'pending'`,
+      [
+        input.mint,
+        input.label,
+        input.observedAt.toISOString(),
+        input.late,
+        input.priceUsd,
+        input.status,
+      ],
+    );
+    if (input.label === "entry_high" && input.outAmount) {
+      await this.pool.query(
+        `update phasec_execution
+         set entry_out_amount = $2, entry_quoted_at = $3, entry_quote_usd = coalesce($4, entry_quote_usd)
+         where mint = $1 and entry_out_amount is null`,
+        [input.mint, input.outAmount, input.observedAt.toISOString(), input.priceUsd],
+      );
+    }
+    if (input.label.startsWith("reverse") && input.priceUsd !== null) {
+      await this.pool.query(
+        `update phasec_execution
+         set reverse_quote_usd = $2, reverse_quoted_at = $3, reverse_out_amount = $4
+         where mint = $1 and reverse_quoted_at is null`,
+        [input.mint, input.priceUsd, input.observedAt.toISOString(), input.outAmount ?? null],
       );
     }
   }

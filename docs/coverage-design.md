@@ -1,6 +1,6 @@
 # Coverage design
 
-This is a design. The live backfill still stops at about 600 slots. Recovering a longer outage is **not built**. Turning it on would change the live ingestor and needs its own rollout.
+The live backfill still stops at about 600 slots. `walkSignatureGap` can page the public Solana RPC past that cap. It does not write `raw_events` and it does not call Helius. The live loop does not call it until the wide-recovery change is on and `INGEST_WIDE_RECOVERY` is exactly `true`.
 
 ## What a healthy period is
 
@@ -15,7 +15,7 @@ A period that fails any of those is unhealthy. It is not deleted after the retur
 
 ## Provenance
 
-Live rows already store `received_at` and, when the chain gives it, the block time. Recovered rows on the telemetry branch are `source='backfill'`. A recovered purchase must not be treated as something a live follower could have bought at the block time. The first time we stored it is `received_at`. A separate recovery-completed timestamp is **not built**.
+Live rows already store `received_at` and, when the chain gives it, the block time. Recovered rows on the telemetry branch are `source='backfill'`. A recovered purchase must not be treated as something a live follower could have bought at the block time. The first time we stored it is `received_at`. The wide-recovery checkpoint stores `recovery_completed_at` when a page walk finishes. That timestamp is not a signal that the purchase was available live.
 
 ## Independent recall
 
@@ -24,11 +24,11 @@ Pump.fun has a public-RPC check (`recallPumpFromPublicRpc`). It is not on a time
 | Venue                | Independent check                           | Status               |
 | -------------------- | ------------------------------------------- | -------------------- |
 | Pump.fun             | Public Solana RPC `getSignaturesForAddress` | Built, not scheduled |
-| PumpSwap             | Same RPC, PumpSwap program                  | **Not built**        |
-| LaunchLab            | Same RPC, LaunchLab program                 | **Not built**        |
-| Meteora DBC and DAMM | Same RPC, those programs                    | **Not built**        |
+| PumpSwap             | Same RPC, PumpSwap program                  | Built, not scheduled |
+| LaunchLab            | Same RPC, LaunchLab program                 | Built, not scheduled |
+| Meteora DBC and DAMM | Same RPC, those programs                    | Built, not scheduled |
 | Flap / BSC           | Not a scored venue                          | Parked               |
 
 ## Recovery beyond 600 slots
 
-Not built. A later change would page a public or parsed history in chunks, record each chunk's slot range and whether it finished, and stop at a credit cap. Until that exists, any outage longer than about two minutes is an unhealthy period for the venues that give up at 600 slots.
+`walkSignatureGap` pages `getSignaturesForAddress` on the public RPC and stamps `recovery_completed_at` on the page that reaches the start of the gap. The live ingestor still treats a wider gap as unrecovered until that walker is switched on. Until then, an outage longer than about two minutes stays an unrecovered gap.

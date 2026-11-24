@@ -1,10 +1,12 @@
 import {
+  EXPERIMENT_LATENESS_MS,
   SOL_MINT,
   jupiterQuoteUrl,
   lamportsForUsd,
   outcomeFromPrices,
   parseJupiterQuote,
   quoteUrlAllowed,
+  reverseNotionalUsd,
   type PhaseCStore,
 } from "@fomo/core";
 
@@ -64,4 +66,123 @@ export async function priceDueCandidates(input: {
     }
   }
   return { priced, missing, waiting };
+}
+
+/**
+ * One row per horizon, plus the entry and reverse quotes. A late 60-minute
+ * quote is labeled late and is not stored as the exit price.
+ */
+export async function priceDueObservations(input: {
+  now: Date;
+  store: PhaseCStore;
+  solPriceUsd: number | null;
+  fetchImpl?: typeof fetch;
+  apiKey?: string | null;
+}): Promise<{ priced: number; missing: number; late: number; backlog: number }> {
+  const backlog = await input.store.observationBacklog(input.now);
+  const due = await input.store.dueObservations(input.now, OUTCOME_QUOTES_PER_PASS);
+  if (input.solPriceUsd === null) {
+    return { priced: 0, missing: 0, late: 0, backlog: backlog.due };
+  }
+  const fetchImpl = input.fetchImpl ?? fetch;
+  let priced = 0;
+  let missing = 0;
+  let late = 0;
+  for (const row of due) {
+    const latenessMs = input.now.getTime() - row.dueAt.getTime();
+    const isLate = latenessMs > EXPERIMENT_LATENESS_MS;
+    if (row.role === "exit" && isLate) {
+      late += 1;
+      await input.store.saveObservation({
+        mint: row.mint,
+        label: row.label,
+        observedAt: input.now,
+        late: true,
+        priceUsd: null,
+        status: "late",
+      });
+      continue;
+    }
+    const notion = row.label.endsWith("low")
+      ? reverseNotionalUsd("solana_lowest_fee")
+      : reverseNotionalUsd("solana_other");
+    const sellAmount = row.role === "entry" ? null : row.entryOutAmount;
+    const buyAmount = lamportsForUsd(notion, input.solPriceUsd);
+    const amount = row.role === "entry" ? buyAmount : sellAmount;
+    if (!amount) {
+      missing += 1;
+      await input.store.saveObservation({
+        mint: row.mint,
+        label: row.label,
+        observedAt: input.now,
+        late: isLate,
+        priceUsd: null,
+        status: "missing",
+      });
+      continue;
+    }
+    const url =
+      row.role === "entry"
+        ? jupiterQuoteUrl(SOL_MINT, row.mint, amount)
+        : jupiterQuoteUrl(row.mint, SOL_MINT, amount);
+    if (!quoteUrlAllowed(url)) {
+      missing += 1;
+      await input.store.saveObservation({
+        mint: row.mint,
+        label: row.label,
+        observedAt: input.now,
+        late: isLate,
+        priceUsd: null,
+        status: "missing",
+      });
+      continue;
+    }
+    try {
+      const response = await fetchImpl(url, {
+        headers: input.apiKey ? { "x-api-key": input.apiKey } : {},
+      });
+      if (!response.ok) {
+        missing += 1;
+        await input.store.saveObservation({
+          mint: row.mint,
+          label: row.label,
+          observedAt: input.now,
+          late: isLate,
+          priceUsd: null,
+          status: "missing",
+        });
+        continue;
+      }
+      const body = await response.json();
+      const bid = parseJupiterQuote(body, {
+        sizeUsd: notion,
+        side: row.role === "entry" ? "buy" : "sell",
+        solPriceUsd: input.solPriceUsd,
+      });
+      const price = bid.ok ? bid.execPriceUsd : null;
+      await input.store.saveObservation({
+        mint: row.mint,
+        label: row.label,
+        observedAt: input.now,
+        late: isLate,
+        priceUsd: price,
+        status: price === null ? "missing" : "priced",
+        outAmount: bid.ok ? bid.outAmount : null,
+      });
+      if (price === null) missing += 1;
+      else priced += 1;
+      if (isLate) late += 1;
+    } catch {
+      missing += 1;
+      await input.store.saveObservation({
+        mint: row.mint,
+        label: row.label,
+        observedAt: input.now,
+        late: isLate,
+        priceUsd: null,
+        status: "missing",
+      });
+    }
+  }
+  return { priced, missing, late, backlog: backlog.due };
 }

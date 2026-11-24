@@ -102,18 +102,23 @@ export function allocatedReturn(input: {
   return input.exitCashUsd / allocated - 1;
 }
 
+/**
+ * Primary mean divides by every enrolled pair. Unfilled is 0, so it is in the
+ * sum and the count. An unresolved side is not a measured 0: it adds nothing
+ * to the sum and still adds one to the count. Dropping it would be a different
+ * result and is reported separately as `completeMean`.
+ */
 export function pairedDifferences(
   pairs: readonly { wallet: number | null; control: number | null }[],
-): { mean: number | null; complete: number; missing: number } {
+): { mean: number | null; completeMean: number | null; complete: number; missing: number } {
   const diffs = pairs.map((pair) =>
     pair.wallet === null || pair.control === null ? null : pair.wallet - pair.control,
   );
   const complete = diffs.filter((diff): diff is number => diff !== null);
+  const sum = complete.reduce((total, diff) => total + diff, 0);
   return {
-    mean:
-      complete.length === 0
-        ? null
-        : complete.reduce((sum, diff) => sum + diff, 0) / complete.length,
+    mean: pairs.length === 0 ? null : sum / pairs.length,
+    completeMean: complete.length === 0 ? null : sum / complete.length,
     complete: complete.length,
     missing: diffs.length - complete.length,
   };
@@ -326,6 +331,127 @@ export function blockBootstrapDelta(input: {
     draws[Math.min(draws.length - 1, Math.max(0, Math.floor(quantile * (draws.length - 1))))] ??
     null;
   return { mean: observed, low: at(0.025), high: at(0.975) };
+}
+
+export interface ExecutionRecord {
+  intendedSpendUsd: number;
+  route: "unknown";
+  feeHighUsd: number;
+  feeLowUsd: number;
+  acquiredQtyHigh: number | null;
+  acquiredQtyLow: number | null;
+  entryQuoteUsd: number | null;
+  reverseQuoteUsd: number | null;
+  decisionLatencyMs: number | null;
+}
+
+/** Same cash math for a wallet row, a control, and a benchmark row. Route stays unknown. */
+export function executionRecord(input: {
+  entryQuoteUsd: number | null;
+  eventAt: Date | null;
+  decidedAt: Date;
+}): ExecutionRecord {
+  const high = flatRoundTrip("solana_other");
+  const low = flatRoundTrip("solana_lowest_fee");
+  const qty = (cash: number) =>
+    input.entryQuoteUsd !== null && input.entryQuoteUsd > 0 ? cash / input.entryQuoteUsd : null;
+  return {
+    intendedSpendUsd: EXPERIMENT_ALLOCATED_USD,
+    route: "unknown",
+    feeHighUsd: high.entryFeeUsd + high.exitFeeUsd,
+    feeLowUsd: low.entryFeeUsd + low.exitFeeUsd,
+    acquiredQtyHigh: qty(high.tokenCashUsd),
+    acquiredQtyLow: qty(low.tokenCashUsd),
+    entryQuoteUsd: input.entryQuoteUsd,
+    reverseQuoteUsd: null,
+    decisionLatencyMs:
+      input.eventAt === null ? null : input.decidedAt.getTime() - input.eventAt.getTime(),
+  };
+}
+
+/** Reverse quote is for the acquired quantity, not for a fresh $20. */
+export function reverseNotionalUsd(schedule: "solana_other" | "solana_lowest_fee"): number {
+  return flatRoundTrip(schedule).tokenCashUsd;
+}
+
+export function walletListHash(addresses: readonly string[]): string {
+  const text = [...addresses].sort().join(",");
+  let hash = 2166136261;
+  for (let index = 0; index < text.length; index += 1) {
+    hash ^= text.charCodeAt(index);
+    hash = Math.imul(hash, 16777619);
+  }
+  return (hash >>> 0).toString(16);
+}
+
+export function creatorExposure(input: {
+  creatorTokenShare: number | null;
+  creatorSells: number;
+}): { share: number | null; sold: boolean } {
+  return {
+    share: input.creatorTokenShare,
+    sold: input.creatorSells > 0,
+  };
+}
+
+export function delaySummary(samplesMs: readonly number[]): {
+  n: number;
+  p50: number | null;
+  p90: number | null;
+} {
+  const sorted = samplesMs
+    .filter((sample) => Number.isFinite(sample))
+    .sort((left, right) => left - right);
+  const at = (quantile: number) =>
+    sorted.length === 0
+      ? null
+      : (sorted[Math.min(sorted.length - 1, Math.floor(quantile * (sorted.length - 1)))] ?? null);
+  return { n: sorted.length, p50: at(0.5), p90: at(0.9) };
+}
+
+/**
+ * How often the 95% day-block interval covers a known difference.
+ * This is a check of the bootstrap, not a result from live trades.
+ */
+export function bootstrapCoverage(input: {
+  trueDelta: number;
+  noise: number;
+  days: number;
+  pairsPerDay: number;
+  sims: number;
+  replicates?: number;
+  seed?: number;
+}): { coverage: number } {
+  const random = mulberry32(input.seed ?? 7);
+  const normal = () => {
+    const u = Math.max(1e-12, random());
+    const v = Math.max(1e-12, random());
+    return Math.sqrt(-2 * Math.log(u)) * Math.cos(2 * Math.PI * v);
+  };
+  let covered = 0;
+  for (let sim = 0; sim < input.sims; sim += 1) {
+    const pairs = [];
+    for (let day = 0; day < input.days; day += 1) {
+      for (let pair = 0; pair < input.pairsPerDay; pair += 1) {
+        const diff = input.trueDelta + normal() * input.noise;
+        pairs.push({ day: `d${day.toString()}`, wallet: diff, control: 0 });
+      }
+    }
+    const interval = blockBootstrapDelta({
+      pairs,
+      replicates: input.replicates ?? 40,
+      seed: Math.floor(random() * 1_000_000) + 1,
+    });
+    if (
+      interval.low !== null &&
+      interval.high !== null &&
+      interval.low - 1e-9 <= input.trueDelta &&
+      interval.high + 1e-9 >= input.trueDelta
+    ) {
+      covered += 1;
+    }
+  }
+  return { coverage: input.sims === 0 ? 0 : covered / input.sims };
 }
 
 export function experimentCall(input: {

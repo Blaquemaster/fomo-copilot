@@ -156,6 +156,13 @@ export const envSchema = z.object({
   ALERTS_ENABLED: z.enum(["true", "false"]).optional(),
   /** Outcome worker. Unset means the process exits without quoting. */
   OUTCOMES_ENABLED: z.enum(["true", "false"]).optional(),
+  /** Collection-only shadow. Unset means the process exits without reading returns. */
+  SHADOW_ENABLED: z.enum(["true", "false"]).optional(),
+  /**
+   * Pages public-RPC signatures for a gap wider than 600 slots. Unset keeps the
+   * old unrecovered gap. This does not start by itself.
+   */
+  INGEST_WIDE_RECOVERY: z.enum(["true", "false"]).optional(),
   /** Exact true enables the scale-out treatment. Unset keeps it off. */
   EXPERIMENT_SCALE_OUT: z.enum(["true", "false"]).optional(),
   /** One dollar size for every stage. Unset keeps the stage table. */

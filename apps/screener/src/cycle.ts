@@ -28,6 +28,7 @@ import {
   secondWaveSignal,
   stageForCoin,
   stageSizeUsd,
+  walletListHash,
   type Env,
   type MarketQuote,
   type PhaseCStore,
@@ -591,6 +592,13 @@ export async function runPhaseCCycle(input: {
   }
   if (result.lock) {
     await input.store.saveProtocol(result.lock.fingerprint, result.lock.body, input.now);
+    const wallets = await input.store.wallets();
+    await input.store.recordWalletList(
+      walletListHash(wallets.map((wallet) => wallet.address)),
+      wallets.length,
+      input.now,
+      input.env.WALLET_LIST_FREEZE_AT ? new Date(input.env.WALLET_LIST_FREEZE_AT) : null,
+    );
   }
   if (result.pauseReason) await input.store.pause(etDay(input.now), result.pauseReason, input.now);
   for (const open of result.opens) {

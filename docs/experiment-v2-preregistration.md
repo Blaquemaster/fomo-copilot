@@ -87,7 +87,7 @@ Capacity is the peak number of quotes due in the same 3 minutes, including both 
 
 The primary number is the mean of paired differences, `mean(R_wallet − R_matched control)`, using raw arithmetic returns on allocated cash. No winsorizing.
 
-Unfilled opportunities contribute 0. Unresolved exits stay missing. A pair with either side unresolved is not entered as 0. Filled-trade returns are reported separately and are not the primary number.
+Unfilled opportunities contribute 0 and stay in the count. An unresolved exit stays in the denominator and is not entered as a measured 0. Filled-trade returns are reported separately and are not the primary number.
 
 The pre-screen benchmark is a second comparison. Beating it while the wallet arm loses money, after the required return below, is not a reason to trade.
 
@@ -100,7 +100,7 @@ Two enrolled wallet opportunities and their controls. Allocated cash is $20.
 | 1    | Unfilled. The entry quote was over the cap. Cash unchanged. R = 0                         | Filled. Flat price, higher fee schedule. Exit cash $18.10. R = −0.095 | 0 − (−0.095) = +0.095 |
 | 2    | Filled, but the exit quote never arrived inside the deadline plus 3 minutes. R is missing | Filled. R = +0.10                                                     | Missing. Not 0 − 0.10 |
 
-The primary mean uses pair 1 only: +0.095. Pair 2 stays in the missingness count. Treating pair 2 as 0 would change the mean, so a result that depends on that choice is inconclusive. The filled-trade report mentions the control in pair 2 and does not mention the unfilled wallet as a filled trade.
+The primary mean divides by both enrolled pairs: `0.095 / 2 = 0.0475`. Pair 2 is in that count. Its difference is not a measured 0. The filled-only mean, which drops pair 2, is 0.095. If that choice would change the decision, the result is inconclusive. The filled-trade report mentions the control in pair 2 and does not mention the unfilled wallet as a filled trade.
 
 ## Fee scenarios and the decision
 

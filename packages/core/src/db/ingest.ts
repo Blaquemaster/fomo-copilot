@@ -593,6 +593,50 @@ create table if not exists phasec_config_history (
   recorded_at timestamptz not null
 );
 
+create table if not exists phasec_execution (
+  mint text primary key,
+  group_name text not null,
+  enrolled_at timestamptz not null,
+  entry_at timestamptz not null,
+  event_at timestamptz,
+  venue text not null,
+  intended_spend_usd double precision not null,
+  route text not null,
+  fee_high_usd double precision,
+  fee_low_usd double precision,
+  acquired_qty_high double precision,
+  acquired_qty_low double precision,
+  entry_out_amount text,
+  entry_quote_usd double precision,
+  entry_quoted_at timestamptz,
+  reverse_quote_usd double precision,
+  reverse_quoted_at timestamptz,
+  reverse_out_amount text,
+  decision_latency_ms double precision,
+  decision_facts jsonb
+);
+
+create table if not exists phasec_observation (
+  mint text not null,
+  label text not null,
+  role text not null,
+  due_at timestamptz not null,
+  observed_at timestamptz,
+  late boolean,
+  price_usd double precision,
+  status text not null default 'pending',
+  primary key (mint, label)
+);
+create index if not exists phasec_observation_due_idx
+  on phasec_observation (due_at) where status = 'pending';
+
+create table if not exists phasec_wallet_list_version (
+  list_hash text primary key,
+  recorded_at timestamptz not null,
+  wallet_count integer not null,
+  freeze_at timestamptz
+);
+
 create or replace view phasec_gap_period as
 select id, program_id, observed_at, gap_from_slot, gap_to_slot, reason
 from ingest_backfill
@@ -896,6 +940,10 @@ export async function migrate(pool: pg.Pool): Promise<void> {
     await client.query(
       "insert into schema_migrations (id) values ($1) on conflict (id) do nothing",
       ["026_candidate_log"],
+    );
+    await client.query(
+      "insert into schema_migrations (id) values ($1) on conflict (id) do nothing",
+      ["027_execution_record"],
     );
     await client.query(
       `update ingest_recall_audit a

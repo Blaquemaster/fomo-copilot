@@ -4,6 +4,7 @@ import type { ScreenRules } from "./screen.js";
 import {
   EXPERIMENT_ALLOCATED_USD,
   EXPERIMENT_ENTRY_DELAY_SEC,
+  EXPERIMENT_ROUND_TRIP_CAP_PCT,
   EXPERIMENT_WINDOW_DAYS,
 } from "./experimentProtocol.js";
 import { defaultSizePct, type PhaseCConfig } from "./protocol.js";
@@ -60,7 +61,7 @@ export function phaseCConfigFromEnv(env: Env, thresholds: Thresholds): PhaseCCon
     otherRate: thresholds.paper.other_rate,
     deadNoRouteStreak: env.DEAD_NO_ROUTE_STREAK ?? 3,
     deadNoRouteGapMs: (env.DEAD_NO_ROUTE_GAP_SEC ?? 60) * 1000,
-    maxRoundTripImpactPct: thresholds.screen.hard_fail.round_trip_impact_pct_above,
+    maxRoundTripImpactPct: EXPERIMENT_ROUND_TRIP_CAP_PCT,
     maxSizePoolShare: thresholds.screen.entries.max_size_pool_share,
     scaleOutEnabled: env.EXPERIMENT_SCALE_OUT === "true",
     fixedNotionalUsd: env.EXPERIMENT_FIXED_NOTIONAL_USD ?? EXPERIMENT_ALLOCATED_USD,
