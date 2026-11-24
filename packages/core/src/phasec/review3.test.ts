@@ -5,8 +5,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { buildCandidateLog } from "./outcomes.js";
-import type { ScreenFacts, ScreenRules } from "./screen.js";
-import type { ScoreCoin } from "./score.js";
+import type { ScreenRules } from "./screen.js";
 import {
   acceptEntryObservation,
   accumulation,
