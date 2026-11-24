@@ -1,87 +1,151 @@
 # Experiment v2 pre-registration
 
-Status: **draft, not frozen.** Nothing here is approved. The 79 voided paper positions are development evidence only and are not a result. This document is the thing that gets frozen, with a commit hash and a date, before any scored window starts.
+Status: **reviewer defaults adopted, not frozen.** The owner said to follow the reviewer's answers. This file records those answers as the protocol. It is not a scored window until it is frozen with a commit hash and a date. The 79 voided paper positions are development evidence only.
 
-A shadow period can record coverage and quote availability. It does not count toward the scored result.
+A shadow period can record coverage, scheduling, and quote availability. Shadow returns are not an acceptance test and do not count toward the scored result. If shadow returns are used to change the design, that shadow is development data.
+
+No new paid service is authorized by this document. The $150 figure is a proposed cap and still needs the owner's approval before any new spend.
 
 ## The one question
 
-Among comparable screened trench candidates that are available at the same time, does a frozen wallet signal improve a follower's mean net return after the real decision delay and executable costs?
+Among comparable screened coins in freshly graduated pools, available at the same time, does a frozen wallet signal improve a follower's mean return on allocated cash after the real decision delay and executable costs?
 
-One stage. One fixed notional. One exit policy. One enrollment per mint. Venues are chosen because their ingestion and pricing have been checked, not because they looked profitable.
+One stage. One fixed notional. One exit policy. One enrollment per mint. One validated venue is enough. A venue is included only after its ingestion and pricing have been checked, not because it looked profitable. Which venue passes that bar is **not known**.
+
+## Adopted defaults
+
+| Choice            | Adopted default                                                                                                                                                                                                                 | Status                                                                         |
+| ----------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------ |
+| Stage             | Freshly graduated pools. Enrollment is the first 30 minutes after verified graduation. The entry delay is extra and may fall outside that window.                                                                               | Adopted                                                                        |
+| Venue             | One validated venue if that is all that is validated.                                                                                                                                                                           | Adopted. Which venue is **not known**                                          |
+| Exit              | Fixed 60 minutes after the actual hypothetical entry. No stop. No take-profit.                                                                                                                                                  | Adopted                                                                        |
+| Notional          | $20 total entry cash, fees included, every arm.                                                                                                                                                                                 | Adopted                                                                        |
+| Round-trip cap    | 10% all-in, including FOMO fees and token taxes, on contemporaneous quotes, exit quote for the acquired quantity. If nothing qualifies, that is a finding. The cap is not raised.                                               | Adopted. Not independently validated                                           |
+| Fee scenarios     | Three reports. Primary stress is the higher "other routes" schedule (0.50%, $0.95 minimum) on both arms. Also report both-lowest, and adverse (wallet high, control lowest). The route actually charged is still **not known**. | Adopted                                                                        |
+| Controls          | 1:1 screened controls from the same contemporaneous stratum, plus a separate pre-screen benchmark.                                                                                                                              | Adopted                                                                        |
+| Minimum advantage | +5 percentage points on the matched difference.                                                                                                                                                                                 | Adopted                                                                        |
+| Scored window     | 60 calendar days of enrollment, then finish outcomes already scheduled. No early stop for success. No extension.                                                                                                                | Adopted                                                                        |
+| Research budget   | $150 maximum attributable hosting, data, and API cost across shadow and scoring.                                                                                                                                                | **Proposal. Needs owner approval.** No new paid service without a separate yes |
+| Wallet list       | Frozen exploratory activity/graduation-selected cohort. Not "successful wallets". Not re-ranked from the 35 priced trades.                                                                                                      | Adopted                                                                        |
 
 ## What is parked
 
-Second wave, auto-buy, signing, Flap trading, and X/social are not part of this experiment. Scale-out and a larger size for graduated coins are not part of the first scored comparison. The wallet list is an exploratory activity/graduation-selected cohort, not a list of successful wallets. It is not re-ranked from the 35 priced trades.
+Second wave, auto-buy, signing, Flap trading, and X/social are not part of this experiment. Scale-out and a larger size for graduated coins are not part of this comparison. Partial exits are not part of this comparison.
 
-## Open choices
+## Enrollment timeline
 
-These are the owner's. Recommended defaults are not a freeze.
+Times below are an example. The rule is the same for every coin.
 
-| Choice                       | Recommended default                                                                                                                                                      | Status   |
-| ---------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | -------- |
-| Fee route                    | Do not assume a route. Report both the lowest-fee schedule and the other-route schedule ($0.95 minimum). The route stays unknown until confirmation screens are checked. | **OPEN** |
-| Venue                        | Include a venue only after its ingestion and an independent recall check are accepted. Which venue passes that bar is not known.                                         | **OPEN** |
-| Stage                        | Trench only.                                                                                                                                                             | **OPEN** |
-| Fixed notional               | One dollar amount for every arm. $5 matches the old trench cap, and it may be too small if the $0.95 minimum applies. Do not raise the size to dilute that minimum.      | **OPEN** |
-| Entry and round-trip cap     | Neither 5% nor 10% is validated. Freeze one number before the window and do not relax it to get more trades. The 1% of pool liquidity cap is secondary.                  | **OPEN** |
-| Minimum worthwhile advantage | The smallest mean-return gap that would be worth a next validation stage. A suggested reading of the power table is 15 points, which this sample can barely see.         | **OPEN** |
-| Scored window and stop date  | A fixed calendar window, set before the first scored entry. No peeking at the primary result during the window.                                                          | **OPEN** |
-| Research budget              | Maximum scored entries, and a separate note of hosting and data cost. The budget is not increased after seeing returns.                                                  | **OPEN** |
+1. A pool's graduation is verified at 12:00:00. That clock starts the 30-minute enrollment window, which ends at 12:30:00.
+2. A qualifying wallet purchase is a quantity net-buy observed before enrollment, with the observation falling inside the 60 minutes before enrollment. The purchase itself may have happened before graduation. A purchase observed only after enrollment does not count.
+3. Signal time is the first moment the decision was possible with information actually in hand. In the example the graduation notice and the earlier wallet buy are both in hand at 12:02:00. Signal time is 12:02:00, not the chain time of the buy.
+4. Enrollment freezes at signal time, 12:02:00, before the delayed entry. The mint, arm, stratum, and decision-time facts are fixed then. They are not rewritten when the entry quote arrives.
+5. Target entry is signal time plus 180 seconds: 12:05:00, with a fresh quote. The entry may sit after the 30-minute window. Both the enrollment time and the entry time are kept.
+6. If the entry quote misses the 10% cap, or no quote is available, the row stays enrolled as an unfilled opportunity. Another coin is not substituted.
+7. One mint is enrolled once. A later stage of the same mint is not a new trial. The stage is not switched during the 60-day window. If few coins qualify, that is a feasibility result, not a reason to change stage.
 
-## Groups
+## Exit deadline
 
-All groups use the same hypothetical entry and the same scheduled exit quotes.
+The exit is scheduled 60 minutes after the actual hypothetical entry, not after the signal.
 
-- **Wallet arm.** A screened candidate with at least one qualifying buyer from the frozen list.
-- **Screened no-wallet control.** Drawn at random from the screened candidates that are eligible at that same decision, with no tracked buyer yet. Stratified on facts known then: token age, venue, liquidity range, and time of day. The draw is random, not mint-sorted. A control is not removed if a tracked wallet buys the coin later. Matching does not use a future graduation or later liquidity.
-- **Pre-screen random benchmark.** Drawn at random from coins at the same stage and time before the predictive screen is applied. This asks whether the screen plus the wallet beats a coin we did not screen.
-- **Screen-failed coins.** Diagnostic only. They are recorded with the failure reason. They are not a scored arm.
+Diagnostic sell quotes at 15, 30, and 45 minutes are recorded and do not choose the exit.
 
-One mint is enrolled once. A later stage of the same mint is not a new trial.
+The exit quote is the first valid observation at or after the deadline, and no later than 3 minutes after the deadline. The actual hold time is the time from entry to that observation.
+
+An observation after the 3-minute limit is a recovery diagnostic. It is labeled late. It does not become the 60-minute exit price. The exit stays unresolved.
+
+There is no stop and no take-profit. A paper loss may be the whole allocated cash. The −25% stop from the older paper path is not this protocol.
+
+## Cash-flow definition
+
+Allocated cash is $20 for every enrolled opportunity, wallet or control.
+
+The entry fee is taken out of that $20. On the higher schedule the minimum fee is $0.95, so about $19.05 remains to buy tokens. On a flat price the exit pays another $0.95, leaving $18.10. The return on allocated cash is `18.10 / 20 - 1 = -9.5%`. That is the primary stress case before any price move. The lowest-fee schedule is reported beside it. It is not treated as the known cost.
+
+Return is on allocated cash, not on the token proceeds alone:
+
+- Unfilled entry: cash is unchanged. Return is 0.
+- Filled entry with a valid exit: `(exit cash − 20) / 20`.
+- Unresolved exit: the return is missing. It is not 0 and it is not −100%.
+
+Token quantity and the exit quote are recomputed for each fee scenario on the same $20. Size is not increased to make the $0.95 minimum a smaller percentage.
+
+Jupiter `outAmount` already includes pool fees. Those fees are not subtracted again.
+
+## Groups and matching
+
+- **Wallet arm.** Screened, inside the graduation window, with a qualifying net buyer from the frozen list.
+- **Screened control.** One control per wallet opportunity, drawn at random from screened coins in the same stratum at that decision: same venue, same liquidity band, same minutes-since-graduation band, same hour. Facts used are facts known then. A later graduation, later liquidity, or a later wallet buy is not used. A control is never removed and never replaced.
+- **Fallback, in this order, when the stratum is empty.** Drop the hour. Then drop the age band. Then drop the liquidity band. Then the same venue only. If that is still empty, the wallet row is recorded as unmatched. It is not paired with a coin from outside the venue, and it is not given a second control later.
+- **Dispatch.** Inside a matched set the quote jobs are ordered by a hash of mint and time, so the wallet is not always quoted first.
+- **Pre-screen benchmark.** A separate draw, same count, from coins at the same stage and time before the predictive screen. It has its own quote budget. It is not the matched control. The ratio is 1:1. A 3:1 control ratio is allowed only if the shadow shows quote headroom at the peak, and only if that choice is written down before the scored window is frozen. It is not changed after seeing returns.
+- **Screen-failed coins.** Recorded with the reason. Not a scored arm.
+
+Capacity is the peak number of quotes due in the same 3 minutes, including both fee scenarios' extra quotes and retries. The working limit used for planning is 10 quotes per 3 minutes.
 
 ## Primary result
 
-Mean net return per trade, after the executable round trip and the fee schedules above.
+The primary number is the mean of paired differences, `mean(R_wallet − R_matched control)`, using raw arithmetic returns on allocated cash. No winsorizing.
 
-The comparison is wallet arm minus screened no-wallet control, at the same notional.
+Unfilled opportunities contribute 0. Unresolved exits stay missing. A pair with either side unresolved is not entered as 0. Filled-trade returns are reported separately and are not the primary number.
 
-Secondary descriptions, not vetoes: median, win rate, tail losses, drawdown, and how much of the result sits in the single best trade. A positive median and "still profitable without the best trade" are fragility notes. They are not required for a decision.
+The pre-screen benchmark is a second comparison. Beating it while the wallet arm loses money, after the required return below, is not a reason to trade.
 
-Beating the benchmark while the wallet arm loses money is not a reason to trade.
+### Worked example
 
-Unresolved outcomes stay in the denominator. If a different treatment of missing data would change the decision, the result is inconclusive.
+Two enrolled wallet opportunities and their controls. Allocated cash is $20.
+
+| Pair | Wallet                                                                                    | Control                                                               | Difference            |
+| ---- | ----------------------------------------------------------------------------------------- | --------------------------------------------------------------------- | --------------------- |
+| 1    | Unfilled. The entry quote was over the cap. Cash unchanged. R = 0                         | Filled. Flat price, higher fee schedule. Exit cash $18.10. R = −0.095 | 0 − (−0.095) = +0.095 |
+| 2    | Filled, but the exit quote never arrived inside the deadline plus 3 minutes. R is missing | Filled. R = +0.10                                                     | Missing. Not 0 − 0.10 |
+
+The primary mean uses pair 1 only: +0.095. Pair 2 stays in the missingness count. Treating pair 2 as 0 would change the mean, so a result that depends on that choice is inconclusive. The filled-trade report mentions the control in pair 2 and does not mention the unfilled wallet as a filled trade.
+
+## Fee scenarios and the decision
+
+Report the same pairs three ways:
+
+- Both arms on the higher schedule. This is the primary stress test. It is not a statement that this route was charged.
+- Both arms on the lowest-fee schedule.
+- Adverse assignment: wallet on the higher schedule, control on the lowest-fee schedule.
+
+Go has to survive the adverse assignment, or the route has to be replaced by evidence from confirmation screens. Those screens are not in hand. A Jupiter-only shadow cannot show which FOMO route or fill would have happened.
 
 ## Decisions
 
-- **Go.** The pre-registered uncertainty interval for the wallet-minus-control mean lies entirely above the frozen minimum advantage, the wallet arm's own costs are understood well enough that the route assumption is no longer open, and missingness does not flip the call. Go means a next validation stage, not live trading.
-- **No-go.** The interval lies entirely below zero, or the wallet arm loses money after the frozen costs and does not beat the pre-screen benchmark.
-- **Inconclusive.** Anything else, including a window that misses the frozen budget, a route that is still unknown, or a missing-data choice that changes the call.
+Uncertainty is a 95% interval from a block bootstrap. Matched pairs stay together. Days, or consecutive days, are the blocks. A bootstrap that treats each pair as independent is not the interval. There is no rule of the form "N trades is enough".
 
-## Uncertainty and power
+- **Go.** The lower end of the interval is above +5 percentage points, the wallet arm's own mean return is positive after recurring overhead, the shadow gates passed, and the call survives the fee scenarios and the missing-data sensitivity. Recurring overhead as a return is `recurring operating cost / executed cash allocated`, measured from the shadow. Go means a next validation stage, not live trading.
+- **No-go.** The upper end of the interval is below +5 percentage points, or absolute profitability is ruled out, or execution or risk economics fail the gates.
+- **Inconclusive.** Anything else. An operations failure or hitting the budget stops enrollment. That stop is not a statistical failure. Outcomes already scheduled are still collected. The budget is not increased, and the window is not extended, after seeing returns.
 
-The uncertainty is a block over time, and a mint cannot appear twice. A bootstrap that treats every row as independent is not the primary interval.
+Fragility is reported, not used as a veto: how much of the result sits in one day or in one trade.
 
-Power is approximate, two-sided 5%, for a difference in means. It is not a promise.
+The older power table (about 15 points at 63 trades per group if the spread is 30 points) still says a 5-point edge is hard to see at low volume. Low volume is a feasibility result.
 
-| Trades per group   | Detectable gap if the spread is 30 points | Detectable gap if the spread is 50 points |
-| ------------------ | ----------------------------------------- | ----------------------------------------- |
-| 63                 | about 15 points                           | about 25 points                           |
-| 168                | about 9 points                            | about 15 points                           |
-| about 565 to 1,568 | about 5 points                            | about 5 points                            |
+## Shadow
 
-A 5-point edge is not detectable at the volume seen so far. Inconclusive is the expected call unless the edge is large.
+Seven complete consecutive days after the wallet lookback has coverage. It may run to 14 days. If it fails, enrollment pauses for a redesign. Shadow acceptance does not look at strategy-versus-control returns.
 
-## Exit policy
+Pass criteria:
 
-One policy for every arm: a fixed horizon, with the same scheduled executable sell quotes along the way. The −25% stop is an attempt to get out, not a cap on the loss. The 3% daily pause stops new portfolio entries only. It does not cap losses already open, and it does not stop the opportunity record.
+- **Isolation.** No trades, no Telegram, no auto-enable, no unintended production writes, including across a restart.
+- **Feed.** Observed recall at least 99% against an independent reference for each included venue, in windows across the week, at least 300 reference events per venue, with the uncertainty of that rate recorded.
+- **Gaps.** Every gap recorded. Eligibility withheld when history is incomplete. A staging replay of a 30-minute outage and a multi-hour outage does not create a duplicate enrollment or a retroactive signal. Recovery past about 600 slots on the live ingestor is **not built**.
+- **Decisions.** Frozen membership and decision-time facts can be reconstructed. Fixture checks and a manual sample show no wrong mint, side, or quantity.
+- **Scheduler.** At least 99% of attempts dispatched within 60 seconds of the target. No silent drops. Late quotes labeled late. The 3-minute exit limit enforced.
+- **Capacity.** At least 30% request headroom at the observed peak, including fee scenarios and retries. A burst replay meets the deadlines.
+- **Missing data.** Technical unresolved endpoints at most 2% per arm. A real trading failure stays an outcome. The missing-data sensitivity is still required.
+- **Recruitment.** At least 20 complete matched records, and a credible projection of about 3 or more qualified wallet opportunities per day.
+- **Economics.** Cash accounting reconciles. Both fee scenarios and the cap behave as written. FOMO preview observations say what is known and what is not known.
 
-Opportunity records (every qualifying signal and control) are separate from the portfolio simulation (bankroll, concurrency, hourly cap, quiet hours, pause). Each portfolio arm, if simulated, has the same bankroll and the same risk rules.
+Pump public-RPC recall exists and is not on a timer. Independent recall for other venues is not built. Until those checks exist, no venue is validated and the shadow cannot pass the feed criterion.
 
 ## What has to be true before the clock starts
 
-- This document is frozen: commit hash, date, and every OPEN row filled.
+- This document is frozen: commit hash, date, and the owner's yes on the $150 proposal if any new spend is involved.
 - The deployment cannot start the screener, the alerter, or alerts unless the enable flag is set.
-- Collection, when it is turned on, cannot create a trade intent.
+- Collection cannot create a trade intent or send an alert.
 - Decision-time facts are stored and not rewritten.
 - Coverage periods are defined before returns are looked at. A bad period is not deleted after the fact.
