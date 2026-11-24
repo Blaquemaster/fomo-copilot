@@ -1,5 +1,6 @@
 import {
   admitAutobuy,
+  capSizeToLiquidity,
   DEFAULT_WALLET_SIGNAL,
   shouldFetchSniper,
   autobuyLimits,
@@ -236,8 +237,12 @@ export async function runPhaseCCycle(input: {
     const size = stageSizeUsd(config.bankroll, position.sizePct);
     if (size === null || solPrice === null) continue;
     if (position.status === "pending" && input.now.getTime() >= position.entryAfter.getTime()) {
-      const amount = lamportsForUsd(size, solPrice);
-      const amount2 = lamportsForUsd(size * 2, solPrice);
+      const coin = coins.find((item) => item.mint === position.mint);
+      const capped =
+        capSizeToLiquidity(size, coin?.liquidityUsd ?? null, config.maxSizePoolShare ?? 0.01) ??
+        size;
+      const amount = lamportsForUsd(capped, solPrice);
+      const amount2 = lamportsForUsd(capped * 2, solPrice);
       if (amount) {
         requests.push({
           mint: position.mint,
@@ -245,7 +250,7 @@ export async function runPhaseCCycle(input: {
           purpose: "entry",
           amount,
           which: "1x",
-          sizeUsd: size,
+          sizeUsd: capped,
           solPriceUsd: solPrice,
           priority: 1,
         });
@@ -257,7 +262,7 @@ export async function runPhaseCCycle(input: {
           purpose: "entry",
           amount: amount2,
           which: "2x",
-          sizeUsd: size * 2,
+          sizeUsd: capped * 2,
           solPriceUsd: solPrice,
           priority: 1,
         });
@@ -304,7 +309,12 @@ export async function runPhaseCCycle(input: {
   let probes = 0;
   for (const coin of coins) {
     if (probes >= probeRoom) break;
-    if (coin.exitQuoteImpactPct !== null || solPrice === null) continue;
+    if (
+      (coin.exitQuoteImpactPct !== null && coin.entryQuoteImpactPct != null) ||
+      solPrice === null
+    ) {
+      continue;
+    }
     const size = stageSizeUsd(
       config.bankroll,
       config.sizePct[coin.graduatedAt ? "post_graduation" : "trench"],
@@ -397,6 +407,7 @@ export async function runPhaseCCycle(input: {
         bid = modeled;
       }
     }
+    if (probe?.ok) coin.entryQuoteImpactPct = probe.impactPct;
     if (bid?.ok) {
       coin.exitQuoteImpactPct = bid.impactPct;
       freshExit.set(coin.mint, bid.impactPct);
@@ -491,6 +502,34 @@ export async function runPhaseCCycle(input: {
     await input.store.recordScreenCredits(spent, input.now);
   }
   Object.assign(quoted.bids, sold.bids);
+  const fillSells: JupiterRequest[] = [];
+  for (const position of positions) {
+    if (position.status !== "pending" || input.now.getTime() < position.entryAfter.getTime()) {
+      continue;
+    }
+    const buy = quoted.bids[quoteKey(position.mint, "entry", "1x")];
+    if (!buy?.ok || solPrice === null) continue;
+    fillSells.push({
+      mint: position.mint,
+      side: "sell",
+      purpose: "fill_sell",
+      amount: buy.outAmount,
+      which: "1x",
+      sizeUsd: buy.sizeUsd,
+      solPriceUsd: solPrice,
+      priority: 1,
+    });
+  }
+  if (fillSells.length > 0) {
+    const filled = await collectJupiterBids({
+      requests: fillSells,
+      fetchImpl: input.fetchImpl,
+      apiKey: input.env.JUPITER_API_KEY ?? null,
+      nowMs: input.now.getTime(),
+      bucket: sold.bucket,
+    });
+    Object.assign(quoted.bids, filled.bids);
+  }
   const pools = await input.store.openPools(positions.map((position) => position.mint));
   const poolByMint = new Map(pools.map((row) => [row.mint, row]));
   const poolState = await readPoolStates({
@@ -680,7 +719,8 @@ export async function runPhaseCCycle(input: {
           coin.top10HoldersPct !== null ||
           coin.sniperBundlePct !== null ||
           (coin.graduatedAt === null && coin.liquidityUsd !== null) ||
-          freshExit.has(coin.mint),
+          freshExit.has(coin.mint) ||
+          coin.entryQuoteImpactPct != null,
       )
       .map((coin) => ({
         mint: coin.mint,
@@ -690,6 +730,7 @@ export async function runPhaseCCycle(input: {
         sniperPct: coin.sniperBundlePct,
         curveLiquidityUsd: coin.graduatedAt ? null : coin.liquidityUsd,
         exitImpactPct: freshExit.get(coin.mint) ?? null,
+        entryImpactPct: coin.entryQuoteImpactPct ?? null,
       })),
     input.now,
   );

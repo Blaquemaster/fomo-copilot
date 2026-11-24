@@ -45,7 +45,7 @@ export function jupiterRatePerMin(hasApiKey: boolean): number {
   return hasApiKey ? 48 : 24;
 }
 
-export type QuotePurpose = "screen" | "entry" | "exit" | "scale" | "probe";
+export type QuotePurpose = "screen" | "entry" | "exit" | "scale" | "probe" | "fill_sell";
 
 export function quoteKey(mint: string, purpose: QuotePurpose, size: "1x" | "2x"): string {
   return `${mint}|${purpose}|${size}`;
@@ -144,6 +144,12 @@ export function parseJupiterQuote(
 export function liquidityFromSellImpact(sizeUsd: number, impactPct: number): number | null {
   if (!(sizeUsd > 0) || !(impactPct > 0) || impactPct >= 100) return null;
   return sizeUsd / (impactPct / 100);
+}
+
+/** Percent of notional lost by buying and selling immediately. Null when either quote is missing. */
+export function roundTripImpactPct(buy: SizeBid, sell: SizeBid): number | null {
+  if (!buy.ok || !sell.ok || !(buy.execPriceUsd > 0) || !(sell.execPriceUsd > 0)) return null;
+  return (1 - sell.execPriceUsd / buy.execPriceUsd) * 100;
 }
 
 export function stageSizeUsd(bankroll: number | null, sizePct: number): number | null {

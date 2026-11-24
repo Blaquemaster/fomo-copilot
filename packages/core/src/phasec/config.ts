@@ -12,6 +12,7 @@ export function screenRulesFromThresholds(thresholds: Thresholds): ScreenRules {
     top10FailAbove: thresholds.screen.hard_fail.top10_holders_pct_above,
     sniperFailAbove: thresholds.screen.hard_fail.sniper_bundle_pct_above,
     trenchMinTrackedBuyers: thresholds.screen.entries.trench_min_tracked_buyers,
+    entryImpactPctAbove: thresholds.screen.hard_fail.entry_impact_pct_above,
     walletMaxMintsPerDay: thresholds.screen.entries.wallet_max_mints_per_day,
     walletBuyFreshMinutes: thresholds.screen.entries.wallet_buy_fresh_minutes,
     top10Warn: thresholds.screen.soft.top10_holders_pct_warn,
@@ -51,5 +52,7 @@ export function phaseCConfigFromEnv(env: Env, thresholds: Thresholds): PhaseCCon
     fomoFeeSchedule: env.FOMO_FEE_SCHEDULE ?? "solana_lowest_fee",
     deadNoRouteStreak: env.DEAD_NO_ROUTE_STREAK ?? 3,
     deadNoRouteGapMs: (env.DEAD_NO_ROUTE_GAP_SEC ?? 60) * 1000,
+    maxRoundTripImpactPct: thresholds.screen.hard_fail.round_trip_impact_pct_above,
+    maxSizePoolShare: thresholds.screen.entries.max_size_pool_share,
   };
 }

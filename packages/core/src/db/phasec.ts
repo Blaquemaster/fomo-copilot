@@ -71,6 +71,7 @@ export class PhaseCRepository implements PhaseCStore {
       freeze_authority_active: boolean | null;
       liquidity_usd: number | null;
       exit_impact_pct: number | null;
+      entry_impact_pct: number | null;
       bonding_curve: string | null;
       pool_type: string | null;
       created_slot: string | null;
@@ -154,6 +155,8 @@ export class PhaseCRepository implements PhaseCStore {
               coalesce(snap.liquidity_usd, cache.curve_liquidity_usd) as liquidity_usd,
               case when cache.exit_impact_at > now() - interval '10 minutes'
                 then cache.exit_impact_pct else null end as exit_impact_pct,
+              case when cache.entry_impact_at > now() - interval '10 minutes'
+                then cache.entry_impact_pct else null end as entry_impact_pct,
               coalesce(origin.launch_pool, pc.bonding_curve, coin.pool) as bonding_curve,
               n.pool_type,
               coalesce(origin.created_slot, pc.created_slot, coin.created_slot)::text as created_slot
@@ -212,6 +215,7 @@ export class PhaseCRepository implements PhaseCStore {
       mintAuthorityActive: row.mint_authority_active,
       freezeAuthorityActive: row.freeze_authority_active,
       exitQuoteImpactPct: row.exit_impact_pct === null ? null : Number(row.exit_impact_pct),
+      entryQuoteImpactPct: row.entry_impact_pct === null ? null : Number(row.entry_impact_pct),
       top10HoldersPct: row.top10_pct === null ? null : Number(row.top10_pct),
       sniperBundlePct: row.sniper_pct === null ? null : Number(row.sniper_pct),
       trackedSells: Number(row.tracked_sells),
@@ -532,6 +536,7 @@ export class PhaseCRepository implements PhaseCStore {
       sniperPct: number | null;
       curveLiquidityUsd: number | null;
       exitImpactPct: number | null;
+      entryImpactPct?: number | null;
     }[],
     at: Date,
   ): Promise<void> {
@@ -539,8 +544,12 @@ export class PhaseCRepository implements PhaseCStore {
       await this.pool.query(
         `insert into phasec_mint_cache
           (mint, mint_authority_active, freeze_authority_active, top10_pct, sniper_pct, curve_liquidity_usd,
-           exit_impact_pct, exit_impact_at, fetched_at, top10_method)
-         values ($1,$2,$3,$4::double precision,$5,$6,$7, case when $7::double precision is null then null else $8::timestamptz end, $8::timestamptz,
+           exit_impact_pct, exit_impact_at, entry_impact_pct, entry_impact_at, fetched_at, top10_method)
+         values ($1,$2,$3,$4::double precision,$5,$6,$7,
+           case when $7::double precision is null then null else $8::timestamptz end,
+           $9::double precision,
+           case when $9::double precision is null then null else $8::timestamptz end,
+           $8::timestamptz,
            case when $4::double precision is null then null else '${TOP10_METHOD}' end)
          on conflict (mint) do update set
            mint_authority_active = coalesce(excluded.mint_authority_active, phasec_mint_cache.mint_authority_active),
@@ -557,6 +566,9 @@ export class PhaseCRepository implements PhaseCStore {
            exit_impact_pct = coalesce(excluded.exit_impact_pct, phasec_mint_cache.exit_impact_pct),
            exit_impact_at = case when excluded.exit_impact_pct is not null then excluded.fetched_at
              else phasec_mint_cache.exit_impact_at end,
+           entry_impact_pct = coalesce(excluded.entry_impact_pct, phasec_mint_cache.entry_impact_pct),
+           entry_impact_at = case when excluded.entry_impact_pct is not null then excluded.fetched_at
+             else phasec_mint_cache.entry_impact_at end,
            fetched_at = excluded.fetched_at`,
         [
           row.mint,
@@ -567,6 +579,7 @@ export class PhaseCRepository implements PhaseCStore {
           row.curveLiquidityUsd,
           row.exitImpactPct,
           at.toISOString(),
+          row.entryImpactPct ?? null,
         ],
       );
     }
@@ -736,10 +749,13 @@ export class PhaseCRepository implements PhaseCStore {
   }): Promise<void> {
     await this.pool.query(
       `update phasec_position
-       set status = case when $5::text = 'unpriced' then 'unpriced' else 'closed' end,
+       set status = case
+             when $5::text like 'skipped%' then 'skipped'
+             when $5::text = 'unpriced' then 'unpriced'
+             else 'closed' end,
            exit_quote = $2::double precision,
-           net_return = $3::double precision,
-           net_return_2x = $4::double precision,
+           net_return = case when $5::text like 'skipped%' then null else $3::double precision end,
+           net_return_2x = case when $5::text like 'skipped%' then null else $4::double precision end,
            exit_reason = $5::text, exit_impact_pct = $6::double precision,
            exit_fee_usd = $7::double precision, quote_failure = $8::text, closed_at = $9::timestamptz,
            fomo_fee_usd = coalesce(fomo_fee_usd, 0) + coalesce($10::double precision, 0),

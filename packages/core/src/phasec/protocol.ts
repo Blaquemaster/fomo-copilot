@@ -67,6 +67,10 @@ export interface PhaseCConfig {
   deadNoRouteStreak?: number;
   /** Minimum spacing between those answers. Default 60 seconds. */
   deadNoRouteGapMs?: number;
+  /** Immediate buy-then-sell loss, in percent, that skips the fill. Default 10. */
+  maxRoundTripImpactPct?: number;
+  /** Position size may not exceed this share of pool liquidity. Default 0.01. */
+  maxSizePoolShare?: number;
 }
 
 export function defaultSizePct(): Record<Stage, number> {
@@ -104,6 +108,8 @@ export function protocolBody(config: PhaseCConfig, rules?: unknown): string {
     fomoFeeSchedule: config.fomoFeeSchedule,
     deadNoRouteStreak: config.deadNoRouteStreak ?? 3,
     deadNoRouteGapMs: config.deadNoRouteGapMs ?? 60_000,
+    maxRoundTripImpactPct: config.maxRoundTripImpactPct ?? 10,
+    maxSizePoolShare: config.maxSizePoolShare ?? 0.01,
     scoringVersion: SCORING_VERSION,
     walletMinEntries: PROVEN_WALLET_RULE.minEntries,
     sniperUnmeasured: "watch_until_measured",

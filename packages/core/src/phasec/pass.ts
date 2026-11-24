@@ -24,6 +24,7 @@ import {
   FULL_LOSS,
   bookScaleHalf,
   fomoFeeUsd,
+  roundTripImpactPct,
   quoteKey,
   quotedRoundTrip,
   roundTripFomoFee,
@@ -36,6 +37,7 @@ import {
 } from "./quote.js";
 import {
   bankrollLossPct,
+  capSizeToLiquidity,
   entryDecision,
   exitPlanText,
   planTierPromotions,
@@ -68,6 +70,7 @@ export interface PassCoin extends ScoreCoin {
   poolType?: string | null;
   createdSlot?: number | null;
   quoteSource?: "jupiter" | "curve_modeled";
+  entryQuoteImpactPct?: number | null;
 }
 
 export interface PassPosition {
@@ -174,7 +177,14 @@ export interface PlannedStreak {
 
 export interface PlannedClose {
   id: string;
-  reason: "invalidation" | "stop" | "horizon" | "dead" | "unpriced";
+  reason:
+    | "invalidation"
+    | "stop"
+    | "horizon"
+    | "dead"
+    | "unpriced"
+    | "skipped_impact"
+    | "skipped_exit_impact";
   quote: number;
   net: number;
   net2x: number;
@@ -257,6 +267,7 @@ function screenOf(coin: PassCoin, liquidity: number | null, rules: ScreenRules) 
     uniqueMakers1h: coin.uniqueMakers1h,
     creatorSells: coin.creatorSells,
     quoteError: coin.quoteError,
+    entryQuoteImpactPct: coin.entryQuoteImpactPct,
     sniperFetchable: sniperIsFetchable(coin),
   };
   return screenCoin(facts, rules);
@@ -372,6 +383,61 @@ export function runPhaseCPass(input: PassInput): PassResult {
     const one = quotedEntry;
     const entryStreak = observe(position, one, "entry");
     if (one.ok && one.liquidityUsd !== 0) {
+      const entryCap = input.rules.entryImpactPctAbove ?? 10;
+      if (one.impactPct > entryCap) {
+        closes.push({
+          id: position.id,
+          reason: "skipped_impact",
+          quote: one.execPriceUsd,
+          net: 0,
+          net2x: 0,
+          impactPct: one.impactPct,
+          feeUsd: one.feeUsd,
+          failure: "entry_impact",
+          fomoFeeUsd: 0,
+          quoteSource: one.source ?? "jupiter",
+          text: `skip impact ${position.mint} ${one.impactPct.toFixed(2)}%`,
+        });
+        closedIds.add(position.id);
+        continue;
+      }
+      const fillSell = input.bids?.[quoteKey(position.mint, "fill_sell", "1x")];
+      if (fillSell) {
+        const roundTrip = roundTripImpactPct(one, fillSell);
+        const roundCap = config.maxRoundTripImpactPct ?? 10;
+        const blocked = !fillSell.ok || roundTrip === null || roundTrip > roundCap;
+        const waiting =
+          !fillSell.ok && (fillSell.reason === "rate_limited" || fillSell.reason === "transient");
+        if (waiting) continue;
+        if (blocked) {
+          if (!fillSell.ok) {
+            quoteFailures.push({
+              positionId: position.id,
+              mint: position.mint,
+              purpose: "fill_sell",
+              httpStatus: fillSell.httpStatus ?? null,
+              reason: fillSell.reason,
+              body: fillSell.errorBody ?? null,
+              source: null,
+            });
+          }
+          closes.push({
+            id: position.id,
+            reason: "skipped_exit_impact",
+            quote: one.execPriceUsd,
+            net: 0,
+            net2x: 0,
+            impactPct: roundTrip,
+            feeUsd: null,
+            failure: fillSell.ok ? "round_trip" : fillSell.reason,
+            fomoFeeUsd: 0,
+            quoteSource: fillSell.ok ? (fillSell.source ?? "jupiter") : null,
+            text: `skip round trip ${position.mint}`,
+          });
+          closedIds.add(position.id);
+          continue;
+        }
+      }
       opens.push({
         id: position.id,
         quote: one.execPriceUsd,
@@ -605,7 +671,19 @@ export function runPhaseCPass(input: PassInput): PassResult {
         continue;
       }
       const strength = scoreStrength(stage, coin);
-      const size = sizeForStage(stage, config.sizePct, config.bankroll);
+      const stageSize = sizeForStage(stage, config.sizePct, config.bankroll);
+      const capped = capSizeToLiquidity(
+        stageSize.amount,
+        coin.liquidityUsd,
+        config.maxSizePoolShare ?? 0.01,
+      );
+      const size = {
+        amount: capped,
+        pct:
+          config.bankroll && capped !== null && config.bankroll > 0
+            ? (capped / config.bankroll) * 100
+            : stageSize.pct,
+      };
       const treatment = assignExitTreatment(coin.mint);
       const control = arm === "random_pass";
       const decision = control
@@ -703,6 +781,7 @@ export function runPhaseCPass(input: PassInput): PassResult {
     returns: [
       ...input.resolved,
       ...closes.flatMap((row) => {
+        if (row.reason.startsWith("skipped")) return [];
         const position = input.positions.find((item) => item.id === row.id);
         return [
           {

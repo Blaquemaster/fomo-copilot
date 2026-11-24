@@ -74,6 +74,7 @@ export interface PhaseCStore {
       sniperPct: number | null;
       curveLiquidityUsd: number | null;
       exitImpactPct: number | null;
+      entryImpactPct?: number | null;
     }[],
     at: Date,
   ): Promise<void>;

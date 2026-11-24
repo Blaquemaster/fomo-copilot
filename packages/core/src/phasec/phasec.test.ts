@@ -23,7 +23,7 @@ import {
   protocolFingerprint,
   type PhaseCConfig,
 } from "./protocol.js";
-import { entryDecision, planTierPromotions } from "./risk.js";
+import { capSizeToLiquidity, entryDecision, planTierPromotions } from "./risk.js";
 import { lookupTradableInFomo } from "./fomoLookup.js";
 import { assignArm, isFlapMint, scoreStrength } from "./score.js";
 import {
@@ -38,6 +38,7 @@ import {
   parseJupiterQuote,
   quoteKey,
   quotedRoundTrip,
+  roundTripImpactPct,
   scaleOutRoundTrip,
 } from "./quote.js";
 import { screenCoin, type ScreenRules } from "./screen.js";
@@ -910,5 +911,125 @@ describe("phase C", () => {
     expect(fallenPass.scaled).toEqual([]);
     expect(fallenPass.closes[0]?.reason).toBe("stop");
     expect(fallenPass.closes[0]?.net).toBeCloseTo(net);
+  });
+
+  it("caps entry impact at the configured percent and skips a costly round trip", () => {
+    const at = new Date("2026-11-19T16:31:30.000Z");
+    const mint = "Impact1111111111111111111111111111111111";
+    const pending = {
+      id: "impact-1",
+      mint,
+      stage: "trench" as const,
+      arm: "screen_only" as const,
+      status: "pending" as const,
+      alertAt: at,
+      entryAfter: at,
+      openedAt: null,
+      entryQuote: null,
+      sizePct: 0.5,
+      exitPlan: "stop",
+      screenFailed: false,
+    };
+    const buy = (impactPct: number, price = 1) => ({
+      ok: true as const,
+      execPriceUsd: price,
+      midPriceUsd: price,
+      impactPct,
+      feeUsd: 0,
+      sizeUsd: 5,
+      liquidityUsd: 1,
+      inAmount: "1",
+      outAmount: "1",
+    });
+    const sell = (price: number) => ({ ...buy(1, price), sizeUsd: 5 });
+    const opened = runPhaseCPass(
+      pass({
+        now: at,
+        positions: [pending],
+        bids: {
+          [quoteKey(mint, "entry", "1x")]: buy(4.9),
+          [quoteKey(mint, "fill_sell", "1x")]: sell(0.96),
+        },
+        rules: { ...rules, entryImpactPctAbove: 10 },
+      }),
+    );
+    expect(opened.opens).toHaveLength(1);
+    expect(roundTripImpactPct(buy(4.9), sell(0.96))).toBeLessThan(10);
+    const skipped = runPhaseCPass(
+      pass({
+        now: at,
+        positions: [{ ...pending, id: "impact-94" }],
+        bids: {
+          [quoteKey(mint, "entry", "1x")]: buy(94),
+          [quoteKey(mint, "fill_sell", "1x")]: sell(0.9),
+        },
+        rules: { ...rules, entryImpactPctAbove: 10 },
+      }),
+    );
+    expect(skipped.opens).toEqual([]);
+    expect(skipped.closes[0]?.reason).toBe("skipped_impact");
+    expect(skipped.closes[0]?.impactPct).toBe(94);
+    expect(skipped.paper.alerts).toBe(0);
+    const round = runPhaseCPass(
+      pass({
+        now: at,
+        positions: [{ ...pending, id: "impact-rt" }],
+        bids: {
+          [quoteKey(mint, "entry", "1x")]: buy(4),
+          [quoteKey(mint, "fill_sell", "1x")]: sell(0.6),
+        },
+        rules: { ...rules, entryImpactPctAbove: 10 },
+        config: { ...config(), maxRoundTripImpactPct: 10 },
+      }),
+    );
+    expect(round.closes[0]?.reason).toBe("skipped_exit_impact");
+    const failed = screenCoin(
+      {
+        mintAuthorityActive: false,
+        freezeAuthorityActive: false,
+        transferFeeBps: 0,
+        exitQuoteImpactPct: 1,
+        entryQuoteImpactPct: 94,
+        top10HoldersPct: 10,
+        sniperBundlePct: 1,
+        liquidityUsd: 20_000,
+        uniqueMakers1h: 80,
+        creatorSells: 0,
+        quoteError: false,
+      },
+      { ...rules, entryImpactPctAbove: 10 },
+    );
+    expect(failed.verdict).toBe("fail");
+    expect(failed.hard.join(" ")).toContain("entry impact");
+    const unmeasured = screenCoin(
+      {
+        mintAuthorityActive: false,
+        freezeAuthorityActive: false,
+        transferFeeBps: 0,
+        exitQuoteImpactPct: 1,
+        entryQuoteImpactPct: null,
+        top10HoldersPct: 10,
+        sniperBundlePct: 1,
+        liquidityUsd: 20_000,
+        uniqueMakers1h: 80,
+        creatorSells: 0,
+        quoteError: false,
+      },
+      { ...rules, entryImpactPctAbove: 10 },
+    );
+    expect(unmeasured.verdict).toBe("watch");
+    expect(capSizeToLiquidity(5, 200, 0.01)).toBe(2);
+    expect(capSizeToLiquidity(5, null, 0.01)).toBe(5);
+    const thinMint = mintFor("trench", 1, "wallets_x_screen", "Thin");
+    const thin = runPhaseCPass(
+      pass({
+        now: new Date("2026-11-19T16:30:00.000Z"),
+        config: { ...config(), maxSizePoolShare: 0.01, bankroll: 1000 },
+        coins: [coin(thinMint, { trackedBuyers: 1, liquidityUsd: 200 })],
+        entriesStartAt: new Date("2026-11-19T16:30:00.000Z"),
+      }),
+    );
+    expect(thin.entries[0]?.amount).toBeCloseTo(2);
+    expect(thin.entries[0]?.sizePct).toBeCloseTo(0.2);
   });
 });

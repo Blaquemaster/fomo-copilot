@@ -23,6 +23,8 @@ describe("loadThresholds", () => {
       freeze_authority_active: true,
       transfer_fee_bps_above: 300,
       exit_quote_impact_pct_above: 5,
+      entry_impact_pct_above: 10,
+      round_trip_impact_pct_above: 10,
       top10_holders_pct_above: 50,
       sniper_bundle_pct_above: 60,
       required_source_error: "WATCH",
@@ -31,6 +33,7 @@ describe("loadThresholds", () => {
       trench_min_tracked_buyers: 1,
       wallet_max_mints_per_day: 40,
       wallet_buy_fresh_minutes: 60,
+      max_size_pool_share: 0.01,
     });
     expect(thresholds.screen.soft).toEqual({
       top10_holders_pct_warn: 35,

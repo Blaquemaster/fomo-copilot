@@ -274,6 +274,7 @@ export {
   quoteKey,
   type QuotePurpose,
   quotedRoundTrip,
+  roundTripImpactPct,
   stageSizeUsd,
   type SizeBid,
 } from "./phasec/quote.js";
@@ -285,6 +286,7 @@ export {
   type SecondWaveObservation,
 } from "./phasec/secondWave.js";
 export { runPhaseCPass, type PassCoin, type PassPosition } from "./phasec/pass.js";
+export { capSizeToLiquidity } from "./phasec/risk.js";
 export { isFlapMint, stageForCoin } from "./phasec/score.js";
 export {
   allowsEntry,
