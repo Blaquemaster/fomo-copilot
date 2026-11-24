@@ -14,7 +14,9 @@ describe("repository guards", () => {
     expect(migrate).not.toContain("fomo_audit");
     expect(roles).toContain("DO NOT APPLY");
     expect(roles).toContain("CREATE ROLE fomo_ingestor");
-    expect(roles).toContain("REVOKE UPDATE, DELETE, TRUNCATE ON TABLE raw_events FROM fomo_ingestor");
+    expect(roles).toContain(
+      "REVOKE UPDATE, DELETE, TRUNCATE ON TABLE raw_events FROM fomo_ingestor",
+    );
     expect(roles).toContain("GRANT pg_read_all_data TO fomo_audit");
     expect(roles).not.toMatch(/postgres:\/\/|password\s*=\s*['"][^<]/i);
   });
