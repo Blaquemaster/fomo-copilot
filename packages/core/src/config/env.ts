@@ -84,6 +84,8 @@ export const envSchema = z.object({
    * A keyed provider URL is still redacted.
    */
   BSC_WSS_URL: z.string().min(8).max(2048).default("wss://bsc-rpc.publicnode.com"),
+  /** Solana deployment keeps the archived Flap parser disconnected. */
+  BSC_INGEST: z.enum(["off", "on"]).default("off"),
   /** Proven wallets on the live subscription. Default 300. */
   WALLET_MAX_WALLETS: z.coerce.number().int().min(1).max(1_000).optional(),
   /** Hard share of the monthly Helius allowance for wallet subscriptions. Default 25. */

@@ -243,6 +243,16 @@ export {
   type Signer,
 } from "./autobuy/run.js";
 export { lookupTradableInFomo } from "./phasec/fomoLookup.js";
+export {
+  JUPITER_ULTRA_EXECUTE_URL,
+  JUPITER_ULTRA_ORDER_URL,
+  emptyCost,
+  replacementAllowed,
+  reviewInstructions,
+  type ExecutionCost,
+  type ExecutionState,
+  type RouteCoverage,
+} from "./execution/contract.js";
 export { formatWeeklyReview, resolveAlertChat } from "./phasec/deliver.js";
 export {
   DEX_BATCH,

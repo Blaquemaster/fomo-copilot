@@ -364,7 +364,7 @@ jobs:
               line("INGEST_MODE", pick("INGEST_MODE", "dry-run", {"dry-run", "continuous"})),
               line("INGEST_VENUE", pick("INGEST_VENUE", "pump", {"pump", "meteora"})),
               line("INGEST_VENUES", venues()),
-              line("BSC_WSS_URL", bsc),
+              line("BSC_INGEST", "off"),
               line("WALLET_MAX_WALLETS", wallet_cap()),
               line("WALLET_CREDIT_BUDGET_PCT", wallet_budget()),
               line("X_MENTION_SOURCE", mention_source()),

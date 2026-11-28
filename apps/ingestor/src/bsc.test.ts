@@ -6,6 +6,7 @@ import type { IngestRepository } from "@fomo/core";
 import {
   BSC_SWEEP_MS,
   auditBscLogs,
+  bscIngestEnabled,
   bscLogStall,
   catchUpBscLogs,
   clampLogRange,
@@ -32,6 +33,25 @@ describe("bsc flap intake", () => {
     let opened = false;
     await runBscIngest({
       env: { BSC_WSS_URL: undefined } as never,
+      logger: { error() {}, info() {}, warn() {}, debug() {} } as never,
+      repo: {} as IngestRepository,
+      signal: new AbortController().signal,
+      deps: {
+        openSocket: () => {
+          opened = true;
+          throw new Error("should not connect");
+        },
+      },
+    });
+    expect(opened).toBe(false);
+  });
+
+  it("stays disconnected in the Solana deployment even when a BSC url is configured", async () => {
+    expect(bscIngestEnabled({})).toBe(false);
+    expect(bscIngestEnabled({ BSC_INGEST: "off" })).toBe(false);
+    let opened = false;
+    await runBscIngest({
+      env: { BSC_WSS_URL: "wss://bsc-rpc.publicnode.com", BSC_INGEST: "off" } as never,
       logger: { error() {}, info() {}, warn() {}, debug() {} } as never,
       repo: {} as IngestRepository,
       signal: new AbortController().signal,

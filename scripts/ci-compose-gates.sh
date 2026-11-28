@@ -769,6 +769,9 @@ echo "$rehearse" | grep -q 'postgres_volume=fomo-copilot_pgdata'
 echo "$rehearse" | grep -q 'postgres_container=present'
 echo "$rehearse" | grep -q 'postgres_volume_present=yes'
 echo "$rehearse" | grep -q 'rehearse targets the existing postgres stack'
+echo "$rehearse" | grep -q 'diagnostic-start'
+status=$(sudo -u fomo-deploy sudo -n /usr/local/lib/fomo/fomo-deploy-helper diagnostic-status)
+echo "$status" | grep -q 'diagnostic_container=absent'
 set +e
 sudo -u fomo-deploy sudo -n /usr/local/lib/fomo/fomo-deploy-helper rehearse extra >/tmp/fomo-helper-extra.txt 2>&1
 extra_code=$?
