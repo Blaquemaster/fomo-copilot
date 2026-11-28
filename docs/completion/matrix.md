@@ -1,29 +1,29 @@
 # Completion matrix
 
-Version: 2026-11-28.1. Specification: `docs/completion/master-spec.md`.
+Version: 2026-11-28.2. Specification: `docs/completion/master-spec.md`.
 
-Status is `not built`, `partial`, or `build-complete`. Nothing below is validated. Counts at this version: 36 rows, of which 2 are build-complete, 30 are partial, and 4 are not built. Twelve owner decisions are open. The two build-complete rows are the release route and the trigger check on pull request #60. They have not been executed on production.
+Status is `not built`, `partial`, or `build-complete`. Nothing below is validated. Counts at this version: 41 rows, of which 2 are build-complete, 26 are partial, and 13 are not built. The twelve scope choices are settled. No row is awaiting a decision. The two build-complete rows are the release route and the trigger check on pull request #60. They have not been executed on production.
 
 Locations are on `cursor/release-main-8ff7` unless a row says otherwise. Closed pull requests #1 through #38 and #40 and #42 through #59 are ancestors of #60 or older `main` work already contained in it, except where a row names a branch that is not. Pull request #39 is not an ancestor of #60. Pull request #41 is not an ancestor of #60.
 
-## Owner decisions
+## Settled scope
 
-These are the unresolved scope choices. They are not requests to launch the diagnostic or to change production.
+Settled by Arvin on 28 November 2026. The build rule is to make the best decision for the build. These are included or excluded. None are awaiting a decision. They are not a request to launch the diagnostic or to change production.
 
-| ID  | Decision                                                                                                             | Why it is open                                                                                                                                                                             | Known fact                                                                                                                                           |
-| --- | -------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------- |
-| D1  | Which stages and exit treatments are in the finished product.                                                        | `trench`, `near_graduation`, `post_graduation`, second wave, and scale-out all exist as code. The experiment preregistration leaves second wave and scale-out out of that experiment only. | No later instruction includes or excludes them for the whole product.                                                                                |
-| D2  | X / social: live source, fixture-only weight, or remove.                                                             | A weight and a fixture exist. A live collector does not.                                                                                                                                   | `xMentions.ts` says the live search is not this process.                                                                                             |
-| D3  | Creator analytics: the current sell count, or a separate product.                                                    | The screen counts creator sells and the wallet score drops creator rows.                                                                                                                   | A creator-analytics product is not built.                                                                                                            |
-| D4  | How much trade and liquidity history is required, and the retention for candidates, controls, rejections, and WATCH. | Trades and fills are stored for the screen and the wallet job.                                                                                                                             | A retention policy for those four classes is not written.                                                                                            |
-| D5  | Execution route: automated FOMO, manual FOMO, or another named route.                                                | No route is implemented.                                                                                                                                                                   | `fomoLookup.ts` does not call FOMO. A Jupiter quote is not a FOMO fill. Signing is not implemented.                                                  |
-| D6  | Whether automatic execution is in the finished product.                                                              | Dry-run intents can be stored. Live mode cannot start.                                                                                                                                     | Building a later signer would still not authorize installing a key.                                                                                  |
-| D7  | Whether the existing BNB Chain Flap parser stays disabled or is removed.                                             | The 28 November 2026 directive sets Solana as the boundary.                                                                                                                                | Flap trading is not built. The parser must not be treated as an included chain.                                                                      |
-| D8  | Whether Telegram is the owner view or a separate dashboard is required.                                              | There is no web UI. The alerter has four commands and is stopped.                                                                                                                          | The operating views listed in the specification are not built.                                                                                       |
-| D9  | Whether `fomo-deploy` must be able to start the diagnostic container.                                                | The helper has six commands. Starting that container still needs root, because the account cannot open the Docker socket.                                                                  | CI showed the socket denial and showed that `rehearse` stays on project `fomo-copilot`. Putting the account in the `docker` group is not the repair. |
-| D10 | Whether to reuse pull request #39.                                                                                   | That pull request is open against `main` and is not contained in #60.                                                                                                                      | It changes screening, sizing, the migration lock, and adds `scripts/verdict.sql`. Its behavior is not re-certified here.                             |
-| D11 | Whether pull request #41's broader role file is ever applied.                                                        | #41 is a plan against `main` and is not in #60.                                                                                                                                            | The minimum file is `infra/sql/fomo-shadow-diagnostic.sql`. Neither file is applied on production.                                                   |
-| D12 | The primary comparison, fixed before any scored multi-strategy result is read.                                       | More than one arm is coded.                                                                                                                                                                | The experiment preregistration is for one experiment, not for the finished multi-strategy product.                                                   |
+| ID | Settled choice |
+| --- | --- |
+| D1 | Included: trench, near graduation, post graduation, and second wave, plus every exit policy including scale-out. Each stage has an explicit config, a precedence order, and a data-readiness rule. |
+| D2 | Included: a bounded live collector that links posts to a mint, behind a provider budget gate. Fixtures are for development. Missing or stale social data is `unknown`. No X API tier is subscribed or paid. A paid provider is an activation that needs a later yes. |
+| D3 | Included: a creator module for holdings, sales, previous launches, and evidenced wallet relationships. A shared funder is not proof of common control. |
+| D4 | Included: 30-day rolling observed swap and liquidity history for the declared monitored universe, as 1-minute aggregates with explicit gaps. This is not a full-chain archive. Experiment inputs and records are kept through the run and at least 90 days after closure, then archived rather than discarded. Execution ledgers, fills, creator history, configs, and audit rows have their own archival policy. |
+| D5 | Included: Jupiter's order, sign, then execute API is the primary execution path. Copilot controls eligibility, size, and risk. The trading wallet is dedicated and limited-funded. FOMO is optional manual trading only, because FOMO terms restrict automation. Every included stage records whether a buy route and a sell route exist. An unsupported route is `unavailable`. The cost model uses Jupiter platform fee, network fees, tips, token-account rent and recovery, failed transactions, pool fees, and slippage. It does not apply FOMO fees to a Jupiter quote. |
+| D6 | Included: automatic entry and automatic exit. Fresh facts and a quote are checked, and spend, liquidity, slippage, and all-in cost limits are applied, immediately before signing. An exit that does not liquidate stays an explicit unresolved state. Funds are reserved. A second worker or a restart cannot duplicate an order. An uncertain transaction is resolved before any replacement. A timeout is not another buy. Submission is not confirmation. The signer is isolated and checks the transaction's contents, destinations, amounts, and allowed programs. Exposure and spend limits are enforced outside the strategy process. New entries and all signing have separate kill switches. An entry pause still allows exits. Execution is event-driven, and latency is measured. A dry-run intent row, or a live mode that only throws, is not complete. Hold: no production key, no wallet funding, no `AUTOBUY_LIVE_CONFIRMED`, and no real order. After any deploy, `AUTOBUY_MODE` is `dry_run`. Tests use a test keypair, devnet, or a simulation. |
+| D7 | Excluded from the Solana deployment: the Flap and BNB parser is archived and disabled. Existing rows stay. The product is Solana only. |
+| D8 | Included: a private authenticated web dashboard is the owner view. It shows every operating view in the specification, reads the authoritative records, and shows empty, stale, and unavailable on purpose. It does not show secrets. Telegram remains an optional notification channel. Alerts stay held. |
+| D9 | Included: the root-owned helper gains diagnostic start, status, and stop. The deploy account stays out of the `docker` group and does not receive the Docker socket. |
+| D10 | Included as a review, not a merge: pull request #39 is read and only the changes the build needs are copied. It is not merged as a whole. |
+| D11 | Included: least-privilege roles for ingest, screening, execution records, the signer, reporting, and admin. Pull request #41 is adapted after its grants are reviewed. Nothing is applied to production. |
+| D12 | Included and frozen: the primary comparison is freshly graduated pools, one qualified venue path, a frozen wallet cohort against contemporaneous screened controls with no wallet, $20 total cash, a 180-second entry delay with a stated deadline, and a fixed 60-minute exit. The primary comparison does not use scale-out, a stop, a take-profit, or social data. A worthwhile advantage is 5 percentage points. The endpoint is 60 days. Fee scenarios share one enrolled population. Missing outcomes stay explicit. Absolute economics and risk are required. Inference stays off until a later validation. Other strategies are secondary. Fee scenarios use the Jupiter route, not a FOMO fee on a Jupiter quote. |
 
 ## Matrix
 
@@ -72,10 +72,10 @@ These are the unresolved scope choices. They are not requests to launch the diag
 - Requirement: do not add a chain by assumption. Record the existing parser.
 - Status: partial.
 - What exists: `packages/core/src/ingest/flap.ts`, `apps/ingestor/src/bsc.ts`, migration `015_bsc_flap`. Closed pull requests #23 and #24, contained in #60. Flap trading is not built.
-- Remaining work: D7.
-- Dependency: D7.
-- Implementation location: `apps/ingestor/src/bsc.ts`.
-- Later acceptance: if D7 removes it, the ingestor starts with no BSC socket. If D7 keeps it disabled, a test shows the socket is not required for Solana intake.
+- Remaining work: the Solana deployment must not open the BSC socket. The parser and stored rows stay.
+- Dependency: none. D7 is settled.
+- Implementation location: `apps/ingestor/src/bsc.ts`, `apps/ingestor/src/main.ts`.
+- Later acceptance: with the Solana flag at its default, the process starts no BSC socket. Existing `ingest_chain_event` rows are still readable.
 
 ### WAL-001. Three wallet measures
 
@@ -142,8 +142,8 @@ These are the unresolved scope choices. They are not requests to launch the diag
 - Requirement: implement only the stages and exit treatments D1 includes, and keep the others disabled without calling them complete.
 - Status: partial.
 - What exists: stages and arms in `protocol.ts` and `score.ts`. Scale-out accounting exists and `scaleOutEnabled` is off. Second wave labeling is `secondWave.ts`. Closed pull requests #30, #40, and #51 are in #60.
-- Remaining work: D1. Then connect only the included stages to the risk engine and the records.
-- Dependency: D1.
+- Remaining work: explicit config, precedence, and a data-readiness result for all four stages and for scale-out. An unready stage is `unavailable`, not a silent skip.
+- Dependency: RDY-001.
 - Implementation location: `packages/core/src/phasec/`.
 - Later acceptance: an excluded stage cannot open a position, and an included stage writes a decision with the policy version.
 
@@ -152,8 +152,8 @@ These are the unresolved scope choices. They are not requests to launch the diag
 - Requirement: implement the chosen route from intended spend through quote, eligibility, submission or manual handoff, acknowledgement, status, receipt, and holdings.
 - Status: not built.
 - What exists: Jupiter quote collection and a dry-run intent. `JUPITER_SWAP_URL` is named in `autobuy/run.ts`. No order is submitted. Closed pull request #35 is in #60.
-- Remaining work: D5 and D6, then the missing states. Do not invent a FOMO API.
-- Dependency: D5, D6, ACC-001.
+- Remaining work: the Jupiter order, sign, and execute path, route coverage per stage, the cost model, reservation, duplicate prevention, and the isolated signer. Tests use a test keypair or a simulation. No production key and no real order.
+- Dependency: ACC-001, RSK-001.
 - Implementation location: `packages/core/src/autobuy/run.ts`, `packages/core/src/phasec/fomoLookup.ts`.
 - Later acceptance: each terminal and unresolved state has a stored row. A second automatic submission does not follow an uncertain first submission.
 
@@ -222,8 +222,8 @@ These are the unresolved scope choices. They are not requests to launch the diag
 - Requirement: show services and mode, release identity, feed health and gaps, opportunities and reasons, wallet evidence, positions and cash, provider and diagnostic spend, strategy limits, and alert configuration. Empty, stale, and unavailable are explicit. Secrets are not shown. Controls cannot turn trading on by accident.
 - Status: not built.
 - What exists: no HTML or application view. `scripts/cutover-report.sh` prints some of these fields and prints `not recorded` when the value is absent. Telegram `/status` and `/events` exist in `apps/alerter/src/commands.ts`. The alerter is stopped.
-- Remaining work: D8, then the view reading the authoritative records rather than fixtures.
-- Dependency: D8, ACC-001.
+- Remaining work: a private authenticated web dashboard wired to the authoritative records. Telegram stays optional and held.
+- Dependency: ACC-001.
 - Implementation location: not built. The script is `scripts/cutover-report.sh`.
 - Later acceptance: with the services stopped, the view shows stopped and the release identity of the running commit. A fixture-only page is not accepted.
 
@@ -292,7 +292,7 @@ These are the unresolved scope choices. They are not requests to launch the diag
 - Requirement: the deploy account is not root and is not in the `docker` group. One sudo command accepts only the fixed helper. The helper reads one digest from a root-owned manifest and operates fixed services. The account can complete the guarded procedure, or the procedure names the remaining root step.
 - Status: partial.
 - What exists: `scripts/setup-deploy-user.sh` and `scripts/fomo-deploy-helper`. CI created the user, ran the bootstrap twice, and left root's authorized keys unchanged. `rehearse` from `/tmp` with `COMPOSE_PROJECT_NAME=evil` and `DOCKER_HOST=tcp://127.0.0.1:9` still printed project `fomo-copilot`, context `default`, volume `fomo-copilot_pgdata`, and the existing Postgres container. `docker` as that user failed. The helper and the manifest were not writable by the user. An unprivileged bootstrap exited with `one-time: create deploy user is the only root step`.
-- Remaining work: the permission gap. The helper cannot start the diagnostic container. A root operator is still required for that start. D9 decides whether to add one fixed helper command or to keep that root step. Do not grant the socket.
+- Remaining work: add `diagnostic-start`, `diagnostic-status`, and `diagnostic-stop` to the helper. Each command is fixed. The account still gets no socket and no docker group.
 - Dependency: D9.
 - Implementation location: `scripts/fomo-deploy-helper`, `scripts/setup-deploy-user.sh`.
 - Later acceptance: as `fomo-deploy`, the six commands stay inside the fixed project. If D9 adds a diagnostic command, it accepts no image override and still cannot run an arbitrary shell. If D9 keeps the root step, the procedure says so in one line and the account's socket denial still fails `docker ps`.
@@ -323,13 +323,63 @@ These rows repeat the disposition table so the matrix has one place for each par
 
 | ID      | Requirement                   | Status  | What exists and where                                                                     | Remaining work | Dependency | Implementation location                  | Later acceptance                                                                                                           |
 | ------- | ----------------------------- | ------- | ----------------------------------------------------------------------------------------- | -------------- | ---------- | ---------------------------------------- | -------------------------------------------------------------------------------------------------------------------------- |
-| PRK-001 | Additional strategy stages    | partial | `protocol.ts` stages `trench`, `near_graduation`, `post_graduation`                       | D1             | D1         | `packages/core/src/phasec/protocol.ts`   | An excluded stage cannot open a position.                                                                                  |
-| PRK-002 | Second wave                   | partial | `secondWave.ts`; arms in `protocol.ts`; excluded from the experiment preregistration only | D1             | D1         | `packages/core/src/phasec/secondWave.ts` | Same as PRK-001.                                                                                                           |
-| PRK-003 | X / social                    | partial | Fixture source and `coin_x_mention`. No live collector.                                   | D2             | D2         | `packages/core/src/ingest/xMentions.ts`  | If excluded, the score weight is unused. If included, the collector stores the post time and the decision time separately. |
-| PRK-004 | Creator analytics             | partial | Creator-sell count in `screen.ts`. Creator rows dropped in `wallets.ts`.                  | D3             | D3         | `packages/core/src/phasec/screen.ts`     | The chosen scope is the only creator output.                                                                               |
-| PRK-005 | Trade and liquidity history   | partial | `pump_trade`, `wallet_fill`, market snapshots                                             | D4             | D4         | `packages/core/src/db/ingest.ts`         | Retention for candidates, controls, rejections, and WATCH is a written rule and a test.                                    |
-| PRK-006 | Automatic execution           | partial | Dry-run intent. Live throws `signing is not implemented`.                                 | D5, D6         | D5, D6     | `packages/core/src/autobuy/run.ts`       | If excluded, `live` still throws. If included, the signer is a separate later approval and is not installed here.          |
-| PRK-007 | Flap trading and other chains | partial | Parser in `flap.ts` and `bsc.ts`. Flap trading is not built.                              | D7             | D7         | `apps/ingestor/src/bsc.ts`               | Solana intake does not require the BSC socket.                                                                             |
+| PRK-001 | Four stages and scale-out     | partial | `protocol.ts` stages. Scale-out accounting exists and is off.                            | Config, precedence, and readiness for every included stage. | RDY-001 | `packages/core/src/phasec/protocol.ts` | Each stage trades on ready data or records `unavailable`. |
+| PRK-002 | Second wave                   | partial | `secondWave.ts` and the second-wave arms. D12 keeps it out of the primary comparison.    | A secondary strategy with its own position owner. | STR-002 | `packages/core/src/phasec/secondWave.ts` | It cannot open a second position on a mint the primary path already holds. |
+| PRK-003 | Live mint-linked social collector | not built | Fixture source and `coin_x_mention`. No live collector.                                | Bounded collector and budget gate. No paid subscription. | none | `packages/core/src/ingest/xMentions.ts` | A missing post is `unknown`. The monthly counter stops the collector at the cap. |
+| PRK-004 | Creator module                | not built | Creator-sell count in `screen.ts`. Creator rows dropped in `wallets.ts`.               | Holdings, sales, previous launches, and relationship rows. | ACC-001 | not built | A shared funder is stored and is not labeled common control. |
+| PRK-005 | 30-day observed history       | not built | `pump_trade`, `wallet_fill`, market snapshots.                                         | 1-minute aggregates, explicit gaps, and archival jobs. | none | `packages/core/src/db/ingest.ts` | A missing minute is a gap row, not a zero. |
+| PRK-006 | Automatic entry and exit      | not built | Dry-run intent. Live throws because signing is not implemented. That throw is not the finished workflow. | State machine, signer, reservation, and kill switches. Tests only. | EXE-001 | `packages/core/src/autobuy/run.ts` | A timeout does not create a second buy. Deploy keeps `AUTOBUY_MODE=dry_run`. |
+| PRK-007 | Flap parser archived          | partial | `flap.ts` and `bsc.ts`. Flap trading is not built.                                     | Disable the socket in the Solana deployment and keep the rows. | none | `apps/ingestor/src/bsc.ts` | The default Solana start opens no BSC socket. |
+
+### FLOW-001. One path from ingest to evaluation
+
+- Requirement: one workflow from ingest, through wallet classification, screening and risk, the decision, execution, reconciliation, the owner view, and evaluation.
+- Status: not built.
+- What exists: separate ingestor, screener, and diagnostic processes. They do not share one decision id from the event to the report.
+- Remaining work: the shared id and the handoff between those processes.
+- Dependency: ACC-001, EXE-001, DSH-001, EVL-001.
+- Implementation location: not built.
+- Later acceptance: one fixture mint produces one id that is present in the event, the decision, the execution attempt, the dashboard, and the evaluation export.
+
+### STR-002. Strategy interactions
+
+- Requirement: competing signals on one mint, stage transitions, position ownership, a shared bankroll, duplicate orders, and outcome attribution are explicit.
+- Status: not built.
+- What exists: several arms in `protocol.ts`. No owner is stored when two stages want the same mint.
+- Remaining work: one position owner per mint and one bankroll reservation.
+- Dependency: STR-001, ACC-002.
+- Implementation location: `packages/core/src/phasec/protocol.ts`.
+- Later acceptance: two signals on one mint create one order. The other signal is stored as not admitted. The cash is reserved once.
+
+### PERM-001. Persistence and permission map
+
+- Requirement: every process has a written list of the tables it reads and writes and the database role it uses.
+- Status: not built.
+- What exists: the diagnostic role file and the unapplied broader role file. The ingestor still uses the application role.
+- Remaining work: the map and the least-privilege roles. Nothing is applied to production.
+- Dependency: REL-005.
+- Implementation location: `infra/sql/`.
+- Later acceptance: each process connects as its own role, and a write outside its list fails.
+
+### RDY-001. Build readiness is not data readiness
+
+- Requirement: a feature can be implemented while its inputs are unavailable. The unavailable state is stored and shown. It is not a zero and not a pass.
+- Status: not built.
+- What exists: some screens already omit a missing value. There is no shared `unavailable` result.
+- Remaining work: one result used by stages, social data, routes, and the dashboard.
+- Dependency: none.
+- Implementation location: not built.
+- Later acceptance: a stage with no route records `unavailable` and does not size a position.
+
+### REL-007. One later release
+
+- Requirement: the finished build has its own release evidence and its own retained artifact. Pull request #60's green head does not cover later commits.
+- Status: not built.
+- What exists: the #60 route, artifact `14953876440`, and digest `sha256:06762134cf090867561ad4f471e9a8456ca4245957a22d663c1522a9cff7eb09`.
+- Remaining work: after the included rows are build-complete, cut one release from that commit. Do not reuse the earlier digest.
+- Dependency: REL-001, REL-003.
+- Implementation location: `.github/workflows/publish.yml`.
+- Later acceptance: the new push run's commit equals the release head, and the old digest is on the refuse list.
 
 ## Reuse map
 

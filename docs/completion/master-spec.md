@@ -1,6 +1,6 @@
 # FOMO Trading Copilot master specification
 
-Version: 2026-11-28.1
+Version: 2026-11-28.2
 
 This is the completion inventory. It is not a deployment, a diagnostic launch, or a claim that any feature has been validated. Production `main` is `6555907ee2a0cdf45a6b5cc7dafe92790d833a6b`. The held release branch is `cursor/release-main-8ff7` in pull request #60. Nothing in this document authorizes a merge, a publish, a server change, alerts, paper trading, signing keys, `AUTOBUY_LIVE_CONFIRMED`, or a new paid service.
 
@@ -13,26 +13,62 @@ A feature may be build-complete and still disabled. A flag that is off does not 
 
 Solana is the product boundary stated on 28 November 2026. Additional chains do not enter by assumption.
 
-## Parked capabilities
+## Settled dispositions
 
-| Capability                            | What is in the tree                                                                                                                                                                               | Disposition                                                                                                                                 |
-| ------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------- |
-| Strategy stages beyond a single entry | `trench`, `near_graduation`, and `post_graduation` are coded in `packages/core/src/phasec/protocol.ts` and `score.ts`.                                                                            | Awaiting a scope decision.                                                                                                                  |
-| Second wave                           | `packages/core/src/phasec/secondWave.ts` labels a graduated coin. Arms `second_wave_a` and `second_wave_b` exist. The experiment preregistration says second wave is not part of that experiment. | Awaiting a scope decision.                                                                                                                  |
-| Scale-out                             | The accounting function exists. `scaleOutEnabled` defaults off in `protocol.ts`.                                                                                                                  | Awaiting a scope decision.                                                                                                                  |
-| X / social                            | `packages/core/src/ingest/xMentions.ts` reads a fixture. `coin_x_mention` is a table. The score weight is zero when mentions are absent. There is no live collector in this process.              | Awaiting a scope decision.                                                                                                                  |
-| Creator analytics                     | The screen counts creator sells. Proven-wallet scoring drops creator rows. There is no separate creator product.                                                                                  | Awaiting a scope decision.                                                                                                                  |
-| Trade and liquidity history           | `pump_trade`, `wallet_fill`, and market snapshots are stored for the screen and the wallet job. A retention rule for every candidate, control, rejection, and WATCH is not written.               | Awaiting a scope decision.                                                                                                                  |
-| Automatic execution                   | `packages/core/src/autobuy/run.ts` can record a dry-run intent. Live mode throws because signing is not implemented. `lookupTradableInFomo` does not call FOMO.                                   | Awaiting a scope decision. The execution route itself is decision D5.                                                                       |
-| Flap and any other chain              | `packages/core/src/ingest/flap.ts` and `apps/ingestor/src/bsc.ts` parse BNB Chain Flap logs. Flap trading is not built.                                                                           | Solana is the stated boundary. Whether the existing parser stays, disabled, or is removed is decision D7. It is not included by assumption. |
+Arvin settled these on 28 November 2026. The build rule is to choose what makes the finished system complete. None of these are awaiting a decision.
+
+| Capability | Disposition |
+| --- | --- |
+| Trench, near graduation, post graduation, second wave, and scale-out | Included. Each stage needs a config, a precedence order, and a data-readiness result. Second wave is secondary to the frozen primary comparison. |
+| X / social | Included as a bounded, mint-linked collector. Fixtures are for development. Missing or stale data is `unknown`. No X API is subscribed. |
+| Creator analysis | Included: holdings, sales, previous launches, and evidenced relationships. A shared funder is not common control. |
+| Trade and liquidity history | Included as 30 days of observed 1-minute aggregates for the admitted universe, with explicit gaps. Not a full chain. |
+| Automatic execution | Included for entry and exit on the Jupiter order, sign, and execute path. Production keys, funding, and real orders stay off. |
+| Flap and other chains | Excluded from the running Solana deployment. The parser is archived and disabled. Stored rows stay. |
+| Owner view | A private authenticated web dashboard. Telegram is an optional notification channel. Alerts stay held. |
+| Deploy helper | Diagnostic start, status, and stop are added. No Docker socket for the deploy account. |
+| Pull request #39 | Review and copy only the changes the build needs. Do not merge it whole. |
+| Pull request #41 | Adapt its grants into least-privilege roles for the whole product. Apply nothing to production. |
+| Primary comparison | Frozen as D12 in the matrix. Fee scenarios use the Jupiter cost model. |
+
+## Social collector cost
+
+The collector is not built. No X API tier is subscribed. This repository does not contain a current X price list, so the dollar price of a paid tier is not known. A paid tier needs a later yes.
+
+Planning volume, before any subscription:
+
+- The admitted universe is capped at 200 mints until a measured cap replaces it.
+- A live lookup for one mint runs at most every 15 minutes, and only during a 16-hour window.
+- That is 200 mints times 64 lookups times 30 days = 384,000 lookups a month.
+- The default live cap is 0 until a provider is approved. The fixture source stays available for development and spends nothing.
+- A missing or stale lookup is stored as `unknown`. It is not a zero mention count.
+
+## History storage and API use
+
+The aggregate is not built. The estimate is from the settled rule, not from a measured table.
+
+- Cadence: one row per mint per minute.
+- Universe admission: a mint enters only when it is in the declared monitored set. The planning cap is 300 mints.
+- Thirty days at that cap is 300 times 43,200 minutes = 12,960,000 aggregate rows.
+- A minute with no observed swap is a gap. It is not a zero-volume bar.
+- The rows are built from trades the Solana ingestor already stored. They are not a second full-chain scan.
+- Extra RPC is only for a recorded gap. That fill is not a new paid budget. The $25 ceiling remains the diagnostic ceiling only.
+- Experiment inputs and records stay for the run and at least 90 days after the run closes, then move to an archive table. They are not deleted.
+- Execution ledgers, fills, creator history, configs, and audit rows are not on that 90-day clock. Their archive job is separate and is not built.
+
+## Jupiter execution cost
+
+The cost model is not built. When it is built it records, separately, the Jupiter platform fee, network fees, tips, token-account rent and recovery, a failed transaction's cost, pool fees, and slippage. A FOMO fee is not added to a Jupiter quote. FOMO remains available only as a manual action. Each included stage records buy coverage and sell coverage. A bonding-curve coin without a sell route is `unavailable`.
+
+The order API for that path is Jupiter Ultra: `GET https://api.jup.ag/ultra/v1/order` and `POST https://api.jup.ag/ultra/v1/execute`. `quoteUrlAllowed` currently allows only `https://api.jup.ag/swap/v1/quote` and `https://api.jup.ag/swap/v1/swap`. The Ultra paths are not allowed yet. They are named here so the client does not invent a third host.
 
 ## 1. What the complete system includes
 
-The fixed inventory is `docs/completion/matrix.md`. Each included row has an ID, inputs, outputs, failure behavior, and a later acceptance procedure. Rows whose disposition is still awaiting a decision are not silently treated as included or excluded.
+The fixed inventory is `docs/completion/matrix.md`. Each included row has an ID, inputs, outputs, failure behavior, and a later acceptance procedure.
 
 Implementation scope and activation permission are separate. The screener and alerter are behind compose profiles and `serviceGate.ts`. Those gates being off does not complete the missing dashboard, the missing signer, or the missing execution route.
 
-Definition of done for this section: one inventory, and no required feature left unnamed. That definition is not met while decisions D1 through D12 are open. The inventory itself is the step-1 deliverable.
+Definition of done for this section: one inventory, and no required feature left unnamed. The twelve scope choices are settled in version 2026-11-28.2. The inventory is no longer waiting on them. The features themselves are not build-complete.
 
 ## 2. One authoritative event and accounting record
 
@@ -50,13 +86,13 @@ Definition of done: every included entrypoint writes the same records; reports r
 
 ## 3. Execution matches the service actually used
 
-No execution route has been selected. `lookupTradableInFomo` returns null and does not call FOMO. A Jupiter quote is a quote. It is not a FOMO fill. FOMO's own help states that fee routes can change between trades and that quoted prices can differ from fills. This repository does not contain that help page, and it does not invent a FOMO API.
+The selected route is Jupiter Ultra order, then sign, then execute. It is not built. `lookupTradableInFomo` returns null and does not call FOMO. A Jupiter quote is a quote. It is not a fill. FOMO is manual only. FOMO's own help states that fee routes can change between trades and that quoted prices can differ from fills. This repository does not contain that help page, and it does not invent a FOMO API.
 
 The dry-run auto-buyer can store an intent marked simulated. `resolveAutobuyMode` refuses `live` because signing is not implemented, even when `AUTOBUY_LIVE_CONFIRMED` is `yes`. There is no submission, acknowledgement, receipt reconciliation, or final-holdings update. An uncertain submission cannot be represented, so the rule against a second automatic submission is not built.
 
 Paper decisions and the dry-run intent share some size and pause checks in `risk.ts` and `admitAutobuy`. They are not one execution workflow.
 
-Definition of done: the selected route runs from intent through reconciliation, with every terminal and unresolved state stored, and paper and actual execution share the applicable rules. Status: not built until D5 is answered. The dry-run intent recorder is partial.
+Definition of done: the Jupiter order, sign, and execute path runs from intent through reconciliation, with every terminal and unresolved state stored. A dry-run that only stores an intent, or a live mode that only throws, is not that path. Status: not built. Tests use a test keypair or a simulation. No production key is loaded.
 
 ## 4. Wallet intelligence
 
