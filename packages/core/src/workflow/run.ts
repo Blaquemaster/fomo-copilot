@@ -8,6 +8,12 @@ import { executionEconomics } from "../execution/economics.js";
 import { placeSwap } from "../execution/swapClient.js";
 import { admitOne } from "../phasec/admission.js";
 import { applyEntryPolicy, positionWriteAllowed } from "../phasec/policy.js";
+import {
+  FROZEN_LIST_VERSION,
+  decisionTimes,
+  eventVisibleToDecision,
+  stageAdmission,
+} from "../records/decisionFacts.js";
 import { sizedFromRoute } from "../records/readiness.js";
 
 export interface WorkflowResult {
@@ -121,8 +127,30 @@ export async function runSimulatedWorkflow(
   const client = await pool.connect();
   try {
     await client.query("begin");
+    const times = decisionTimes({
+      chainAt: new Date(input.now.getTime() - 60_000),
+      observedAt: input.now,
+      decisionAt: input.now,
+    });
+    const late = new Date(input.now.getTime() + 60_000);
+    const stage = stageAdmission("post_graduation", size.state === "ready");
     const steps: { step: string; state: string; detail: string }[] = [
       { step: "ingest", state: "ready", detail: eventId },
+      {
+        step: "times",
+        state: "ready",
+        detail: `${times.chainAt}|${times.observedAt}|${times.decisionAt}|${times.parserVersion}`,
+      },
+      {
+        step: "late_event",
+        state: eventVisibleToDecision(late, input.now) ? "ready" : "unavailable",
+        detail: "backfill_after_decision",
+      },
+      {
+        step: "stage",
+        state: stage.readiness,
+        detail: stage.open ? "post_graduation" : "not_opened",
+      },
       { step: "wallet", state: "ready", detail: input.wallet },
       { step: "decision", state: decision, detail: size.state },
       {
@@ -172,7 +200,15 @@ export async function runSimulatedWorkflow(
       `insert into completion_decision (id, mint, event_ids, list_version, execution_id, readiness, recorded_at)
        values ($1,$2,$3,$4,$5,$6,$7)
        on conflict (id) do update set readiness = excluded.readiness, recorded_at = excluded.recorded_at`,
-      [input.runId, input.mint, eventId, "unset", order?.id ?? null, decision, input.now],
+      [
+        input.runId,
+        input.mint,
+        eventId,
+        FROZEN_LIST_VERSION,
+        order?.id ?? null,
+        decision,
+        input.now,
+      ],
     );
     await client.query(`update completion_decision set policy_version = $2 where id = $1`, [
       input.runId,

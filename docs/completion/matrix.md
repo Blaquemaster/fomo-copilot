@@ -2,7 +2,7 @@
 
 Version: 2026-11-28.3. Specification: `docs/completion/master-spec.md`.
 
-Status is `not built`, `partial`, or `build-complete`. Nothing below is validated. Counts at this version: 41 rows, of which 17 are build-complete, 23 are partial, and 1 is not built. The twelve scope choices are settled. No row is awaiting a decision. Five rows are build-complete. They have not been executed on production. Pull request #60 does not cover the later commits.
+Status is `not built`, `partial`, or `build-complete`. Nothing below is validated. Counts at this version: 41 rows, of which 21 are build-complete, 19 are partial, and 1 is not built. The twelve scope choices are settled. No row is awaiting a decision. Five rows are build-complete. They have not been executed on production. Pull request #60 does not cover the later commits.
 
 Locations are on `cursor/release-main-8ff7` unless a row says otherwise. Closed pull requests #1 through #38 and #40 and #42 through #59 are ancestors of #60 or older `main` work already contained in it, except where a row names a branch that is not. Pull request #39 is not an ancestor of #60. Pull request #41 is not an ancestor of #60.
 
@@ -30,9 +30,9 @@ Settled by Arvin on 28 November 2026. The build rule is to make the best decisio
 ### SPEC-001. One versioned inventory
 
 - Requirement: one specification with IDs, inputs, outputs, dependencies, failure behavior, and completion criteria, and no required feature hidden behind the word complete.
-- Status: partial.
-- What exists: this file and `docs/completion/master-spec.md` on this branch.
-- Remaining work: close D1 through D12. Until then the inventory is not fixed.
+- Status: build-complete.
+- What exists: this file and `docs/completion/master-spec.md`. D1 through D12 are settled in the decision table. No row is awaiting a decision.
+- Remaining work: none for the inventory. Individual features stay partial until their own rows say build-complete.
 - Dependency: none.
 - Implementation location: `docs/completion/`.
 - Later acceptance: an owner reads the decision table and every disposition is included, excluded by Arvin, or explicitly still open. No open decision is described as complete.
@@ -60,9 +60,9 @@ Settled by Arvin on 28 November 2026. The build rule is to make the best decisio
 ### ING-002. Times, provenance, parser version, wallet-list version, run identity
 
 - Requirement: store chain time, observation time, and decision time separately. Store provenance, recovery status, parser version, wallet-list version, and run identity. A later backfill must not look as if an earlier decision could see it.
-- Status: partial.
-- What exists: `raw_events.received_at`, `ingest_backfill.unrecovered`, `ingest_recovery_checkpoint`, `phasec_wallet_list_version`, and run-identity migration `031_run_identity` in `ingest.ts`.
-- Remaining work: parser version is not stored. The three times are not required on every decision. The backfill-visibility rule is not one check.
+- Status: build-complete.
+- What exists: `decisionTimes` stores chain time, observation time, and decision time separately, plus parser version `solana-2026-11-28`. `eventVisibleToDecision` marks a later backfill as not visible. The workflow stores both.
+- Remaining work: none for that check. Older ingest rows do not all carry the three times yet.
 - Dependency: ACC-001.
 - Implementation location: `packages/core/src/db/ingest.ts`.
 - Later acceptance: a replay inserts a late event and the earlier decision row still shows that the event was absent at decision time.
@@ -110,9 +110,9 @@ Settled by Arvin on 28 November 2026. The build rule is to make the best decisio
 ### WAL-004. Frozen cohort
 
 - Requirement: use only information available before the decision. Do not replace the cohort during a frozen experiment.
-- Status: partial.
-- What exists: `SCORING_VERSION` is 3. `mayApplyV3List` refuses a replacement while paper is open. `phasec_wallet_list_version` exists. The qualification version is unset.
-- Remaining work: a frozen version id and a check that a decision cannot read a later list.
+- Status: build-complete.
+- What exists: the decision stores list version `v3`. `listUsable` refuses a later list. `mayApplyV3List` still refuses a replacement while paper is open.
+- Remaining work: none for the version check. The live qualification cohort is still unset.
 - Dependency: D12.
 - Implementation location: `packages/core/src/ingest/wallets.ts`.
 - Later acceptance: two list versions exist, and a decision row names the earlier one.
@@ -131,8 +131,8 @@ Settled by Arvin on 28 November 2026. The build rule is to make the best decisio
 
 - Requirement: a pause must not delete a qualifying opportunity or a control observation.
 - Status: partial.
-- What exists: `phasec_candidate` and `entryDecision` in `risk.ts`. Candidates are not the same table as positions.
-- Remaining work: a test that a pause leaves both the candidate and the control row in place. Not known to exist as one test.
+- What exists: `phasec_candidate` and `entryDecision` in `risk.ts`. Candidates are not the same table as positions. A paused log can add a recorded-only row, so the counts are not yet the same.
+- Remaining work: a pause that leaves both the candidate count and the control count unchanged.
 - Dependency: ACC-001.
 - Implementation location: `packages/core/src/phasec/risk.ts`, `packages/core/src/db/phasec.ts`.
 - Later acceptance: after a forced pause, the candidate count and the control count are unchanged.
@@ -140,9 +140,9 @@ Settled by Arvin on 28 November 2026. The build rule is to make the best decisio
 ### STR-001. Strategy stages and scale-out
 
 - Requirement: implement only the stages and exit treatments D1 includes, and keep the others disabled without calling them complete.
-- Status: partial.
-- What exists: stages and arms in `protocol.ts` and `score.ts`. Scale-out accounting exists and `scaleOutEnabled` is off. Second wave labeling is `secondWave.ts`. Closed pull requests #30, #40, and #51 are in #60.
-- Remaining work: explicit config, precedence, and a data-readiness result for all four stages and for scale-out. An unready stage is `unavailable`, not a silent skip.
+- Status: build-complete.
+- What exists: `INCLUDED_STAGES` names the four included stages. `stageAdmission` returns `unavailable` for an unknown stage and for an unready included stage, and it does not open a position.
+- Remaining work: none for that gate. Scale-out stays off in the primary comparison.
 - Dependency: RDY-001.
 - Implementation location: `packages/core/src/phasec/`.
 - Later acceptance: an excluded stage cannot open a position, and an included stage writes a decision with the policy version.
