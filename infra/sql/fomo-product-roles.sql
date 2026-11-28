@@ -32,5 +32,13 @@ REVOKE UPDATE, DELETE, TRUNCATE ON TABLE
 
 GRANT SELECT ON TABLE
   raw_events, phasec_candidate, phasec_alert, phasec_position, phasec_execution,
-  autobuy_intent, diagnostic_spend, ingest_month
+  autobuy_intent, diagnostic_spend, ingest_month,
+  owner_service, owner_feed, owner_position, wallet_measure, wallet_movement,
+  wallet_evidence_report, wallet_shared_funding, workflow_step, completion_decision
   TO fomo_report;
+
+GRANT INSERT ON TABLE wallet_measure, wallet_movement, wallet_evidence_report, wallet_shared_funding
+  TO fomo_ingest;
+REVOKE UPDATE, DELETE, TRUNCATE ON TABLE
+  wallet_measure, wallet_movement, wallet_evidence_report, wallet_shared_funding
+  FROM fomo_ingest;

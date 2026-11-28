@@ -8,11 +8,13 @@ COPY packages/core/package.json packages/core/tsconfig.json packages/core/
 COPY apps/ingestor/package.json apps/ingestor/tsconfig.json apps/ingestor/
 COPY apps/screener/package.json apps/screener/tsconfig.json apps/screener/
 COPY apps/alerter/package.json apps/alerter/tsconfig.json apps/alerter/
+COPY apps/dashboard/package.json apps/dashboard/tsconfig.json apps/dashboard/
 RUN npm ci
 COPY packages/core/src packages/core/src
 COPY apps/ingestor/src apps/ingestor/src
 COPY apps/screener/src apps/screener/src
 COPY apps/alerter/src apps/alerter/src
+COPY apps/dashboard/src apps/dashboard/src
 COPY config config
 RUN npm run build && npm prune --omit=dev && npm cache clean --force
 

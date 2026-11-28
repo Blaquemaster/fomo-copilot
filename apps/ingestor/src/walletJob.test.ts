@@ -127,4 +127,58 @@ describe("early-buyer history retry", () => {
     });
     expect(applyWalletRefresh).not.toHaveBeenCalled();
   });
+
+  it("stores the three wallet measures from the maintenance pass", async () => {
+    const controller = new AbortController();
+    const saveOwnerWalletRecords = vi.fn(
+      async (_input: { measures: { kind: string }[] }) => undefined,
+    );
+    await runWalletMaintenance({
+      env,
+      logger: {
+        info() {},
+        error() {},
+        debug() {},
+        fatal() {},
+        trace() {},
+        warn() {},
+      } as never,
+      repo: {
+        walletJobFinishedAt: async () => null,
+        featureMonthMicros: async () => 0n,
+        nextBackfillMints: async () => [],
+        saveEarlyBuyers: async () => 0,
+        saveBackfillCheckpoint: async () => undefined,
+        recordFeatureSpend: async () => undefined,
+        requeueMarkBackfillOnce: async () => undefined,
+        earlyBuys: async () => [
+          {
+            wallet: "wallet-a",
+            mint: "mint-a",
+            side: "buy",
+            graduated: true,
+            fillPriceUsd: 1,
+          },
+        ],
+        saveOwnerWalletRecords,
+        saveHistoryMarks: async () => undefined,
+        saveScoreShadow: async () => undefined,
+        activeTrackedWallets: async () => [],
+        paperTestOpen: async () => true,
+        paperTestClosed: async () => false,
+        markWalletJob: async () => undefined,
+      } as unknown as IngestRepository,
+      signal: controller.signal,
+      sleep: async () => {
+        controller.abort();
+      },
+    });
+    expect(saveOwnerWalletRecords).toHaveBeenCalledOnce();
+    const saved = saveOwnerWalletRecords.mock.calls[0]?.[0];
+    expect(saved?.measures.map((row) => row.kind).sort()).toEqual([
+      "follower",
+      "graduation",
+      "own_result",
+    ]);
+  });
 });

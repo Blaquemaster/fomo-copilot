@@ -266,6 +266,11 @@ export {
   type ExecutionOrder,
   type KillSwitches,
 } from "./execution/book.js";
+export { readOwnerSnapshot } from "./dashboard/records.js";
+export { dashboardShouldListen, startDashboardServer } from "./dashboard/server.js";
+export { dashboardView } from "./dashboard/view.js";
+export { walletPersistencePayload } from "./ingest/walletIntelligence.js";
+export { runSimulatedWorkflow } from "./workflow/run.js";
 export { formatWeeklyReview, resolveAlertChat } from "./phasec/deliver.js";
 export {
   DEX_BATCH,
