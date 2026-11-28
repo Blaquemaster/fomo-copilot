@@ -14,4 +14,16 @@ describe("minute aggregates", () => {
     expect(bars[0]?.volume).toBe(2);
     expect(bars[1]?.volume).toBeNull();
   });
+
+  it("records an observed minute with no swap as volume zero", () => {
+    const bars = minuteAggregates({
+      mint: "mint-a",
+      from: new Date("2026-11-28T00:00:00Z"),
+      to: new Date("2026-11-28T00:01:00Z"),
+      trades: [],
+      coveredMinutes: [new Date("2026-11-28T00:00:00Z")],
+    });
+    expect(bars[0]).toMatchObject({ volume: 0, gap: false, observed: true });
+    expect(bars[1]).toMatchObject({ volume: null, gap: true, observed: false });
+  });
 });
