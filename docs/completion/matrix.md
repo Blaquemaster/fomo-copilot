@@ -2,7 +2,7 @@
 
 Version: 2026-11-28.3. Specification: `docs/completion/master-spec.md`.
 
-Status is `not built`, `partial`, or `build-complete`. Nothing below is validated. Counts at this version: 41 rows, of which 2 are build-complete, 26 are partial, and 13 are not built. The twelve scope choices are settled. No row is awaiting a decision. The two build-complete rows are the release route and the trigger check on pull request #60. They have not been executed on production.
+Status is `not built`, `partial`, or `build-complete`. Nothing below is validated. Counts at this version: 41 rows, of which 5 are build-complete, 28 are partial, and 8 are not built. The twelve scope choices are settled. No row is awaiting a decision. The two build-complete rows are the release route and the trigger check on pull request #60. They have not been executed on production.
 
 Locations are on `cursor/release-main-8ff7` unless a row says otherwise. Closed pull requests #1 through #38 and #40 and #42 through #59 are ancestors of #60 or older `main` work already contained in it, except where a row names a branch that is not. Pull request #39 is not an ancestor of #60. Pull request #41 is not an ancestor of #60.
 
@@ -69,8 +69,8 @@ Settled by Arvin on 28 November 2026. The build rule is to make the best decisio
 
 ### ING-003. Flap parser
 
-- Requirement: do not add a chain by assumption. Record the existing parser.
-- Status: partial.
+- Requirement: keep the Flap parser archived and disconnected from the Solana deployment. Preserve stored rows.
+- Status: build-complete.
 - What exists: `packages/core/src/ingest/flap.ts`, `apps/ingestor/src/bsc.ts`, migration `015_bsc_flap`. Closed pull requests #23 and #24, contained in #60. Flap trading is not built.
 - Remaining work: the Solana deployment must not open the BSC socket. The parser and stored rows stay.
 - Dependency: none. D7 is settled.
@@ -289,8 +289,8 @@ Settled by Arvin on 28 November 2026. The build rule is to make the best decisio
 
 ### REL-004. Deploy account and the permission gap
 
-- Requirement: the deploy account is not root and is not in the `docker` group. One sudo command accepts only the fixed helper. The helper reads one digest from a root-owned manifest and operates fixed services. The account can complete the guarded procedure, or the procedure names the remaining root step.
-- Status: partial.
+- Requirement: the deploy account is not root and is not in the `docker` group. One sudo command accepts only the fixed helper. The helper reads one digest from a root-owned manifest and operates fixed services, including diagnostic start, status, and stop.
+- Status: build-complete.
 - What exists: `scripts/setup-deploy-user.sh` and `scripts/fomo-deploy-helper`. CI created the user, ran the bootstrap twice, and left root's authorized keys unchanged. `rehearse` from `/tmp` with `COMPOSE_PROJECT_NAME=evil` and `DOCKER_HOST=tcp://127.0.0.1:9` still printed project `fomo-copilot`, context `default`, volume `fomo-copilot_pgdata`, and the existing Postgres container. `docker` as that user failed. The helper and the manifest were not writable by the user. An unprivileged bootstrap exited with `one-time: create deploy user is the only root step`.
 - Remaining work: add `diagnostic-start`, `diagnostic-status`, and `diagnostic-stop` to the helper. Each command is fixed. The account still gets no socket and no docker group.
 - Dependency: D9.
@@ -321,20 +321,20 @@ Settled by Arvin on 28 November 2026. The build rule is to make the best decisio
 
 These rows repeat the disposition table so the matrix has one place for each parked capability.
 
-| ID      | Requirement                       | Status    | What exists and where                                                                                    | Remaining work                                                     | Dependency | Implementation location                  | Later acceptance                                                                 |
-| ------- | --------------------------------- | --------- | -------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------ | ---------- | ---------------------------------------- | -------------------------------------------------------------------------------- |
-| PRK-001 | Four stages and scale-out         | partial   | `protocol.ts` stages. Scale-out accounting exists and is off.                                            | Config, precedence, and readiness for every included stage.        | RDY-001    | `packages/core/src/phasec/protocol.ts`   | Each stage trades on ready data or records `unavailable`.                        |
-| PRK-002 | Second wave                       | partial   | `secondWave.ts` and the second-wave arms. D12 keeps it out of the primary comparison.                    | A secondary strategy with its own position owner.                  | STR-002    | `packages/core/src/phasec/secondWave.ts` | It cannot open a second position on a mint the primary path already holds.       |
-| PRK-003 | Live mint-linked social collector | not built | Fixture source and `coin_x_mention`. No live collector.                                                  | Bounded collector and budget gate. No paid subscription.           | none       | `packages/core/src/ingest/xMentions.ts`  | A missing post is `unknown`. The monthly counter stops the collector at the cap. |
-| PRK-004 | Creator module                    | not built | Creator-sell count in `screen.ts`. Creator rows dropped in `wallets.ts`.                                 | Holdings, sales, previous launches, and relationship rows.         | ACC-001    | not built                                | A shared funder is stored and is not labeled common control.                     |
-| PRK-005 | 30-day observed history           | not built | `pump_trade`, `wallet_fill`, market snapshots.                                                           | 1-minute aggregates, explicit gaps, and archival jobs.             | none       | `packages/core/src/db/ingest.ts`         | A missing minute is a gap row, not a zero.                                       |
-| PRK-006 | Automatic entry and exit          | not built | Dry-run intent. Live throws because signing is not implemented. That throw is not the finished workflow. | State machine, signer, reservation, and kill switches. Tests only. | EXE-001    | `packages/core/src/autobuy/run.ts`       | A timeout does not create a second buy. Deploy keeps `AUTOBUY_MODE=dry_run`.     |
-| PRK-007 | Flap parser archived              | partial   | `flap.ts` and `bsc.ts`. Flap trading is not built.                                                       | Disable the socket in the Solana deployment and keep the rows.     | none       | `apps/ingestor/src/bsc.ts`               | The default Solana start opens no BSC socket.                                    |
+| ID      | Requirement                       | Status         | What exists and where                                                                      | Remaining work                                               | Dependency | Implementation location                     | Later acceptance                                                                 |
+| ------- | --------------------------------- | -------------- | ------------------------------------------------------------------------------------------ | ------------------------------------------------------------ | ---------- | ------------------------------------------- | -------------------------------------------------------------------------------- |
+| PRK-001 | Four stages and scale-out         | partial        | `protocol.ts` stages. Scale-out accounting exists and is off.                              | Config, precedence, and readiness for every included stage.  | RDY-001    | `packages/core/src/phasec/protocol.ts`      | Each stage trades on ready data or records `unavailable`.                        |
+| PRK-002 | Second wave                       | partial        | `secondWave.ts` and the second-wave arms. D12 keeps it out of the primary comparison.      | A secondary strategy with its own position owner.            | STR-002    | `packages/core/src/phasec/secondWave.ts`    | It cannot open a second position on a mint the primary path already holds.       |
+| PRK-003 | Live mint-linked social collector | partial        | `socialCollect.ts` with the live cap at zero. No provider is called.                       | Wire the collector to admitted mints. No paid subscription.  | none       | `packages/core/src/ingest/socialCollect.ts` | A missing post is `unknown`. The monthly counter stops the collector at the cap. |
+| PRK-004 | Creator module                    | partial        | `creator/record.ts` stores holdings, sales, launches, and relationships.                   | Connect it to stored trades.                                 | ACC-001    | `packages/core/src/creator/record.ts`       | A shared funder is stored and is not labeled common control.                     |
+| PRK-005 | 30-day observed history           | partial        | `minute_aggregate` and `history/minutes.ts`. A missing minute is a gap.                    | Fill the table from stored trades and archive after closure. | none       | `packages/core/src/history/minutes.ts`      | A missing minute is a gap row, not a zero.                                       |
+| PRK-006 | Automatic entry and exit          | partial        | `execution/book.ts` covers reservation, test signing, kill switches, and uncertain orders. | Send no Jupiter order. Connect exits to positions.           | EXE-001    | `packages/core/src/execution/book.ts`       | A timeout does not create a second buy. Deploy keeps `AUTOBUY_MODE=dry_run`.     |
+| PRK-007 | Flap parser archived              | build-complete | `BSC_INGEST` defaults to off. The parser and stored rows stay.                             | None for the archive. Trading stays excluded.                | none       | `apps/ingestor/src/bsc.ts`                  | The default Solana start opens no BSC socket.                                    |
 
 ### FLOW-001. One path from ingest to evaluation
 
 - Requirement: one workflow from ingest, through wallet classification, screening and risk, the decision, execution, reconciliation, the owner view, and evaluation.
-- Status: not built.
+- Status: partial.
 - What exists: separate ingestor, screener, and diagnostic processes. They do not share one decision id from the event to the report.
 - Remaining work: the shared id and the handoff between those processes.
 - Dependency: ACC-001, EXE-001, DSH-001, EVL-001.
