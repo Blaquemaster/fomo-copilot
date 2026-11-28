@@ -1,6 +1,6 @@
 # Completion matrix
 
-Version: 2026-11-28.2. Specification: `docs/completion/master-spec.md`.
+Version: 2026-11-28.3. Specification: `docs/completion/master-spec.md`.
 
 Status is `not built`, `partial`, or `build-complete`. Nothing below is validated. Counts at this version: 41 rows, of which 2 are build-complete, 26 are partial, and 13 are not built. The twelve scope choices are settled. No row is awaiting a decision. The two build-complete rows are the release route and the trigger check on pull request #60. They have not been executed on production.
 

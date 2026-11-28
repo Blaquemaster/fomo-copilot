@@ -1,6 +1,6 @@
 # FOMO Trading Copilot master specification
 
-Version: 2026-11-28.2
+Version: 2026-11-28.3
 
 This is the completion inventory. It is not a deployment, a diagnostic launch, or a claim that any feature has been validated. Production `main` is `6555907ee2a0cdf45a6b5cc7dafe92790d833a6b`. The held release branch is `cursor/release-main-8ff7` in pull request #60. Nothing in this document authorizes a merge, a publish, a server change, alerts, paper trading, signing keys, `AUTOBUY_LIVE_CONFIRMED`, or a new paid service.
 
@@ -39,8 +39,9 @@ Planning volume, before any subscription:
 
 - The admitted universe is capped at 200 mints until a measured cap replaces it.
 - A live lookup for one mint runs at most every 15 minutes, and only during a 16-hour window.
-- That is 200 mints times 64 lookups times 30 days = 384,000 lookups a month.
-- The default live cap is 0 until a provider is approved. The fixture source stays available for development and spends nothing.
+- That is 200 mints times 64 lookups times 30 days = 384,000 post reads a month.
+- The priced workload uses $0.005 per returned post read. 384,000 reads is $1,920 a month. That figure is the estimate, not a subscription.
+- The live cap stays 0. Metering is per endpoint. Responses are bounded, cached, and collected incrementally. A paid call is not made.
 - A missing or stale lookup is stored as `unknown`. It is not a zero mention count.
 
 ## History storage and API use
@@ -50,7 +51,9 @@ The aggregate is not built. The estimate is from the settled rule, not from a me
 - Cadence: one row per mint per minute.
 - Universe admission: a mint enters only when it is in the declared monitored set. The planning cap is 300 mints.
 - Thirty days at that cap is 300 times 43,200 minutes = 12,960,000 aggregate rows.
-- A minute with no observed swap is a gap. It is not a zero-volume bar.
+- Raw swap and liquidity rows stay beside the 1-minute aggregate.
+- An observed minute with no swap has volume 0 and is not a gap. A minute with no coverage is a gap and has no volume.
+- Admission stops at 300 mints. Eviction does not drop a mint with an open position or an experiment observation.
 - The rows are built from trades the Solana ingestor already stored. They are not a second full-chain scan.
 - Extra RPC is only for a recorded gap. That fill is not a new paid budget. The $25 ceiling remains the diagnostic ceiling only.
 - Experiment inputs and records stay for the run and at least 90 days after the run closes, then move to an archive table. They are not deleted.
@@ -60,7 +63,13 @@ The aggregate is not built. The estimate is from the settled rule, not from a me
 
 The cost model is not built. When it is built it records, separately, the Jupiter platform fee, network fees, tips, token-account rent and recovery, a failed transaction's cost, pool fees, and slippage. A FOMO fee is not added to a Jupiter quote. FOMO remains available only as a manual action. Each included stage records buy coverage and sell coverage. A bonding-curve coin without a sell route is `unavailable`.
 
-The order API for that path is Jupiter Ultra: `GET https://api.jup.ag/ultra/v1/order` and `POST https://api.jup.ag/ultra/v1/execute`. `quoteUrlAllowed` currently allows only `https://api.jup.ag/swap/v1/quote` and `https://api.jup.ag/swap/v1/swap`. The Ultra paths are not allowed yet. They are named here so the client does not invent a third host.
+The order API is Jupiter Swap V2, schema `swap-v2-2026-11-28`: `GET https://api.jup.ag/swap/v2/order` and `POST https://api.jup.ag/swap/v2/execute`. Raw responses are kept. Estimated cost, maximum authorized cost, and realized cost are separate. A fee already inside the output amount is not subtracted again. `quoteUrlAllowed` still allows only the quote and swap paths. Swap V2 is a separate allowlist.
+
+The primary evaluation uses Jupiter costs and the measured automated latency. FOMO fees and the 180-second delay are labeled sensitivities, not the primary result. Revised execution assumptions are versioned before any scored result. Each stage tracks buy coverage and sell coverage.
+
+Named work still ahead, and not built: full wallet classification, delayed-follower performance, and concentration with shared-funding evidence.
+
+The build order is: finish the Swap V2 contract and the helper, then the ledger and risk authorization, then the executor, then wallet and history records, then the social collector, then the dashboard and evaluation runner, then one new release artifact. Pull request #60's digest does not cover these commits.
 
 ## 1. What the complete system includes
 
