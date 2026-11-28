@@ -17,19 +17,19 @@ Solana is the product boundary stated on 28 November 2026. Additional chains do 
 
 Arvin settled these on 28 November 2026. The build rule is to choose what makes the finished system complete. None of these are awaiting a decision.
 
-| Capability | Disposition |
-| --- | --- |
+| Capability                                                           | Disposition                                                                                                                                      |
+| -------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------ |
 | Trench, near graduation, post graduation, second wave, and scale-out | Included. Each stage needs a config, a precedence order, and a data-readiness result. Second wave is secondary to the frozen primary comparison. |
-| X / social | Included as a bounded, mint-linked collector. Fixtures are for development. Missing or stale data is `unknown`. No X API is subscribed. |
-| Creator analysis | Included: holdings, sales, previous launches, and evidenced relationships. A shared funder is not common control. |
-| Trade and liquidity history | Included as 30 days of observed 1-minute aggregates for the admitted universe, with explicit gaps. Not a full chain. |
-| Automatic execution | Included for entry and exit on the Jupiter order, sign, and execute path. Production keys, funding, and real orders stay off. |
-| Flap and other chains | Excluded from the running Solana deployment. The parser is archived and disabled. Stored rows stay. |
-| Owner view | A private authenticated web dashboard. Telegram is an optional notification channel. Alerts stay held. |
-| Deploy helper | Diagnostic start, status, and stop are added. No Docker socket for the deploy account. |
-| Pull request #39 | Review and copy only the changes the build needs. Do not merge it whole. |
-| Pull request #41 | Adapt its grants into least-privilege roles for the whole product. Apply nothing to production. |
-| Primary comparison | Frozen as D12 in the matrix. Fee scenarios use the Jupiter cost model. |
+| X / social                                                           | Included as a bounded, mint-linked collector. Fixtures are for development. Missing or stale data is `unknown`. No X API is subscribed.          |
+| Creator analysis                                                     | Included: holdings, sales, previous launches, and evidenced relationships. A shared funder is not common control.                                |
+| Trade and liquidity history                                          | Included as 30 days of observed 1-minute aggregates for the admitted universe, with explicit gaps. Not a full chain.                             |
+| Automatic execution                                                  | Included for entry and exit on the Jupiter order, sign, and execute path. Production keys, funding, and real orders stay off.                    |
+| Flap and other chains                                                | Excluded from the running Solana deployment. The parser is archived and disabled. Stored rows stay.                                              |
+| Owner view                                                           | A private authenticated web dashboard. Telegram is an optional notification channel. Alerts stay held.                                           |
+| Deploy helper                                                        | Diagnostic start, status, and stop are added. No Docker socket for the deploy account.                                                           |
+| Pull request #39                                                     | Review and copy only the changes the build needs. Do not merge it whole.                                                                         |
+| Pull request #41                                                     | Adapt its grants into least-privilege roles for the whole product. Apply nothing to production.                                                  |
+| Primary comparison                                                   | Frozen as D12 in the matrix. Fee scenarios use the Jupiter cost model.                                                                           |
 
 ## Social collector cost
 
