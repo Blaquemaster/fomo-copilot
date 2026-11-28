@@ -9,6 +9,21 @@ import type { DashboardRequest } from "./view.js";
 
 const databaseUrl = process.env["PHASEC_TEST_DATABASE_URL"];
 
+/** A separate database so this migration does not lock the shared test database. */
+async function isolatedPool(baseUrl: string) {
+  const admin = createPool(baseUrl);
+  const name = "fomo_owner_dash";
+  try {
+    const existing = await admin.query("select 1 from pg_database where datname = $1", [name]);
+    if (existing.rowCount === 0) await admin.query(`create database ${name}`);
+  } finally {
+    await admin.end();
+  }
+  const url = new URL(baseUrl);
+  url.pathname = `/${name}`;
+  return createPool(url.toString());
+}
+
 describe("owner dashboard server", () => {
   it("stays stopped unless the flag is the word true", () => {
     expect(dashboardShouldListen(undefined)).toBe(false);
@@ -77,7 +92,7 @@ describe("owner dashboard server", () => {
 
 describe.skipIf(!databaseUrl)("owner dashboard records", () => {
   it("reads a simulated workflow from the database, with other services stopped", async () => {
-    const pool = createPool(databaseUrl ?? "");
+    const pool = await isolatedPool(databaseUrl ?? "");
     const token = "db-owner-token";
     try {
       await migrate(pool);
