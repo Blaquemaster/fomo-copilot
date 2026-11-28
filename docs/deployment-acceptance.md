@@ -2,7 +2,7 @@
 
 This is the only deployment plan. It is not a deployment. Nothing in this branch contacts the server, merges, or starts paper.
 
-The release is one pull request from `cursor/review-8-approval-8ff7` into `main`. Close pull requests #50, #51, #52, #53, #54, #55, #56, #57, #58, and #59 without merging them. #59 targets `cursor/release-candidate-8ff7`, not `main`. The push CI run of the merged commit records the registry reference `repository@sha256:...` in `release-digest.json` and the candidate SHA, current `main` SHA, and source tree hash in `release-handoff.json`. Use the reference whose `commit` equals that head. There is no schema-compatible fallback image. Rollback is forward-fix-only.
+The release is pull request #60, branch `cursor/release-main-8ff7`, into `main`. Later commits need their own artifact. The digest from #60 does not cover them. Close pull requests #50, #51, #52, #53, #54, #55, #56, #57, #58, and #59 without merging them. #59 targets `cursor/release-candidate-8ff7`, not `main`. The push CI run of the merged commit records the registry reference `repository@sha256:...` in `release-digest.json` and the candidate SHA, current `main` SHA, and source tree hash in `release-handoff.json`. Use the reference whose `commit` equals that head. There is no schema-compatible fallback image. Rollback is forward-fix-only.
 
 Before the merge, disable the Deploy workflow that is already on `main`:
 
@@ -64,7 +64,7 @@ CONFIRM=hold-production-deploy bash scripts/hold-deploy-workflow.sh --disable
 bash scripts/pre-merge-deploy-check.sh
 ```
 
-1. Merge the pull request from `cursor/review-8-approval-8ff7` into `main` only after that check prints `no queued or running deployment`. Then confirm the tree:
+1. Merge pull request #60 into `main` only after that check prints `no queued or running deployment`. Then confirm the tree:
 
 ```bash
 bash scripts/check-merged-tree.sh --tree THE_TREE_HASH --ref origin/main

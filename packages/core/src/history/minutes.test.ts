@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { minuteAggregates } from "./minutes.js";
+import { archiveMinutes, minuteAggregates } from "./minutes.js";
 
 describe("minute aggregates", () => {
   it("keeps a missing minute as a gap", () => {
@@ -25,5 +25,17 @@ describe("minute aggregates", () => {
     });
     expect(bars[0]).toMatchObject({ volume: 0, gap: false, observed: true });
     expect(bars[1]).toMatchObject({ volume: null, gap: true, observed: false });
+  });
+
+  it("moves closed minutes to the archive and does not delete them", () => {
+    const bars = minuteAggregates({
+      mint: "mint-a",
+      from: new Date("2026-11-28T00:00:00Z"),
+      to: new Date("2026-11-28T00:00:00Z"),
+      trades: [{ at: new Date("2026-11-28T00:00:10Z"), volume: 2 }],
+    });
+    const archived = archiveMinutes(bars, true);
+    expect(archived.active).toEqual([]);
+    expect(archived.archived).toEqual(bars);
   });
 });

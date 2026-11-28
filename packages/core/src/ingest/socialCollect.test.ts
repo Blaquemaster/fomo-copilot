@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { collectSocial } from "./socialCollect.js";
+import { collectAdmittedMints, collectSocial } from "./socialCollect.js";
 
 describe("social collector", () => {
   it("does not call a live provider when the cap is zero", () => {
@@ -31,5 +31,13 @@ describe("social collector", () => {
     });
     expect(result.observation.status).toBe("unknown");
     expect(result.observation.mentions).toBeNull();
+  });
+
+  it("collects admitted mints without calling a provider", () => {
+    const rows = collectAdmittedMints(["mint-a", "mint-b"], new Date("2026-11-28T00:00:00Z"));
+    expect(rows).toHaveLength(2);
+    expect(rows.every((row) => row.observation.source === "none")).toBe(true);
+    expect(rows.every((row) => row.readiness.state === "unavailable")).toBe(true);
+    expect(rows.every((row) => row.budget.liveUsed === 0)).toBe(true);
   });
 });
