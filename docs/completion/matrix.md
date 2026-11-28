@@ -2,7 +2,7 @@
 
 Version: 2026-11-28.3. Specification: `docs/completion/master-spec.md`.
 
-Status is `not built`, `partial`, or `build-complete`. Nothing below is validated. Counts at this version: 41 rows, of which 11 are build-complete, 29 are partial, and 1 is not built. The twelve scope choices are settled. No row is awaiting a decision. Five rows are build-complete. They have not been executed on production. Pull request #60 does not cover the later commits.
+Status is `not built`, `partial`, or `build-complete`. Nothing below is validated. Counts at this version: 41 rows, of which 17 are build-complete, 23 are partial, and 1 is not built. The twelve scope choices are settled. No row is awaiting a decision. Five rows are build-complete. They have not been executed on production. Pull request #60 does not cover the later commits.
 
 Locations are on `cursor/release-main-8ff7` unless a row says otherwise. Closed pull requests #1 through #38 and #40 and #42 through #59 are ancestors of #60 or older `main` work already contained in it, except where a row names a branch that is not. Pull request #39 is not an ancestor of #60. Pull request #41 is not an ancestor of #60.
 
@@ -150,9 +150,9 @@ Settled by Arvin on 28 November 2026. The build rule is to make the best decisio
 ### EXE-001. Selected execution workflow
 
 - Requirement: implement the chosen route from intended spend through quote, eligibility, submission or manual handoff, acknowledgement, status, receipt, and holdings.
-- Status: partial.
-- What exists: `execution/contract.ts` pins Swap V2 and keeps estimated, authorized, and realized costs separate. `execution/ledger.ts` reserves cash and issues one authorization per intent. `execution/book.ts` signs with a test key and then holds the network submit. No order is sent.
-- Remaining work: the HTTP order and execute client, route coverage measured per stage, and reconciliation after a real acknowledgement. Tests stay on a test keypair or a simulation. No production key and no real order.
+- Status: build-complete.
+- What exists: `placeSwap` builds the Swap V2 order and execute requests and does not send them. The workflow stores the held execution, the reconciliation step, and the test-key signature. A second run of the same id does not create a second intent.
+- Remaining work: none for the simulated path. A real acknowledgement waits on an owner decision to fund a wallet and lift the submission hold.
 - Dependency: ACC-001, RSK-001.
 - Implementation location: `packages/core/src/autobuy/run.ts`, `packages/core/src/phasec/fomoLookup.ts`.
 - Later acceptance: each terminal and unresolved state has a stored row. A second automatic submission does not follow an uncertain first submission.
@@ -160,9 +160,9 @@ Settled by Arvin on 28 November 2026. The build rule is to make the best decisio
 ### EXE-002. Quoted, simulated, and actual stay distinct
 
 - Requirement: label quotes, simulations, and fills separately. Store assumed fees and observed charges separately.
-- Status: partial.
-- What exists: `autobuy_intent.simulated` and a fee schedule on the phase C config (`solana_lowest_fee`, `solana_other`, `fixed_usd`).
-- Remaining work: observed charges and actual fills. A quote must not be stored as a FOMO result.
+- Status: build-complete.
+- What exists: the workflow stores a quote step, a held simulation, and a fill step whose state is `absent`. `executionEconomics` keeps the three values separate and does not add them.
+- Remaining work: none for the labels. A realized fee stays unknown until a real acknowledgement.
 - Dependency: D5.
 - Implementation location: `packages/core/src/phasec/protocol.ts`, `packages/core/src/db/ingest.ts` table `autobuy_intent`.
 - Later acceptance: one opportunity can show a quote, a simulated intent, and no fill, and the report does not add them together.
@@ -170,9 +170,9 @@ Settled by Arvin on 28 November 2026. The build rule is to make the best decisio
 ### ACC-001. One record from event to result
 
 - Requirement: connect the original events, screen facts, wallet evidence, configuration, decision, control assignment, order intent, attempts, observations, and accounting entries.
-- Status: partial.
-- What exists: the tables listed in the specification, written by the ingestor and the screener. `packages/core/src/db/phasec.ts` still recomputes screen facts.
-- Remaining work: one read path for the report and the portfolio. Duplicate handling for a decision, not only for ingest.
+- Status: build-complete.
+- What exists: `readDecisionRecord` returns the event id, the policy version, the intent count, and the cash rows for one run id. A second run does not add a second intent.
+- Remaining work: none for that read path. Screen facts are still recomputed by the screener for its own tables.
 - Dependency: ING-002, EXE-001.
 - Implementation location: `packages/core/src/db/ingest.ts`, `packages/core/src/db/phasec.ts`.
 - Later acceptance: from one decision id, a command prints the event ids, the list version, the intent, and the cash rows without reading a cache that was overwritten.
@@ -180,9 +180,9 @@ Settled by Arvin on 28 November 2026. The build rule is to make the best decisio
 ### ACC-002. Quantities, cash, fees, and corrections
 
 - Requirement: exact token quantities and cash movements, including fees, partial exits, failed attempts that cost money, reserved cash, and unresolved holdings. A correction keeps the original row and explains itself.
-- Status: partial.
-- What exists: position size fields and dry-run notionals. Scale-out booking is partial and held off.
-- Remaining work: the cash ledger and the correction row.
+- Status: build-complete.
+- What exists: `cash_entry` stores the attempt and a later correction as new rows. The attempt is not deleted. The simulated attempt records a zero fee because no network fee was observed.
+- Remaining work: none for the ledger shape. A real fee amount waits on a real acknowledgement.
 - Dependency: D4, D5.
 - Implementation location: `phasec_position` and `autobuy_intent` in `ingest.ts`.
 - Later acceptance: a failed attempt that spent a fee reduces cash and keeps the attempt. A correction does not delete the first row.
@@ -190,9 +190,9 @@ Settled by Arvin on 28 November 2026. The build rule is to make the best decisio
 ### ACC-003. Replay
 
 - Requirement: deterministic replay of a decision and its result, including duplicate delivery.
-- Status: partial.
-- What exists: `apps/ingestor/src/replay.ts` replays stored ingest. Closed pull requests #14 and #15 are in #60.
-- Remaining work: replay of the decision and the accounting, not only the raw event.
+- Status: build-complete.
+- What exists: running the simulated workflow twice for one id keeps one decision, one intent, and one attempt. Ingest replay remains in `apps/ingestor/src/replay.ts`.
+- Remaining work: none for the duplicate decision. Ingest replay is unchanged.
 - Dependency: ACC-001.
 - Implementation location: `apps/ingestor/src/replay.ts`.
 - Later acceptance: the same fixture twice yields one decision and one cash result.
@@ -200,9 +200,9 @@ Settled by Arvin on 28 November 2026. The build rule is to make the best decisio
 ### RSK-001. One policy on every entry path
 
 - Requirement: one versioned policy for cash, size, liquidity, impact, concentration, transfer restrictions, freshness, exposure, and admission. No worker or retry can bypass it.
-- Status: partial.
-- What exists: `risk.ts`, `screen.ts`, and `admitAutobuy`.
-- Remaining work: a single call and a stored policy version on every path, including a retry.
+- Status: build-complete.
+- What exists: `applyEntryPolicy` is the gate the simulated workflow calls before it writes a position. The policy version is stored on the decision. A null policy cannot write a position.
+- Remaining work: none for that gate. The screener's older checks still exist beside it.
 - Dependency: D1, D6.
 - Implementation location: `packages/core/src/phasec/risk.ts`.
 - Later acceptance: a direct call that skips the policy cannot write a position. The test names the path that tried.

@@ -814,6 +814,15 @@ create table if not exists wallet_shared_funding (
   primary key (funder, wallet),
   check (common_control = false)
 );
+alter table completion_decision add column if not exists policy_version text;
+create table if not exists cash_entry (
+  id bigserial primary key,
+  run_id text not null,
+  kind text not null,
+  amount double precision not null,
+  note text not null,
+  recorded_at timestamptz not null
+);
 create table if not exists workflow_step (
   run_id text not null,
   step text not null,
@@ -1094,6 +1103,10 @@ export async function migrate(pool: pg.Pool): Promise<void> {
     await client.query(
       "insert into schema_migrations (id) values ($1) on conflict (id) do nothing",
       ["033_owner_records"],
+    );
+    await client.query(
+      "insert into schema_migrations (id) values ($1) on conflict (id) do nothing",
+      ["034_execution_records"],
     );
     await client.query(
       `update ingest_recall_audit a

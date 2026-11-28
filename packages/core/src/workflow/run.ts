@@ -4,7 +4,10 @@ import { IngestRepository } from "../db/ingest.js";
 import { ExecutionBook, createTestSigner } from "../execution/book.js";
 import { EXECUTION_ASSUMPTIONS, evaluationRunner } from "../evaluation/primary.js";
 import { PUMP_PROGRAM_ID } from "../ingest/programs.js";
+import { executionEconomics } from "../execution/economics.js";
+import { placeSwap } from "../execution/swapClient.js";
 import { admitOne } from "../phasec/admission.js";
+import { applyEntryPolicy, positionWriteAllowed } from "../phasec/policy.js";
 import { sizedFromRoute } from "../records/readiness.js";
 
 export interface WorkflowResult {
@@ -56,12 +59,22 @@ export async function runSimulatedWorkflow(
     "backfill",
   );
   const eventId = inserted ? `${input.signature}:0` : `${input.signature}:0`;
-  const size = sizedFromRoute({
-    route: input.buy === "available" && input.sell === "available" ? "available" : "unavailable",
+  const route =
+    input.buy === "available" && input.sell === "available" ? "available" : "unavailable";
+  const policy = applyEntryPolicy({
     amount: input.amount,
+    bankroll: 20,
+    exitReserve: 5,
+    route,
+    liquidityUsd: route === "available" ? 1000 : null,
+    fresh: true,
   });
+  const allowed = positionWriteAllowed(policy);
+  const size = sizedFromRoute({ route, amount: input.amount });
+  const placed = placeSwap({ mint: input.mint, amount: input.amount });
+  const economics = executionEconomics({ estimatedFee: null });
   const admission =
-    size.state === "ready"
+    allowed.written && size.state === "ready"
       ? admitOne({
           signals: [
             { mint: input.mint, stage: "post_graduation", owner: "primary", amount: input.amount },
@@ -118,6 +131,13 @@ export async function runSimulatedWorkflow(
         detail: admission?.rejected[0]?.reason ?? "none",
       },
       { step: "execution", state: executionState, detail: order?.reason ?? "held" },
+      {
+        step: "quote",
+        state: "estimated",
+        detail: economics.quote.estimatedFee === null ? "unknown" : "estimated",
+      },
+      { step: "simulation", state: economics.simulation.state, detail: placed.reason },
+      { step: "fill", state: "absent", detail: "no_fill" },
       { step: "reconciliation", state: "held", detail: "submission_boundary_held" },
       { step: "ledger", state: order ? "authorized" : "unavailable", detail: input.runId },
       {
@@ -154,10 +174,28 @@ export async function runSimulatedWorkflow(
        on conflict (id) do update set readiness = excluded.readiness, recorded_at = excluded.recorded_at`,
       [input.runId, input.mint, eventId, "unset", order?.id ?? null, decision, input.now],
     );
+    await client.query(`update completion_decision set policy_version = $2 where id = $1`, [
+      input.runId,
+      policy.version,
+    ]);
+    await client.query(
+      `insert into cash_entry (run_id, kind, amount, note, recorded_at)
+       select $1, 'fee', 0, 'fee unknown until a real acknowledgement', $2
+       where not exists (select 1 from cash_entry where run_id = $1 and kind = 'fee')`,
+      [input.runId, input.now],
+    );
+    const intentReason = `${input.runId}:${order?.reason ?? "not_admitted"}`;
     await client.query(
       `insert into autobuy_intent (kind, mint, arm, stage, size_usd, quote_price, reason, simulated, created_at)
-       values ('buy',$1,'primary','post_graduation',$2,null,$3,'simulated',$4)`,
-      [input.mint, input.amount, order?.reason ?? "not_admitted", input.now],
+       select 'buy',$1,'primary','post_graduation',$2,null,$3,'simulated',$4
+       where not exists (select 1 from autobuy_intent where reason = $3)`,
+      [input.mint, input.amount, intentReason, input.now],
+    );
+    await client.query(
+      `insert into cash_entry (run_id, kind, amount, note, recorded_at)
+       select $1, 'attempt', 0, 'submission held; no network fee', $2
+       where not exists (select 1 from cash_entry where run_id = $1 and kind = 'attempt')`,
+      [input.runId, input.now],
     );
     await client.query("commit");
   } catch (error) {
@@ -173,5 +211,54 @@ export async function runSimulatedWorkflow(
     decision,
     executionState,
     evaluationScored: evaluation.scored,
+  };
+}
+
+export async function recordCashCorrection(
+  pool: pg.Pool,
+  input: { runId: string; amount: number; note: string; at: Date },
+): Promise<void> {
+  await pool.query(
+    `insert into cash_entry (run_id, kind, amount, note, recorded_at) values ($1,'correction',$2,$3,$4)`,
+    [input.runId, input.amount, input.note, input.at],
+  );
+}
+
+export async function readDecisionRecord(
+  pool: pg.Pool,
+  runId: string,
+): Promise<{
+  eventId: string | null;
+  policyVersion: string | null;
+  intents: number;
+  attempts: number;
+  corrections: number;
+  fill: string | null;
+}> {
+  const decision = await pool.query<{ event_ids: string; policy_version: string | null }>(
+    "select event_ids, policy_version from completion_decision where id = $1",
+    [runId],
+  );
+  const intents = await pool.query<{ count: string }>(
+    "select count(*)::text as count from autobuy_intent where reason like $1",
+    [`${runId}:%`],
+  );
+  const cash = await pool.query<{ kind: string; count: string }>(
+    "select kind, count(*)::text as count from cash_entry where run_id = $1 group by kind",
+    [runId],
+  );
+  const fill = await pool.query<{ state: string }>(
+    "select state from workflow_step where run_id = $1 and step = 'fill'",
+    [runId],
+  );
+  const countFor = (kind: string) =>
+    Number(cash.rows.find((row) => row.kind === kind)?.count ?? "0");
+  return {
+    eventId: decision.rows[0]?.event_ids ?? null,
+    policyVersion: decision.rows[0]?.policy_version ?? null,
+    intents: Number(intents.rows[0]?.count ?? "0"),
+    attempts: countFor("attempt"),
+    corrections: countFor("correction"),
+    fill: fill.rows[0]?.state ?? null,
   };
 }
