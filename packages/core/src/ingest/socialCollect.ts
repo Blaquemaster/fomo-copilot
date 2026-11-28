@@ -63,3 +63,15 @@ export function collectSocial(input: {
     { ...input.budget, liveUsed: input.budget.liveUsed + 1 },
   );
 }
+
+/** One lookup per admitted mint. The live cap stays zero, so no provider is called. */
+export function collectAdmittedMints(mints: readonly string[], now: Date) {
+  return mints.map((mint) =>
+    collectSocial({
+      mint,
+      budget: { liveCap: 0, liveUsed: 0 },
+      now,
+      staleAfterMs: 15 * 60 * 1000,
+    }),
+  );
+}

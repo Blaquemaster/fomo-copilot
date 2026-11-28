@@ -189,6 +189,9 @@ describe("phase C", () => {
     expect(screenCoin({ ...plain, quoteError: true }, rules).verdict).toBe("watch");
     expect(screenCoin({ ...plain, mintAuthorityActive: null }, rules).verdict).toBe("watch");
     expect(screenCoin({ ...plain, liquidityUsd: null }, rules).verdict).toBe("watch");
+    const missingHolders = screenCoin({ ...plain, top10HoldersPct: null }, rules);
+    expect(missingHolders.verdict).toBe("watch");
+    expect(missingHolders.hard.join(" ")).not.toContain("holders");
     expect(screenCoin({ ...plain, sniperBundlePct: null }, rules).verdict).toBe("pass");
     expect(
       entryDecision({

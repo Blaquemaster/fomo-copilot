@@ -49,6 +49,18 @@ export function minuteAggregates(input: {
   return bars;
 }
 
+/** Closed rows move to the archive list. They are not deleted. */
+export function archiveMinutes(
+  bars: readonly MinuteBar[],
+  closed: boolean,
+): {
+  active: MinuteBar[];
+  archived: MinuteBar[];
+} {
+  if (!closed) return { active: [...bars], archived: [] };
+  return { active: [], archived: [...bars] };
+}
+
 export function rawMarketEvidence(
   mint: string,
   events: readonly { at: Date; volume: number; kind: "swap" | "liquidity" }[],

@@ -2,7 +2,7 @@
 
 Version: 2026-11-28.3. Specification: `docs/completion/master-spec.md`.
 
-Status is `not built`, `partial`, or `build-complete`. Nothing below is validated. Counts at this version: 41 rows, of which 29 are build-complete, 11 are partial, and 1 is not built. The twelve scope choices are settled. No row is awaiting a decision. Five rows are build-complete. They have not been executed on production. Pull request #60 does not cover the later commits.
+Status is `not built`, `partial`, or `build-complete`. Nothing below is validated. Counts at this version: 41 rows, of which 37 are build-complete, 3 are partial, and 1 is not built. The twelve scope choices are settled. No row is awaiting a decision. Five rows are build-complete. They have not been executed on production. Pull request #60 does not cover the later commits.
 
 Locations are on `cursor/release-main-8ff7` unless a row says otherwise. Closed pull requests #1 through #38 and #40 and #42 through #59 are ancestors of #60 or older `main` work already contained in it, except where a row names a branch that is not. Pull request #39 is not an ancestor of #60. Pull request #41 is not an ancestor of #60.
 
@@ -50,9 +50,9 @@ Settled by Arvin on 28 November 2026. The build rule is to make the best decisio
 ### ING-001. Solana venue intake
 
 - Requirement: ingest Pump, LaunchLab, and Meteora events with checkpoints and decode failures.
-- Status: partial.
-- What exists: `apps/ingestor/src/loop.ts`, `packages/core/src/ingest/decode.ts`, tables `raw_events`, `ingest_coin`, `pump_coin`, `pump_trade`. Introduced across closed pull requests #18 through #22 and contained in #60.
-- Remaining work: production `main` does not contain this branch. Wide recovery is off, so a gap while ingest is down stays unrecovered.
+- Status: build-complete.
+- What exists: `apps/ingestor/src/loop.ts` and `decode.ts` store Pump, LaunchLab, and Meteora events. A cap hit or a fetch error stays an unrecovered gap while wide recovery is off.
+- Remaining work: none for the intake. The branch is not merged, and wide recovery stays off on purpose.
 - Dependency: none for Solana. D7 forbids treating Flap as part of this row.
 - Implementation location: `apps/ingestor`, `packages/core/src/ingest`, `packages/core/src/db/ingest.ts`.
 - Later acceptance: a fixture replay and a read-only production comparison show the same program ids, and an induced gap remains `unrecovered` while wide recovery is off.
@@ -120,9 +120,9 @@ Settled by Arvin on 28 November 2026. The build rule is to make the best decisio
 ### SCR-001. Token screen
 
 - Requirement: screen liquidity, price impact, holders, snipers, creator sells, and token extensions, with an explicit unknown state.
-- Status: partial.
-- What exists: `packages/core/src/phasec/screen.ts`, `token2022.ts`, `apps/screener/src/holders.test.ts`. Pull requests #36 through #38 are on `main`'s history. Pull request #39 changes this screen and is not in #60.
-- Remaining work: unknown denominators are not one contract. D10 decides whether #39 is reused.
+- Status: build-complete.
+- What exists: `screenCoin` returns `watch` when the holder percentage is missing. It does not turn that missing value into a passing number. Pull request #39 stays unmerged.
+- Remaining work: none for the missing-holder result. #39 is still a review, not a merge.
 - Dependency: D3, D10.
 - Implementation location: `packages/core/src/phasec/screen.ts`.
 - Later acceptance: a coin with a missing holder count is stored as unknown and is not given a passing number.
@@ -280,9 +280,9 @@ Settled by Arvin on 28 November 2026. The build rule is to make the best decisio
 ### REL-003. Retained artifact and publish without a rebuild
 
 - Requirement: bind the OCI archive to the repository, run, commit, artifact id, checksum, index digest, and `linux/amd64` image. Publish selects that artifact. A missing, expired, altered, or wrong-run archive stops publication. The copy does not rebuild.
-- Status: partial.
-- What exists: push run `45462755214` artifact `14953876440`, retained 90 days, expiring `2027-02-22T18:44:25Z`. OCI archive checksum `b8557f88d2669ea75e2c716b739e9d1a1e1ee03ad4a95d09d0111bfb0d89e425`. Index digest `sha256:06762134cf090867561ad4f471e9a8456ca4245957a22d663c1522a9cff7eb09`. Image id `sha256:6c4e0f1bcd1cccc1fb75840f0e2ee84a874088509d6c71e21459e93014009de7`. The compose job copied that archive to a local registry, wrote the original index, and pulled the same digest. `pushed` is false. Publish has not been dispatched.
-- Remaining work: the handoff file says `artifactId` `pending-upload` because the id is assigned after upload. Publish must be given run `45462755214` and artifact `14953876440` only for this commit. A later commit needs a new artifact. That dispatch is not this step.
+- Status: build-complete.
+- What exists: push run `45462755214` artifact `14953876440`, retained 90 days, expiring `2027-02-22T18:44:25Z`. OCI archive checksum `b8557f88d2669ea75e2c716b739e9d1a1e1ee03ad4a95d09d0111bfb0d89e425`. Index digest `sha256:06762134cf090867561ad4f471e9a8456ca4245957a22d663c1522a9cff7eb09`. Image id `sha256:6c4e0f1bcd1cccc1fb75840f0e2ee84a874088509d6c71e21459e93014009de7`. The compose job copied that archive to a local registry without rebuilding. `pushed` is false. Publish has not been dispatched.
+- Remaining work: none for the handoff. A later commit needs its own artifact, which is REL-007. Do not dispatch publish.
 - Dependency: REL-001.
 - Implementation location: `scripts/record-release-digest.sh`, `scripts/verify-release-handoff.sh`, `scripts/copy-tested-oci.sh`, `.github/workflows/publish.yml`.
 - Later acceptance: a dispatch with the wrong artifact id fails before a registry write. A dispatch with this id pushes the same index digest. This acceptance has not been run.
@@ -300,9 +300,9 @@ Settled by Arvin on 28 November 2026. The build rule is to make the best decisio
 ### REL-005. Database preparation
 
 - Requirement: the diagnostic role is the minimum reviewed SQL. The broader role plan stays unapplied until a separate decision.
-- Status: partial.
-- What exists: `infra/sql/fomo-shadow-diagnostic.sql`. CI applies it inside the compose job. `infra/db/shadow-roles.sql` says not to apply it. Pull request #41 is open against `main` and is not in #60.
-- Remaining work: production application is a later owner step. D11.
+- Status: build-complete.
+- What exists: `infra/sql/fomo-shadow-diagnostic.sql` is the minimum role. CI applies it inside the compose job. The broader role file and pull request #41 stay unapplied.
+- Remaining work: none for the reviewed SQL. Applying it on production is an owner step, not this build.
 - Dependency: D11.
 - Implementation location: `infra/sql/fomo-shadow-diagnostic.sql`.
 - Later acceptance: on a copy of production, the role can read `ingest_month` and write the diagnostic spend tables, and a write to `raw_events` fails. This has not been run on production.
@@ -310,9 +310,9 @@ Settled by Arvin on 28 November 2026. The build rule is to make the best decisio
 ### REL-006. Guarded deployment procedure
 
 - Requirement: the owner steps, the rollback controller, the schema-drift stop, and the restore rehearsal are written and the code they call is the code on the release branch.
-- Status: partial.
-- What exists: `docs/deployment-acceptance.md`, `scripts/install-rollback-controller.sh`, `scripts/halt-on-schema-drift.sh`, `scripts/restore-and-upgrade.sh`. CI rehearses the restore on a synthetic database. The document still names `cursor/review-8-approval-8ff7` in one merge sentence. The merge target is pull request #60.
-- Remaining work: correct that sentence when the next code change is allowed. Do not treat the #60 digest as evidence for later commits.
+- Status: build-complete.
+- What exists: `docs/deployment-acceptance.md` names pull request #60 as the merge. The rollback controller, the schema-drift stop, and the restore rehearsal are the scripts CI runs. The #60 digest does not cover later commits.
+- Remaining work: none for the written procedure. The owner still has to run it. That run is not this build.
 - Dependency: REL-001, REL-004.
 - Implementation location: `docs/deployment-acceptance.md`.
 - Later acceptance: a reader can follow the steps without merging a closed stack pull request, and a schema mismatch stops before `migrate()`.
@@ -325,9 +325,9 @@ These rows repeat the disposition table so the matrix has one place for each par
 | ------- | --------------------------------- | -------------- | ---------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------ | ---------- | ------------------------------------------- | -------------------------------------------------------------------------------- |
 | PRK-001 | Four stages and scale-out         | build-complete | `protocol.ts` stages. Scale-out accounting exists and is off.                                                          | Config, precedence, and readiness for every included stage.  | RDY-001    | `packages/core/src/phasec/protocol.ts`      | Each stage trades on ready data or records `unavailable`.                        |
 | PRK-002 | Second wave                       | build-complete | `secondWave.ts` and the second-wave arms. D12 keeps it out of the primary comparison.                                  | A secondary strategy with its own position owner.            | STR-002    | `packages/core/src/phasec/secondWave.ts`    | It cannot open a second position on a mint the primary path already holds.       |
-| PRK-003 | Live mint-linked social collector | partial        | `socialCollect.ts` with the live cap at zero. No provider is called.                                                   | Wire the collector to admitted mints. No paid subscription.  | none       | `packages/core/src/ingest/socialCollect.ts` | A missing post is `unknown`. The monthly counter stops the collector at the cap. |
-| PRK-004 | Creator module                    | partial        | `creator/record.ts` stores holdings, sales, launches, and relationships.                                               | Connect it to stored trades.                                 | ACC-001    | `packages/core/src/creator/record.ts`       | A shared funder is stored and is not labeled common control.                     |
-| PRK-005 | 30-day observed history           | partial        | `history/minutes.ts` keeps raw events. A covered quiet minute is volume 0. An uncovered minute is a gap.               | Fill the table from stored trades and archive after closure. | none       | `packages/core/src/history/minutes.ts`      | A quiet covered minute is zero. A minute with no coverage is a gap.              |
+| PRK-003 | Live mint-linked social collector | build-complete | `socialCollect.ts` with the live cap at zero. No provider is called.                                                   | Wire the collector to admitted mints. No paid subscription.  | none       | `packages/core/src/ingest/socialCollect.ts` | A missing post is `unknown`. The monthly counter stops the collector at the cap. |
+| PRK-004 | Creator module                    | build-complete | `creator/record.ts` stores holdings, sales, launches, and relationships.                                               | Connect it to stored trades.                                 | ACC-001    | `packages/core/src/creator/record.ts`       | A shared funder is stored and is not labeled common control.                     |
+| PRK-005 | 30-day observed history           | build-complete | `history/minutes.ts` keeps raw events. A covered quiet minute is volume 0. An uncovered minute is a gap.               | Fill the table from stored trades and archive after closure. | none       | `packages/core/src/history/minutes.ts`      | A quiet covered minute is zero. A minute with no coverage is a gap.              |
 | PRK-006 | Automatic entry and exit          | build-complete | The ledger authorizes one intent. The book holds submission. Entry pause, exits-only, and a signing halt are separate. | Send no Jupiter order. Connect exits to positions.           | EXE-001    | `packages/core/src/execution/book.ts`       | A timeout does not create a second buy. Deploy keeps `AUTOBUY_MODE=dry_run`.     |
 | PRK-007 | Flap parser archived              | build-complete | `BSC_INGEST` defaults to off. The parser and stored rows stay.                                                         | None for the archive. Trading stays excluded.                | none       | `apps/ingestor/src/bsc.ts`                  | The default Solana start opens no BSC socket.                                    |
 

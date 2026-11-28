@@ -1,9 +1,12 @@
 import type pg from "pg";
 
+import { creatorRecord } from "../creator/record.js";
 import { IngestRepository } from "../db/ingest.js";
 import { ExecutionBook, createTestSigner } from "../execution/book.js";
 import { EXECUTION_ASSUMPTIONS, evaluationRunner } from "../evaluation/primary.js";
+import { archiveMinutes, minuteAggregates } from "../history/minutes.js";
 import { PUMP_PROGRAM_ID } from "../ingest/programs.js";
+import { collectAdmittedMints } from "../ingest/socialCollect.js";
 import { executionEconomics } from "../execution/economics.js";
 import { placeSwap } from "../execution/swapClient.js";
 import { admitOne } from "../phasec/admission.js";
@@ -233,6 +236,43 @@ export async function runSimulatedWorkflow(
        where not exists (select 1 from cash_entry where run_id = $1 and kind = 'attempt')`,
       [input.runId, input.now],
     );
+    const social = collectAdmittedMints([input.mint], input.now);
+    for (const row of social) {
+      await client.query(
+        `insert into social_observation (mint, observed_at, status, mentions)
+         values ($1,$2,$3,$4)
+         on conflict (mint, observed_at) do nothing`,
+        [row.observation.mint, input.now, row.observation.status, row.observation.mentions],
+      );
+    }
+    const creator = creatorRecord({
+      creator: input.wallet,
+      holdings: [input.mint],
+      sales: [],
+      launches: [input.mint],
+    });
+    await client.query(
+      `insert into creator_event (creator, kind, mint, detail, recorded_at) values ($1,'launch',$2,$3,$4)`,
+      [creator.creator, input.mint, "commonControl=false", input.now],
+    );
+    const bars = archiveMinutes(
+      minuteAggregates({
+        mint: input.mint,
+        from: input.now,
+        to: input.now,
+        trades: [],
+        coveredMinutes: [input.now],
+      }),
+      false,
+    );
+    for (const bar of bars.active) {
+      await client.query(
+        `insert into minute_aggregate (mint, minute, volume, gap)
+         values ($1,$2,$3,$4)
+         on conflict (mint, minute) do update set volume = excluded.volume, gap = excluded.gap`,
+        [bar.mint, bar.minute, bar.volume, bar.gap],
+      );
+    }
     await client.query("commit");
   } catch (error) {
     await client.query("rollback");
