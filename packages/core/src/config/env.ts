@@ -196,6 +196,8 @@ export const envSchema = z.object({
   AUTOBUY_MODE: z.enum(["off", "dry_run", "live"]).optional(),
   /** Must be the exact word yes, and a signer must exist. Neither is configured here. */
   AUTOBUY_LIVE_CONFIRMED: z.literal("yes").optional(),
+  /** Simulation only. Unset does not run the execution book. */
+  EXECUTION_SIMULATION: z.enum(["on", "off"]).optional(),
   AUTOBUY_KILL: z.enum(["off", "on"]).optional(),
   AUTOBUY_MAX_TRADE_USD: z.coerce.number().positive().max(1_000_000_000).optional(),
   AUTOBUY_DAILY_USD_CAP: z.coerce.number().positive().max(1_000_000_000).optional(),

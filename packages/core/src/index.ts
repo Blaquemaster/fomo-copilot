@@ -260,6 +260,7 @@ export {
   type RouteCoverage,
   type SwapV2Exchange,
 } from "./execution/contract.js";
+export { ExecutionBook, createTestSigner, type ExecutionOrder, type KillSwitches } from "./execution/book.js";
 export { formatWeeklyReview, resolveAlertChat } from "./phasec/deliver.js";
 export {
   DEX_BATCH,
