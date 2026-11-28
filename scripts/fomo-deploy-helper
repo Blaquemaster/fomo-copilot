@@ -39,7 +39,7 @@ fi
 
 command=$1
 case "$command" in
-  rehearse | backup | promote | install-rollback | preflight | report) ;;
+  rehearse | backup | promote | install-rollback | preflight | report | diagnostic-status | diagnostic-start | diagnostic-stop | migrate) ;;
   *) reject "command is not one of the privileged operations" ;;
 esac
 
@@ -78,7 +78,8 @@ echo "ingestor_service=$ingestor_service"
 echo "postgres_container=$postgres_present"
 echo "postgres_volume_present=$volume_present"
 echo "manifest_digest=$manifest_digest"
-echo "privileged_operations=rehearse backup promote install-rollback preflight report"
+echo "privileged_operations=rehearse backup promote install-rollback preflight report diagnostic-status diagnostic-start diagnostic-stop migrate"
+diagnostic_name=fomo-copilot-diagnostic
 
 case "$command" in
   rehearse)
@@ -137,5 +138,64 @@ EOF
       --file "$compose_file" \
       --approved-image "$manifest_digest" \
       --require-image
+    ;;
+  diagnostic-status)
+    if docker ps --filter "name=^/${diagnostic_name}$" --format '{{.Names}}' | grep -qx "$diagnostic_name"; then
+      echo "diagnostic_container=present"
+    else
+      echo "diagnostic_container=absent"
+    fi
+    ;;
+  diagnostic-start)
+    [[ "$postgres_present" == "present" && "$volume_present" == "yes" ]] || reject "the fixed postgres container or volume is not the existing one"
+    if docker ps --filter "name=^/${diagnostic_name}$" --format '{{.Names}}' | grep -qx "$diagnostic_name"; then
+      reject "diagnostic is already running"
+    fi
+    root_owned "$env_file"
+    ref="ghcr.io/blaquemaster/fomo-copilot/ingestor@${manifest_digest}"
+    unset AUTOBUY_LIVE_CONFIRMED SIGNING_KEY WALLET_PRIVATE_KEY
+    docker pull "$ref"
+    docker rm -f "$diagnostic_name" >/dev/null 2>&1 || true
+    docker run -d --name "$diagnostic_name" \
+      --network fomo-copilot_internal \
+      --label com.docker.compose.project=fomo-copilot \
+      --label com.docker.compose.service=diagnostic \
+      --label fomo.runtime=diagnostic \
+      --env-file "$env_file" \
+      -e AUTOBUY_MODE=dry_run \
+      -e BSC_INGEST=off \
+      --entrypoint node \
+      "$ref" \
+      apps/ingestor/dist/diagnostic.js
+    echo "diagnostic started ${ref}"
+    ;;
+  diagnostic-stop)
+    if docker ps -a --filter "name=^/${diagnostic_name}$" --format '{{.Names}}' | grep -qx "$diagnostic_name"; then
+      docker stop "$diagnostic_name" >/dev/null
+      docker rm "$diagnostic_name" >/dev/null
+      echo "diagnostic stopped"
+    else
+      echo "diagnostic_container=absent"
+    fi
+    ;;
+  migrate)
+    [[ "$postgres_present" == "present" && "$volume_present" == "yes" ]] || reject "the fixed postgres container or volume is not the existing one"
+    root_owned "$env_file"
+    ref="ghcr.io/blaquemaster/fomo-copilot/ingestor@${manifest_digest}"
+    unset AUTOBUY_LIVE_CONFIRMED SIGNING_KEY WALLET_PRIVATE_KEY
+    docker pull "$ref"
+    docker rm -f fomo-copilot-migrate >/dev/null 2>&1 || true
+    docker run --rm --name fomo-copilot-migrate \
+      --network fomo-copilot_internal \
+      --label com.docker.compose.project=fomo-copilot \
+      --label com.docker.compose.service=migrate \
+      --label fomo.runtime=migrate \
+      --env-file "$env_file" \
+      -e AUTOBUY_MODE=dry_run \
+      -e BSC_INGEST=off \
+      --entrypoint node \
+      "$ref" \
+      apps/ingestor/dist/migrate.js
+    echo "migrate finished ${ref}"
     ;;
 esac

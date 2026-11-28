@@ -87,6 +87,10 @@ export function enrichRetryDelayMs(attempt: number): number | null {
  * compute units a month; a create is one eth_call (26 CU) and a recall is
  * one eth_getLogs (60 CU).
  */
+export function bscIngestEnabled(env: { BSC_INGEST?: string }): boolean {
+  return env.BSC_INGEST === "on";
+}
+
 export async function runBscIngest(input: {
   env: Env;
   repo: IngestRepository;
@@ -97,7 +101,7 @@ export async function runBscIngest(input: {
     sleep?: (ms: number) => Promise<void>;
   };
 }): Promise<void> {
-  if (!input.env.BSC_WSS_URL) return;
+  if (!bscIngestEnabled(input.env) || !input.env.BSC_WSS_URL) return;
   let attempt = 1;
   let connected = false;
   const auditClock = { at: 0 };

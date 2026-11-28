@@ -243,6 +243,23 @@ export {
   type Signer,
 } from "./autobuy/run.js";
 export { lookupTradableInFomo } from "./phasec/fomoLookup.js";
+export {
+  JUPITER_EXECUTE_URL,
+  JUPITER_ORDER_URL,
+  JUPITER_SWAP_V2_SCHEMA,
+  emptyCost,
+  emptyCostStages,
+  maySubmitToNetwork,
+  realizedWithoutDoubleCount,
+  replacementAllowed,
+  reviewInstructions,
+  swapV2UrlAllowed,
+  type CostStages,
+  type ExecutionCost,
+  type ExecutionState,
+  type RouteCoverage,
+  type SwapV2Exchange,
+} from "./execution/contract.js";
 export { formatWeeklyReview, resolveAlertChat } from "./phasec/deliver.js";
 export {
   DEX_BATCH,
