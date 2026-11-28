@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import { IngestRepository, createPool, migrate } from "../db/ingest.js";
 import { classifyMovement } from "../ingest/walletIntelligence.js";
-import { runSimulatedWorkflow } from "../workflow/run.js";
+import { readDecisionRecord, recordCashCorrection, runSimulatedWorkflow } from "../workflow/run.js";
 import { readOwnerSnapshot } from "./records.js";
 import { dashboardShouldListen, startDashboardServer } from "./server.js";
 import type { DashboardRequest } from "./view.js";
@@ -138,6 +138,31 @@ describe.skipIf(!databaseUrl)("owner dashboard records", () => {
         expect(JSON.stringify(body)).not.toContain(token);
         expect(run.executionState).toBe("authorized");
         expect(run.decision).toBe("ready");
+        await runSimulatedWorkflow(pool, {
+          runId: run.runId,
+          mint: run.mint,
+          signature: `sig-${now.getTime()}`,
+          wallet: "wallet-a",
+          amount: 5,
+          now,
+          releaseSha: "release-sha",
+          buy: "available",
+          sell: "available",
+          jupiterNet: null,
+        });
+        await recordCashCorrection(pool, {
+          runId: run.runId,
+          amount: -0.01,
+          note: "fee observed later",
+          at: now,
+        });
+        const record = await readDecisionRecord(pool, run.runId);
+        expect(record.eventId).toContain("sig-");
+        expect(record.policyVersion).toBe("2026-11-28.3");
+        expect(record.intents).toBe(1);
+        expect(record.attempts).toBe(1);
+        expect(record.corrections).toBe(1);
+        expect(record.fill).toBe("absent");
         const repo = new IngestRepository(pool);
         await repo.saveOwnerWalletRecords({
           recordedAt: now,
