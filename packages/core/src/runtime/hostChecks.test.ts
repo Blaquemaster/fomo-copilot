@@ -424,7 +424,7 @@ describe("migration inventory", () => {
     const report = JSON.parse(stdout) as { timeoutRollsBack: string; pending: string[] };
     expect(report.timeoutRollsBack).toBe("whole_batch");
     expect(report.pending[0]).toBe("023_scale_booking");
-    expect(report.pending.at(-1)).toBe("031_run_identity");
-    expect(report.pending).toHaveLength(9);
+    expect(report.pending.at(-1)).toBe("032_completion_records");
+    expect(report.pending).toHaveLength(10);
   });
 });
