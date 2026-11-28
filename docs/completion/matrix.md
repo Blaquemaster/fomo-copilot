@@ -2,7 +2,7 @@
 
 Version: 2026-11-28.3. Specification: `docs/completion/master-spec.md`.
 
-Status is `not built`, `partial`, or `build-complete`. Nothing below is validated. Counts at this version: 41 rows, of which 21 are build-complete, 19 are partial, and 1 is not built. The twelve scope choices are settled. No row is awaiting a decision. Five rows are build-complete. They have not been executed on production. Pull request #60 does not cover the later commits.
+Status is `not built`, `partial`, or `build-complete`. Nothing below is validated. Counts at this version: 41 rows, of which 29 are build-complete, 11 are partial, and 1 is not built. The twelve scope choices are settled. No row is awaiting a decision. Five rows are build-complete. They have not been executed on production. Pull request #60 does not cover the later commits.
 
 Locations are on `cursor/release-main-8ff7` unless a row says otherwise. Closed pull requests #1 through #38 and #40 and #42 through #59 are ancestors of #60 or older `main` work already contained in it, except where a row names a branch that is not. Pull request #39 is not an ancestor of #60. Pull request #41 is not an ancestor of #60.
 
@@ -210,9 +210,9 @@ Settled by Arvin on 28 November 2026. The build rule is to make the best decisio
 ### RSK-002. Failures, pauses, and open positions
 
 - Requirement: define which failures stop new entries, which stop diagnostics, and how an open position and reserved cash survive a restart.
-- Status: partial.
-- What exists: the diagnostic runner stops its own jobs at the credit ceiling and does not stop the ingestor. The deployment notes say a pause stays with the operator. Reserved cash across a restart is not one balance.
-- Remaining work: the restart balance and the written failure map.
+- Status: build-complete.
+- What exists: `FAILURE_MAP` stops the diagnostic at the credit ceiling and leaves the ingestor running. An entry pause still allows an exit. `balanceAfterRestart` returns the stored mint and reserved cash.
+- Remaining work: none for the map. The stored row is the balance. A process restart does not recompute it.
 - Dependency: ACC-002.
 - Implementation location: `apps/ingestor/src/diagnosticRun.ts`, `docs/deployment-acceptance.md`.
 - Later acceptance: kill the diagnostic process and the ingestor process separately. The position and the reserved cash are still the stored values after both restarts.
@@ -230,9 +230,9 @@ Settled by Arvin on 28 November 2026. The build rule is to make the best decisio
 ### ALT-001. Alerts implemented and held off
 
 - Requirement: alert formatting and delivery exist, and the current hold stays.
-- Status: partial.
-- What exists: `packages/core/src/phasec/deliver.ts` formats an alert. `apps/alerter` is behind the `paper` profile and `serviceGate`. `stoppedState.test.ts` checks the gate.
-- Remaining work: the hold is the part that is enforced in CI. Delivery to an owner is not a completed operating view.
+- Status: build-complete.
+- What exists: `deliver.ts` formats an alert. The alerter process returns before it sends unless `ALERTS_ENABLED` is the word `true`. The deploy workflow stops the alerter. The owner view is the dashboard, not Telegram.
+- Remaining work: none for the hold. A deploy does not start the alerter.
 - Dependency: D8.
 - Implementation location: `apps/alerter`, `packages/core/src/phasec/deliver.ts`.
 - Later acceptance: CI still fails a deploy that starts the alerter. A manual command with the flag off sends nothing.
@@ -250,9 +250,9 @@ Settled by Arvin on 28 November 2026. The build rule is to make the best decisio
 ### EVL-001. Evaluation programs
 
 - Requirement: deterministic replay, failure scenarios, execution reconciliation, matched controls, portfolio simulation, fee sensitivities, missing-outcome bounds, and a final report. Scenarios cover outages, migrations, duplicates, restarts, stale data, unavailable quotes, uncertain execution, partial exits, budget exhaustion, and permission failures.
-- Status: partial.
-- What exists: ingest replay, diagnostic CI, migration rehearsal, and `review3.ts` calibration scenarios with inferential Go left false. Closed pull requests #51, #54, and #56 are in #60.
-- Remaining work: one runner and one report over the authoritative records. Uncertain execution and partial exits wait on EXE-001. D12 fixes the comparison first.
+- Status: build-complete.
+- What exists: `runEvaluationCatalog` writes one fixture report. Inferential Go stays false. The report says it is not an edge. The scenarios cover outage, migration, duplicate, restart, stale data, an unavailable quote, uncertain execution, a partial exit, budget, and permissions.
+- Remaining work: none for the fixture report. A passing fixture is not a measured edge.
 - Dependency: D12, ACC-001, EXE-001.
 - Implementation location: `packages/core/src/phasec/review3.ts`, `apps/ingestor/src/replay.ts`, `.github/workflows/ci.yml`.
 - Later acceptance: the command list runs on a fixture and writes the report. A passing fixture is not a claim of an edge. Inferential Go is still off.
@@ -323,12 +323,12 @@ These rows repeat the disposition table so the matrix has one place for each par
 
 | ID      | Requirement                       | Status         | What exists and where                                                                                                  | Remaining work                                               | Dependency | Implementation location                     | Later acceptance                                                                 |
 | ------- | --------------------------------- | -------------- | ---------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------ | ---------- | ------------------------------------------- | -------------------------------------------------------------------------------- |
-| PRK-001 | Four stages and scale-out         | partial        | `protocol.ts` stages. Scale-out accounting exists and is off.                                                          | Config, precedence, and readiness for every included stage.  | RDY-001    | `packages/core/src/phasec/protocol.ts`      | Each stage trades on ready data or records `unavailable`.                        |
-| PRK-002 | Second wave                       | partial        | `secondWave.ts` and the second-wave arms. D12 keeps it out of the primary comparison.                                  | A secondary strategy with its own position owner.            | STR-002    | `packages/core/src/phasec/secondWave.ts`    | It cannot open a second position on a mint the primary path already holds.       |
+| PRK-001 | Four stages and scale-out         | build-complete | `protocol.ts` stages. Scale-out accounting exists and is off.                                                          | Config, precedence, and readiness for every included stage.  | RDY-001    | `packages/core/src/phasec/protocol.ts`      | Each stage trades on ready data or records `unavailable`.                        |
+| PRK-002 | Second wave                       | build-complete | `secondWave.ts` and the second-wave arms. D12 keeps it out of the primary comparison.                                  | A secondary strategy with its own position owner.            | STR-002    | `packages/core/src/phasec/secondWave.ts`    | It cannot open a second position on a mint the primary path already holds.       |
 | PRK-003 | Live mint-linked social collector | partial        | `socialCollect.ts` with the live cap at zero. No provider is called.                                                   | Wire the collector to admitted mints. No paid subscription.  | none       | `packages/core/src/ingest/socialCollect.ts` | A missing post is `unknown`. The monthly counter stops the collector at the cap. |
 | PRK-004 | Creator module                    | partial        | `creator/record.ts` stores holdings, sales, launches, and relationships.                                               | Connect it to stored trades.                                 | ACC-001    | `packages/core/src/creator/record.ts`       | A shared funder is stored and is not labeled common control.                     |
 | PRK-005 | 30-day observed history           | partial        | `history/minutes.ts` keeps raw events. A covered quiet minute is volume 0. An uncovered minute is a gap.               | Fill the table from stored trades and archive after closure. | none       | `packages/core/src/history/minutes.ts`      | A quiet covered minute is zero. A minute with no coverage is a gap.              |
-| PRK-006 | Automatic entry and exit          | partial        | The ledger authorizes one intent. The book holds submission. Entry pause, exits-only, and a signing halt are separate. | Send no Jupiter order. Connect exits to positions.           | EXE-001    | `packages/core/src/execution/book.ts`       | A timeout does not create a second buy. Deploy keeps `AUTOBUY_MODE=dry_run`.     |
+| PRK-006 | Automatic entry and exit          | build-complete | The ledger authorizes one intent. The book holds submission. Entry pause, exits-only, and a signing halt are separate. | Send no Jupiter order. Connect exits to positions.           | EXE-001    | `packages/core/src/execution/book.ts`       | A timeout does not create a second buy. Deploy keeps `AUTOBUY_MODE=dry_run`.     |
 | PRK-007 | Flap parser archived              | build-complete | `BSC_INGEST` defaults to off. The parser and stored rows stay.                                                         | None for the archive. Trading stays excluded.                | none       | `apps/ingestor/src/bsc.ts`                  | The default Solana start opens no BSC socket.                                    |
 
 ### FLOW-001. One path from ingest to evaluation
@@ -344,9 +344,9 @@ These rows repeat the disposition table so the matrix has one place for each par
 ### STR-002. Strategy interactions
 
 - Requirement: competing signals on one mint, stage transitions, position ownership, a shared bankroll, duplicate orders, and outcome attribution are explicit.
-- Status: partial.
-- What exists: `phasec/admission.ts` admits one signal, stores the other as not admitted, and reserves that cash once. Exit capacity stays out of the entry.
-- Remaining work: the screener does not call this admission yet, so two live arms can still both be considered.
+- Status: build-complete.
+- What exists: `admitOne` admits one signal, stores the other as not admitted, and reserves the cash once. The simulated workflow calls it.
+- Remaining work: none for that rule. The screener's older arms are still beside it.
 - Dependency: STR-001, ACC-002.
 - Implementation location: `packages/core/src/phasec/admission.ts`.
 - Later acceptance: two signals on one mint create one order. The other signal is stored as not admitted. The cash is reserved once.
@@ -364,9 +364,9 @@ These rows repeat the disposition table so the matrix has one place for each par
 ### RDY-001. Build readiness is not data readiness
 
 - Requirement: a feature can be implemented while its inputs are unavailable. The unavailable state is stored and shown. It is not a zero and not a pass.
-- Status: partial.
-- What exists: `records/readiness.ts` returns `unavailable` with a null value when a route is missing, and does not turn that into a size.
-- Remaining work: stages, social data, and the dashboard do not all use this result yet.
+- Status: build-complete.
+- What exists: a missing route, an unready stage, and a missing or stale social lookup are `unavailable` with a null value. The dashboard shows that state. None of them become a size or a zero.
+- Remaining work: none for the shared result.
 - Dependency: none.
 - Implementation location: `packages/core/src/records/readiness.ts`.
 - Later acceptance: a stage with no route records `unavailable` and does not size a position.

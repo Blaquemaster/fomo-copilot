@@ -1,3 +1,5 @@
+import type { DataReadiness } from "../records/readiness.js";
+
 export interface SocialObservation {
   mint: string;
   status: "unknown" | "present";
@@ -23,43 +25,41 @@ export function collectSocial(input: {
   now: Date;
   staleAfterMs: number;
   fetchedAt?: Date | null;
-}): { observation: SocialObservation; budget: SocialBudget } {
+}): { observation: SocialObservation; budget: SocialBudget; readiness: DataReadiness<number> } {
+  const pack = (observation: SocialObservation, budget: SocialBudget) => ({
+    observation,
+    budget,
+    readiness:
+      observation.status === "present" && observation.mentions !== null
+        ? ({ state: "ready", value: observation.mentions } as const)
+        : ({ state: "unavailable", value: null } as const),
+  });
   if (input.fetchedAt && input.now.getTime() - input.fetchedAt.getTime() > input.staleAfterMs) {
-    return {
-      observation: { mint: input.mint, status: "unknown", mentions: null, source: "none" },
-      budget: input.budget,
-    };
+    return pack(
+      { mint: input.mint, status: "unknown", mentions: null, source: "none" },
+      input.budget,
+    );
   }
   if (input.fixtureMentions !== undefined && input.fixtureMentions !== null) {
-    return {
-      observation: {
-        mint: input.mint,
-        status: "present",
-        mentions: input.fixtureMentions,
-        source: "fixture",
-      },
-      budget: input.budget,
-    };
+    return pack(
+      { mint: input.mint, status: "present", mentions: input.fixtureMentions, source: "fixture" },
+      input.budget,
+    );
   }
   if (input.budget.liveCap <= 0 || input.budget.liveUsed >= input.budget.liveCap) {
-    return {
-      observation: { mint: input.mint, status: "unknown", mentions: null, source: "none" },
-      budget: input.budget,
-    };
+    return pack(
+      { mint: input.mint, status: "unknown", mentions: null, source: "none" },
+      input.budget,
+    );
   }
   if (input.liveMentions === undefined || input.liveMentions === null) {
-    return {
-      observation: { mint: input.mint, status: "unknown", mentions: null, source: "live" },
-      budget: { ...input.budget, liveUsed: input.budget.liveUsed + 1 },
-    };
+    return pack(
+      { mint: input.mint, status: "unknown", mentions: null, source: "live" },
+      { ...input.budget, liveUsed: input.budget.liveUsed + 1 },
+    );
   }
-  return {
-    observation: {
-      mint: input.mint,
-      status: "present",
-      mentions: input.liveMentions,
-      source: "live",
-    },
-    budget: { ...input.budget, liveUsed: input.budget.liveUsed + 1 },
-  };
+  return pack(
+    { mint: input.mint, status: "present", mentions: input.liveMentions, source: "live" },
+    { ...input.budget, liveUsed: input.budget.liveUsed + 1 },
+  );
 }
