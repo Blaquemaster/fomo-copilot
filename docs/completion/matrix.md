@@ -2,7 +2,7 @@
 
 Version: 2026-11-28.3. Specification: `docs/completion/master-spec.md`.
 
-Status is `not built`, `partial`, or `build-complete`. Nothing below is validated. Counts at this version: 41 rows, of which 5 are build-complete, 31 are partial, and 5 are not built. The twelve scope choices are settled. No row is awaiting a decision. Five rows are build-complete. They have not been executed on production. Pull request #60 does not cover the later commits.
+Status is `not built`, `partial`, or `build-complete`. Nothing below is validated. Counts at this version: 41 rows, of which 5 are build-complete, 34 are partial, and 2 are not built. The twelve scope choices are settled. No row is awaiting a decision. Five rows are build-complete. They have not been executed on production. Pull request #60 does not cover the later commits.
 
 Locations are on `cursor/release-main-8ff7` unless a row says otherwise. Closed pull requests #1 through #38 and #40 and #42 through #59 are ancestors of #60 or older `main` work already contained in it, except where a row names a branch that is not. Pull request #39 is not an ancestor of #60. Pull request #41 is not an ancestor of #60.
 
@@ -344,31 +344,31 @@ These rows repeat the disposition table so the matrix has one place for each par
 ### STR-002. Strategy interactions
 
 - Requirement: competing signals on one mint, stage transitions, position ownership, a shared bankroll, duplicate orders, and outcome attribution are explicit.
-- Status: not built.
-- What exists: several arms in `protocol.ts`. No owner is stored when two stages want the same mint.
-- Remaining work: one position owner per mint and one bankroll reservation.
+- Status: partial.
+- What exists: `phasec/admission.ts` admits one signal, stores the other as not admitted, and reserves that cash once. Exit capacity stays out of the entry.
+- Remaining work: the screener does not call this admission yet, so two live arms can still both be considered.
 - Dependency: STR-001, ACC-002.
-- Implementation location: `packages/core/src/phasec/protocol.ts`.
+- Implementation location: `packages/core/src/phasec/admission.ts`.
 - Later acceptance: two signals on one mint create one order. The other signal is stored as not admitted. The cash is reserved once.
 
 ### PERM-001. Persistence and permission map
 
 - Requirement: every process has a written list of the tables it reads and writes and the database role it uses.
-- Status: not built.
-- What exists: the diagnostic role file and the unapplied broader role file. The ingestor still uses the application role.
-- Remaining work: the map and the least-privilege roles. Nothing is applied to production.
+- Status: partial.
+- What exists: `db/permissions.ts` lists each process, its role, and the tables it reads and writes. The signer has no login. `PERMISSIONS_APPLIED` is false. The SQL file is still unapplied, and the ingestor still uses the application role.
+- Remaining work: connect each process as its own role. Nothing is applied to production.
 - Dependency: REL-005.
-- Implementation location: `infra/sql/`.
+- Implementation location: `packages/core/src/db/permissions.ts`, `infra/sql/fomo-product-roles.sql`.
 - Later acceptance: each process connects as its own role, and a write outside its list fails.
 
 ### RDY-001. Build readiness is not data readiness
 
 - Requirement: a feature can be implemented while its inputs are unavailable. The unavailable state is stored and shown. It is not a zero and not a pass.
-- Status: not built.
-- What exists: some screens already omit a missing value. There is no shared `unavailable` result.
-- Remaining work: one result used by stages, social data, routes, and the dashboard.
+- Status: partial.
+- What exists: `records/readiness.ts` returns `unavailable` with a null value when a route is missing, and does not turn that into a size.
+- Remaining work: stages, social data, and the dashboard do not all use this result yet.
 - Dependency: none.
-- Implementation location: not built.
+- Implementation location: `packages/core/src/records/readiness.ts`.
 - Later acceptance: a stage with no route records `unavailable` and does not size a position.
 
 ### REL-007. One later release
