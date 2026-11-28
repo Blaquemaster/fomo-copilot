@@ -21,6 +21,44 @@ export interface PrimaryRow {
   outcome: number | null;
 }
 
+export const EXECUTION_ASSUMPTIONS = {
+  version: "2026-11-28.3",
+  costBasis: "jupiter",
+  latency: "measured_automated",
+  sensitivities: ["fomo_fees", "entry_delay_180s"],
+} as const;
+
+export interface StageCoverage {
+  stage: "trench" | "near_graduation" | "post_graduation" | "second_wave";
+  buy: "available" | "unavailable" | "unknown";
+  sell: "available" | "unavailable" | "unknown";
+}
+
+export function evaluationRunner(input: {
+  assumptionsVersion: string;
+  rows: readonly PrimaryRow[];
+  coverage: readonly StageCoverage[];
+}):
+  | { scored: false; reason: "assumptions_version_mismatch" }
+  | {
+      scored: true;
+      report: ReturnType<typeof primaryReport>;
+      assumptions: typeof EXECUTION_ASSUMPTIONS;
+      buyAndSellRecorded: boolean;
+    } {
+  if (input.assumptionsVersion !== EXECUTION_ASSUMPTIONS.version) {
+    return { scored: false, reason: "assumptions_version_mismatch" };
+  }
+  return {
+    scored: true,
+    report: primaryReport(input.rows),
+    assumptions: EXECUTION_ASSUMPTIONS,
+    buyAndSellRecorded: input.coverage.every(
+      (row) => row.buy !== "unknown" && row.sell !== "unknown",
+    ),
+  };
+}
+
 export function primaryReport(rows: readonly PrimaryRow[]): {
   comparison: typeof PRIMARY_COMPARISON;
   enrolled: number;
