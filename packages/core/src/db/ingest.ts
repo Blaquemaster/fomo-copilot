@@ -768,6 +768,61 @@ create table if not exists social_observation (
   mentions integer,
   primary key (mint, observed_at)
 );
+create table if not exists owner_service (
+  name text primary key,
+  mode text not null,
+  observed_at timestamptz
+);
+create table if not exists owner_feed (
+  name text primary key,
+  gap boolean not null,
+  observed_at timestamptz
+);
+create table if not exists owner_position (
+  mint text primary key,
+  reserved double precision not null,
+  observed_at timestamptz not null
+);
+create table if not exists wallet_measure (
+  wallet text not null,
+  mint text not null,
+  kind text not null,
+  status text not null,
+  value double precision,
+  recorded_at timestamptz not null,
+  primary key (wallet, mint, kind)
+);
+create table if not exists wallet_movement (
+  id bigserial primary key,
+  instruction_name text not null,
+  class text not null,
+  recorded_at timestamptz not null
+);
+create table if not exists wallet_evidence_report (
+  wallet text primary key,
+  sample_size integer not null,
+  missing integer not null,
+  holding_period_ms double precision,
+  downside double precision,
+  concentration double precision,
+  recorded_at timestamptz not null
+);
+create table if not exists wallet_shared_funding (
+  funder text not null,
+  wallet text not null,
+  common_control boolean not null,
+  primary key (funder, wallet),
+  check (common_control = false)
+);
+create table if not exists workflow_step (
+  run_id text not null,
+  step text not null,
+  mint text not null,
+  state text not null,
+  detail text,
+  recorded_at timestamptz not null,
+  primary key (run_id, step)
+);
 `;
 
 export function createPool(
@@ -1037,6 +1092,10 @@ export async function migrate(pool: pg.Pool): Promise<void> {
       ["032_completion_records"],
     );
     await client.query(
+      "insert into schema_migrations (id) values ($1) on conflict (id) do nothing",
+      ["033_owner_records"],
+    );
+    await client.query(
       `update ingest_recall_audit a
        set skipped = true,
            error_reason = 'before_coverage'
@@ -1061,6 +1120,84 @@ export async function migrate(pool: pg.Pool): Promise<void> {
 
 export class IngestRepository {
   constructor(private readonly pool: pg.Pool) {}
+
+  async saveOwnerWalletRecords(input: {
+    recordedAt: Date;
+    measures: readonly {
+      wallet: string;
+      mint: string;
+      kind: string;
+      status: string;
+      value: number | null;
+    }[];
+    movements: readonly { instructionName: string; class: string }[];
+    evidence: readonly {
+      wallet: string;
+      sampleSize: number;
+      missing: number;
+      holdingPeriodMs: number | null;
+      downside: number | null;
+      concentration: number | null;
+    }[];
+    funding: readonly { funder: string; wallet: string }[];
+  }): Promise<void> {
+    const client = await this.pool.connect();
+    try {
+      await client.query("begin");
+      for (const row of input.measures) {
+        await client.query(
+          `insert into wallet_measure (wallet, mint, kind, status, value, recorded_at)
+           values ($1,$2,$3,$4,$5,$6)
+           on conflict (wallet, mint, kind) do update
+           set status = excluded.status, value = excluded.value, recorded_at = excluded.recorded_at`,
+          [row.wallet, row.mint, row.kind, row.status, row.value, input.recordedAt],
+        );
+      }
+      for (const row of input.movements) {
+        await client.query(
+          `insert into wallet_movement (instruction_name, class, recorded_at) values ($1,$2,$3)`,
+          [row.instructionName, row.class, input.recordedAt],
+        );
+      }
+      for (const row of input.evidence) {
+        await client.query(
+          `insert into wallet_evidence_report
+            (wallet, sample_size, missing, holding_period_ms, downside, concentration, recorded_at)
+           values ($1,$2,$3,$4,$5,$6,$7)
+           on conflict (wallet) do update set
+            sample_size = excluded.sample_size,
+            missing = excluded.missing,
+            holding_period_ms = excluded.holding_period_ms,
+            downside = excluded.downside,
+            concentration = excluded.concentration,
+            recorded_at = excluded.recorded_at`,
+          [
+            row.wallet,
+            row.sampleSize,
+            row.missing,
+            row.holdingPeriodMs,
+            row.downside,
+            row.concentration,
+            input.recordedAt,
+          ],
+        );
+      }
+      for (const row of input.funding) {
+        await client.query(
+          `insert into wallet_shared_funding (funder, wallet, common_control)
+           values ($1,$2,false)
+           on conflict (funder, wallet) do nothing`,
+          [row.funder, row.wallet],
+        );
+      }
+      await client.query("commit");
+    } catch (error) {
+      await client.query("rollback");
+      throw error;
+    } finally {
+      client.release();
+    }
+  }
 
   async insertRaw(
     observation: Observation,

@@ -4,6 +4,7 @@
     { "path": "packages/core" },
     { "path": "apps/ingestor" },
     { "path": "apps/screener" },
-    { "path": "apps/alerter" }
+    { "path": "apps/alerter" },
+    { "path": "apps/dashboard" }
   ]
 }

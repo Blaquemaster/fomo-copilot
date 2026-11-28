@@ -11,6 +11,7 @@ import {
   nextTrackedSet,
   scoreProvenWallets,
   walletLookback,
+  walletPersistencePayload,
   utcMonth,
   walletCreditCapMicros,
   type Env,
@@ -144,6 +145,12 @@ async function runWalletPass(input: {
       meteoraMs: (input.env.WALLET_LOSS_AGE_METEORA_MINUTES ?? 60) * 60 * 1000,
     }),
   );
+  if (typeof input.repo.saveOwnerWalletRecords === "function") {
+    await input.repo.saveOwnerWalletRecords({
+      recordedAt: new Date(),
+      ...walletPersistencePayload(marked),
+    });
+  }
   await input.repo.saveHistoryMarks(
     marked.flatMap((row) => {
       if (

@@ -9,6 +9,9 @@ export interface DashboardRequest {
   decisions: readonly { id: string; readiness: "ready" | "unavailable"; reason: string | null }[];
   positions: readonly { mint: string; reserved: number }[];
   spend: { diagnosticRemaining: number | null } | null;
+  releaseSha?: string | null;
+  walletEvidence?: readonly { wallet: string; concentration: number | null }[];
+  strategyLimits?: { bankroll: number; exitReserve: number } | null;
 }
 
 export function dashboardView(input: DashboardRequest): {
@@ -31,6 +34,13 @@ export function dashboardView(input: DashboardRequest): {
       spend: input.spend ?? "unavailable",
       freshness: stale ? "stale" : "current",
       alerts: "held",
+      release: input.releaseSha && input.releaseSha.length > 0 ? input.releaseSha : "unavailable",
+      walletEvidence:
+        input.walletEvidence === undefined || input.walletEvidence.length === 0
+          ? "empty"
+          : input.walletEvidence,
+      strategyLimits: input.strategyLimits ?? "unavailable",
+      tradingControl: "absent",
     },
   };
 }

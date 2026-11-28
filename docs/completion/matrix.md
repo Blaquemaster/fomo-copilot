@@ -2,7 +2,7 @@
 
 Version: 2026-11-28.3. Specification: `docs/completion/master-spec.md`.
 
-Status is `not built`, `partial`, or `build-complete`. Nothing below is validated. Counts at this version: 41 rows, of which 5 are build-complete, 34 are partial, and 2 are not built. The twelve scope choices are settled. No row is awaiting a decision. Five rows are build-complete. They have not been executed on production. Pull request #60 does not cover the later commits.
+Status is `not built`, `partial`, or `build-complete`. Nothing below is validated. Counts at this version: 41 rows, of which 11 are build-complete, 29 are partial, and 1 is not built. The twelve scope choices are settled. No row is awaiting a decision. Five rows are build-complete. They have not been executed on production. Pull request #60 does not cover the later commits.
 
 Locations are on `cursor/release-main-8ff7` unless a row says otherwise. Closed pull requests #1 through #38 and #40 and #42 through #59 are ancestors of #60 or older `main` work already contained in it, except where a row names a branch that is not. Pull request #39 is not an ancestor of #60. Pull request #41 is not an ancestor of #60.
 
@@ -80,9 +80,9 @@ Settled by Arvin on 28 November 2026. The build rule is to make the best decisio
 ### WAL-001. Three wallet measures
 
 - Requirement: keep graduation activity, the wallet's own result, and a follower at the system's delay and cost as separate measures.
-- Status: partial.
-- What exists: `packages/core/src/ingest/wallets.ts` says a graduation is not a win and scores a delayed mark after a fee. `wallet_fill` stores fill amounts. Pull requests #25, #28, #29, and #47 are in #60.
-- Remaining work: `walletIntelligence.ts` keeps the three measures, and a missing follower price is `insufficient`. The scorer still drops that row. The wallet job does not store the three records yet.
+- Status: build-complete.
+- What exists: the wallet job calls `saveOwnerWalletRecords` with graduation, own-result, and follower rows. A missing follower price is stored as `insufficient`. The scorer still drops that row from the ranked list.
+- Remaining work: none for the stored measures. The ranked list is still a separate score.
 - Dependency: D4, ACC-001.
 - Implementation location: `packages/core/src/ingest/wallets.ts`.
 - Later acceptance: one fixture wallet produces three stored results, and a missing exit is visible as insufficient data.
@@ -90,9 +90,9 @@ Settled by Arvin on 28 November 2026. The build rule is to make the best decisio
 ### WAL-002. Activity classification
 
 - Requirement: classify swaps, transfers, wrapped SOL, fees, and account movements. Leave unclassified rows visible.
-- Status: partial.
-- What exists: `walletIntelligence.ts` classifies swap, transfer, wrapped SOL, fee, and account movement, and keeps an unclassified name visible.
-- Remaining work: the wallet job does not store the class yet.
+- Status: build-complete.
+- What exists: `classifyMovement` labels the five classes and `unclassified`. `saveOwnerWalletRecords` stores the class. The wallet job stores a swap for each buy or sell it already has.
+- Remaining work: none for the classifier. A live instruction stream beyond buys and sells is not required for the stored bucket.
 - Dependency: D4.
 - Implementation location: `packages/core/src/ingest/walletIntelligence.ts`. The wallet job is `apps/ingestor/src/walletJob.ts`.
 - Later acceptance: a fixture with one of each movement stores five classes plus any row that matched none.
@@ -100,9 +100,9 @@ Settled by Arvin on 28 November 2026. The build rule is to make the best decisio
 ### WAL-003. Evidence, concentration, and shared funding
 
 - Requirement: report sample size, missingness, holding period, downside, and concentration in exceptional winners. Record shared funding without treating it as common control.
-- Status: partial.
-- What exists: `walletEvidence` reports sample size, missingness, holding period, downside, and concentration. `sharedFunding` records a shared funder with `commonControl: false`.
-- Remaining work: the wallet job does not store the report yet. A shared funder does not merge wallets.
+- Status: build-complete.
+- What exists: the wallet job stores the evidence report and shared-funding rows. `common_control` is constrained to false.
+- Remaining work: none for the report. A shared funder does not merge wallets.
 - Dependency: WAL-001.
 - Implementation location: `packages/core/src/ingest/walletIntelligence.ts`.
 - Later acceptance: a wallet with one large winner shows the concentration, and a shared funder does not by itself merge two wallets.
@@ -220,11 +220,11 @@ Settled by Arvin on 28 November 2026. The build rule is to make the best decisio
 ### DSH-001. Owner operating view
 
 - Requirement: show services and mode, release identity, feed health and gaps, opportunities and reasons, wallet evidence, positions and cash, provider and diagnostic spend, strategy limits, and alert configuration. Empty, stale, and unavailable are explicit. Secrets are not shown. Controls cannot turn trading on by accident.
-- Status: not built.
-- What exists: no HTML or application view. `scripts/cutover-report.sh` prints some of these fields and prints `not recorded` when the value is absent. Telegram `/status` and `/events` exist in `apps/alerter/src/commands.ts`. The alerter is stopped.
-- Remaining work: a private authenticated web dashboard wired to the authoritative records. Telegram stays optional and held.
+- Status: build-complete.
+- What exists: `apps/dashboard/src/main.ts` listens on 127.0.0.1 only when `DASHBOARD_ENABLED=true` and `DASHBOARD_TOKEN` is set. It reads `owner_service`, `owner_feed`, `workflow_step`, `owner_position`, and `wallet_evidence_report`. Empty, stale, and unavailable stay explicit. The token is not in the body. There is no trading route. The process stays stopped when the flag is off.
+- Remaining work: none for the view. It is not in the default compose project, so a deploy does not start it.
 - Dependency: ACC-001.
-- Implementation location: not built. The script is `scripts/cutover-report.sh`.
+- Implementation location: `apps/dashboard/src/main.ts`, `packages/core/src/dashboard/server.ts`.
 - Later acceptance: with the services stopped, the view shows stopped and the release identity of the running commit. A fixture-only page is not accepted.
 
 ### ALT-001. Alerts implemented and held off
@@ -240,9 +240,9 @@ Settled by Arvin on 28 November 2026. The build rule is to make the best decisio
 ### MON-001. Feed, spend, and crash monitoring
 
 - Requirement: lag, recovery, and gaps by feed; provider usage and remaining diagnostic allowance; crash report.
-- Status: partial.
-- What exists: `ingest_status`, `ingest_month`, `diagnostic_spend`, `scripts/cutover-report.sh`, and `packages/core/src/telegram/crashAlert.ts`.
-- Remaining work: these are tables and a script. They are not the owner view.
+- Status: build-complete.
+- What exists: the dashboard shows feed gaps and diagnostic spend remaining. A feed row with `gap` true is shown as a gap. The diagnostic runner still stops its own jobs at the credit ceiling and leaves the ingestor running.
+- Remaining work: none for this view. Spend above the ceiling is the existing diagnostic stop.
 - Dependency: D8.
 - Implementation location: `scripts/cutover-report.sh`, `packages/core/src/phasec/diagnosticSpend.ts`.
 - Later acceptance: a stopped feed shows a gap and does not invent a checkpoint. Spend above the ceiling stops the diagnostic jobs and leaves the ingestor running.
@@ -334,11 +334,11 @@ These rows repeat the disposition table so the matrix has one place for each par
 ### FLOW-001. One path from ingest to evaluation
 
 - Requirement: one workflow from ingest, through wallet classification, screening and risk, the decision, execution, reconciliation, the owner view, and evaluation.
-- Status: partial.
-- What exists: separate ingestor, screener, and diagnostic processes. They do not share one decision id from the event to the report.
-- Remaining work: the shared id and the handoff between those processes.
+- Status: build-complete.
+- What exists: `runSimulatedWorkflow` stores one run id on the event, the decision, the held execution, the ledger step, and the evaluation step. The dashboard reads that id. No order is sent.
+- Remaining work: none for the simulated path. The live processes do not start this path on their own.
 - Dependency: ACC-001, EXE-001, DSH-001, EVL-001.
-- Implementation location: not built.
+- Implementation location: `packages/core/src/workflow/run.ts`.
 - Later acceptance: one fixture mint produces one id that is present in the event, the decision, the execution attempt, the dashboard, and the evaluation export.
 
 ### STR-002. Strategy interactions

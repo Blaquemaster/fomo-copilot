@@ -90,6 +90,92 @@ export function walletEvidence(input: {
   };
 }
 
+export function walletPersistencePayload(rows: readonly EarlyBuy[]): {
+  measures: {
+    wallet: string;
+    mint: string;
+    kind: string;
+    status: string;
+    value: number | null;
+  }[];
+  movements: { instructionName: string; class: MovementClass }[];
+  evidence: {
+    wallet: string;
+    sampleSize: number;
+    missing: number;
+    holdingPeriodMs: number | null;
+    downside: number | null;
+    concentration: number | null;
+  }[];
+  funding: { funder: string; wallet: string }[];
+} {
+  const buys = rows.filter((row) => row.side === "buy" && row.wallet && row.mint);
+  const measures = buys.flatMap((row) => {
+    const measured = walletMeasures(row, null);
+    return [
+      {
+        wallet: row.wallet,
+        mint: row.mint,
+        kind: "graduation",
+        status: measured.graduation.graduated ? "present" : "insufficient",
+        value: measured.graduation.countedAsWin ? 1 : 0,
+      },
+      {
+        wallet: row.wallet,
+        mint: row.mint,
+        kind: "own_result",
+        status: measured.ownResult.status,
+        value: measured.ownResult.status === "present" ? measured.ownResult.fillPriceUsd : null,
+      },
+      {
+        wallet: row.wallet,
+        mint: row.mint,
+        kind: "follower",
+        status: measured.follower.status,
+        value: measured.follower.jupiterNet,
+      },
+    ];
+  });
+  const byWallet = new Map<string, EarlyBuy[]>();
+  for (const row of buys) {
+    const list = byWallet.get(row.wallet) ?? [];
+    list.push(row);
+    byWallet.set(row.wallet, list);
+  }
+  const evidence = [...byWallet.entries()].map(([wallet, list]) => {
+    const report = walletEvidence({
+      wallet,
+      rows: list.map((row) => ({
+        boughtAt: row.boughtAt instanceof Date ? row.boughtAt : null,
+        exitedAt: row.delayedMarkAt instanceof Date ? row.delayedMarkAt : null,
+        followerNet:
+          row.delayedMarkUsd != null && row.exitMarkUsd != null
+            ? row.exitMarkUsd - row.delayedMarkUsd
+            : null,
+      })),
+    });
+    return {
+      wallet,
+      sampleSize: report.sampleSize,
+      missing: report.missing,
+      holdingPeriodMs: report.holdingPeriodMs,
+      downside: report.downside,
+      concentration: report.concentration,
+    };
+  });
+  return {
+    measures,
+    movements: buys.map((row) => ({
+      instructionName: row.side,
+      class: classifyMovement(row.side),
+    })),
+    evidence,
+    funding: sharedFunding(
+      buys.map((row) => ({ wallet: row.wallet, funder: row.funder ?? null })),
+    ).flatMap((row) => row.wallets.map((wallet) => ({ funder: row.funder, wallet }))),
+  };
+}
+
 /** A shared funder is recorded. It does not merge the wallets and it is not common control. */
 export function sharedFunding(
   rows: readonly { wallet: string; funder: string | null }[],
