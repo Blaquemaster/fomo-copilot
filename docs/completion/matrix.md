@@ -2,7 +2,7 @@
 
 Version: 2026-11-28.3. Specification: `docs/completion/master-spec.md`.
 
-Status is `not built`, `partial`, or `build-complete`. Nothing below is validated. Counts at this version: 41 rows, of which 5 are build-complete, 29 are partial, and 7 are not built. The twelve scope choices are settled. No row is awaiting a decision. Five rows are build-complete. They have not been executed on production. Pull request #60 does not cover the later commits.
+Status is `not built`, `partial`, or `build-complete`. Nothing below is validated. Counts at this version: 41 rows, of which 5 are build-complete, 31 are partial, and 5 are not built. The twelve scope choices are settled. No row is awaiting a decision. Five rows are build-complete. They have not been executed on production. Pull request #60 does not cover the later commits.
 
 Locations are on `cursor/release-main-8ff7` unless a row says otherwise. Closed pull requests #1 through #38 and #40 and #42 through #59 are ancestors of #60 or older `main` work already contained in it, except where a row names a branch that is not. Pull request #39 is not an ancestor of #60. Pull request #41 is not an ancestor of #60.
 
@@ -82,7 +82,7 @@ Settled by Arvin on 28 November 2026. The build rule is to make the best decisio
 - Requirement: keep graduation activity, the wallet's own result, and a follower at the system's delay and cost as separate measures.
 - Status: partial.
 - What exists: `packages/core/src/ingest/wallets.ts` says a graduation is not a win and scores a delayed mark after a fee. `wallet_fill` stores fill amounts. Pull requests #25, #28, #29, and #47 are in #60.
-- Remaining work: the follower measure is not its own record. Insufficient data is dropped in the scorer rather than stored as an insufficient-data result.
+- Remaining work: `walletIntelligence.ts` keeps the three measures, and a missing follower price is `insufficient`. The scorer still drops that row. The wallet job does not store the three records yet.
 - Dependency: D4, ACC-001.
 - Implementation location: `packages/core/src/ingest/wallets.ts`.
 - Later acceptance: one fixture wallet produces three stored results, and a missing exit is visible as insufficient data.
@@ -90,21 +90,21 @@ Settled by Arvin on 28 November 2026. The build rule is to make the best decisio
 ### WAL-002. Activity classification
 
 - Requirement: classify swaps, transfers, wrapped SOL, fees, and account movements. Leave unclassified rows visible.
-- Status: not built.
-- What exists: trade names used by the wallet job. No classifier with an unclassified bucket.
-- Remaining work: the classifier and the stored bucket.
+- Status: partial.
+- What exists: `walletIntelligence.ts` classifies swap, transfer, wrapped SOL, fee, and account movement, and keeps an unclassified name visible.
+- Remaining work: the wallet job does not store the class yet.
 - Dependency: D4.
-- Implementation location: not built. The wallet job is `apps/ingestor/src/walletJob.ts`.
+- Implementation location: `packages/core/src/ingest/walletIntelligence.ts`. The wallet job is `apps/ingestor/src/walletJob.ts`.
 - Later acceptance: a fixture with one of each movement stores five classes plus any row that matched none.
 
 ### WAL-003. Evidence, concentration, and shared funding
 
 - Requirement: report sample size, missingness, holding period, downside, and concentration in exceptional winners. Record shared funding without treating it as common control.
-- Status: not built.
-- What exists: paper and review summaries compute some return statistics. They are not this wallet report. Shared funding is not stored.
-- Remaining work: the report and the funding rows.
+- Status: partial.
+- What exists: `walletEvidence` reports sample size, missingness, holding period, downside, and concentration. `sharedFunding` records a shared funder with `commonControl: false`.
+- Remaining work: the wallet job does not store the report yet. A shared funder does not merge wallets.
 - Dependency: WAL-001.
-- Implementation location: not built.
+- Implementation location: `packages/core/src/ingest/walletIntelligence.ts`.
 - Later acceptance: a wallet with one large winner shows the concentration, and a shared funder does not by itself merge two wallets.
 
 ### WAL-004. Frozen cohort
