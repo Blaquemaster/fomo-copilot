@@ -736,6 +736,38 @@ create table if not exists autobuy_intent (
   simulated text not null,
   created_at timestamptz not null
 );
+
+create table if not exists completion_decision (
+  id text primary key,
+  mint text not null,
+  event_ids text not null,
+  list_version text,
+  execution_id text,
+  readiness text not null,
+  recorded_at timestamptz not null
+);
+create table if not exists minute_aggregate (
+  mint text not null,
+  minute timestamptz not null,
+  volume double precision,
+  gap boolean not null,
+  primary key (mint, minute)
+);
+create table if not exists creator_event (
+  id bigserial primary key,
+  creator text not null,
+  kind text not null,
+  mint text,
+  detail text not null,
+  recorded_at timestamptz not null
+);
+create table if not exists social_observation (
+  mint text not null,
+  observed_at timestamptz not null,
+  status text not null,
+  mentions integer,
+  primary key (mint, observed_at)
+);
 `;
 
 export function createPool(
@@ -999,6 +1031,10 @@ export async function migrate(pool: pg.Pool): Promise<void> {
     await client.query(
       "insert into schema_migrations (id) values ($1) on conflict (id) do nothing",
       ["031_run_identity"],
+    );
+    await client.query(
+      "insert into schema_migrations (id) values ($1) on conflict (id) do nothing",
+      ["032_completion_records"],
     );
     await client.query(
       `update ingest_recall_audit a
