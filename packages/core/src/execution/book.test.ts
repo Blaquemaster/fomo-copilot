@@ -10,6 +10,7 @@ function instruction(mint: string, amount: number): ReviewedInstruction {
     programId: "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
     destination: mint,
     amount,
+    referencedAccounts: [mint],
   };
 }
 
@@ -17,6 +18,7 @@ function book(switches: { entriesPaused?: boolean; signingPaused?: boolean } = {
   return new ExecutionBook(
     {
       entriesPaused: switches.entriesPaused ?? false,
+      exitsOnly: false,
       signingPaused: switches.signingPaused ?? false,
     },
     createTestSigner(),
@@ -34,9 +36,11 @@ describe("execution book", () => {
       amount: 5,
       coverage,
       instructions: [instruction("mint-a", 5)],
+      allowedAccounts: ["mint-a"],
       at: 1_000,
     });
-    expect(result.state).toBe("submitted");
+    expect(result.state).toBe("authorized");
+    expect(result.reason).toBe("submission_boundary_held");
     expect(result.signature).toBeTruthy();
     expect(result.latencyMs).toBe(0);
     expect(result.cost.platformFee).toBeNull();
@@ -52,6 +56,7 @@ describe("execution book", () => {
       amount: 5,
       coverage,
       instructions: [instruction("mint-a", 5)],
+      allowedAccounts: ["mint-a"],
       at: 1_000,
     });
     orders.markUncertain(first.id);
@@ -63,6 +68,7 @@ describe("execution book", () => {
       amount: 5,
       coverage,
       instructions: [instruction("mint-a", 5)],
+      allowedAccounts: ["mint-a"],
       at: 2_000,
     });
     expect(second.reason).toBe("replacement_blocked");
@@ -81,6 +87,7 @@ describe("execution book", () => {
         amount: 1,
         coverage: { ...coverage, stage: "trench" },
         instructions: [instruction("mint-a", 1)],
+        allowedAccounts: ["mint-a"],
         at: 1,
       }).reason,
     ).toBe("entries_paused");
@@ -93,9 +100,10 @@ describe("execution book", () => {
         amount: 1,
         coverage: { ...coverage, stage: "trench" },
         instructions: [instruction("mint-a", 1)],
+        allowedAccounts: ["mint-a"],
         at: 2,
       }).state,
-    ).toBe("submitted");
+    ).toBe("authorized");
     expect(
       book({ signingPaused: true }).signal({
         mint: "mint-b",
@@ -105,6 +113,7 @@ describe("execution book", () => {
         amount: 1,
         coverage: { ...coverage, stage: "near_graduation" },
         instructions: [instruction("mint-b", 1)],
+        allowedAccounts: ["mint-b"],
         at: 3,
       }).reason,
     ).toBe("signing_paused");
@@ -119,6 +128,7 @@ describe("execution book", () => {
       amount: 1,
       coverage: { stage: "trench", buy: "available", sell: "unavailable" },
       instructions: [instruction("curve", 1)],
+      allowedAccounts: ["curve"],
       at: 1,
     });
     expect(result.reason).toBe("route_unavailable");
@@ -126,7 +136,11 @@ describe("execution book", () => {
   });
 
   it("refuses a signer that is not a test key", () => {
-    const orders = new ExecutionBook({ entriesPaused: false, signingPaused: false }, null, 20);
+    const orders = new ExecutionBook(
+      { entriesPaused: false, exitsOnly: false, signingPaused: false },
+      null,
+      20,
+    );
     expect(
       orders.signal({
         mint: "mint-a",
@@ -136,6 +150,7 @@ describe("execution book", () => {
         amount: 1,
         coverage,
         instructions: [instruction("mint-a", 1)],
+        allowedAccounts: ["mint-a"],
         at: 1,
       }).reason,
     ).toBe("signer_refused");

@@ -680,7 +680,11 @@ export async function runPhaseCCycle(input: {
     const simulation =
       input.env.EXECUTION_SIMULATION === "on"
         ? new ExecutionBook(
-            { entriesPaused: paused, signingPaused: input.env.AUTOBUY_KILL === "on" },
+            {
+              entriesPaused: paused,
+              exitsOnly: false,
+              signingPaused: input.env.AUTOBUY_KILL === "on",
+            },
             createTestSigner(),
             config.bankroll ?? 0,
           )
@@ -711,8 +715,10 @@ export async function runPhaseCCycle(input: {
                   programId: "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
                   destination: entry.mint,
                   amount: entry.amount,
+                  referencedAccounts: [entry.mint],
                 },
               ],
+              allowedAccounts: [entry.mint],
               at: input.now.getTime(),
             })
           : null;

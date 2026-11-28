@@ -9,9 +9,11 @@ import {
   type ReviewedInstruction,
   type RouteCoverage,
 } from "./contract.js";
+import { ExecutionLedger, type RiskMode } from "./ledger.js";
 
 export interface KillSwitches {
   entriesPaused: boolean;
+  exitsOnly: boolean;
   signingPaused: boolean;
 }
 
@@ -49,13 +51,24 @@ export function createTestSigner(): TestSigner {
 
 export class ExecutionBook {
   readonly orders: ExecutionOrder[] = [];
+  readonly ledger: ExecutionLedger;
   cashReserved = 0;
 
   constructor(
     private readonly switches: KillSwitches,
     private readonly signer: TestSigner | null,
-    private readonly bankroll: number,
-  ) {}
+    bankroll: number,
+    exitReserve = 0,
+  ) {
+    this.ledger = new ExecutionLedger(bankroll, exitReserve);
+  }
+
+  private mode(): RiskMode {
+    if (this.switches.signingPaused) return "signing_halt";
+    if (this.switches.exitsOnly) return "exits_only";
+    if (this.switches.entriesPaused) return "entries_paused";
+    return "open";
+  }
 
   signal(input: {
     mint: string;
@@ -65,6 +78,7 @@ export class ExecutionBook {
     amount: number;
     coverage: RouteCoverage;
     instructions: readonly ReviewedInstruction[];
+    allowedAccounts: readonly string[];
     at: number;
   }): ExecutionOrder {
     const existing = this.orders.find((order) => order.mint === input.mint && order.side === "buy");
@@ -78,12 +92,12 @@ export class ExecutionBook {
         submittedAt: null,
       });
     }
-    if (input.side === "buy" && this.switches.entriesPaused) {
+    if (input.side === "buy" && (this.switches.entriesPaused || this.switches.exitsOnly)) {
       return this.record({
         ...input,
         state: "rejected",
         reserved: 0,
-        reason: "entries_paused",
+        reason: this.switches.exitsOnly ? "exits_only" : "entries_paused",
         signature: null,
         submittedAt: null,
       });
@@ -108,12 +122,20 @@ export class ExecutionBook {
         submittedAt: null,
       });
     }
-    if (input.side === "buy" && this.cashReserved + input.amount > this.bankroll) {
+    const reservation = this.ledger.reserve({
+      id: `${input.mint}:${input.side}`,
+      mint: input.mint,
+      purpose: input.side === "buy" ? "entry" : "exit",
+      amount: input.amount,
+      at: input.at,
+      mode: this.mode(),
+    });
+    if (!reservation.ok) {
       return this.record({
         ...input,
         state: "rejected",
         reserved: 0,
-        reason: "bankroll",
+        reason: reservation.reason,
         signature: null,
         submittedAt: null,
       });
@@ -122,6 +144,7 @@ export class ExecutionBook {
       instructions: input.instructions,
       reservedAmount: input.amount,
       allowedDestination: input.mint,
+      allowedAccounts: input.allowedAccounts,
     });
     if (!review.ok) {
       return this.record({
@@ -143,19 +166,40 @@ export class ExecutionBook {
         submittedAt: null,
       });
     }
-    const signature = sign(
-      null,
-      Buffer.from(`${input.mint}:${input.amount}:${input.at}`),
-      this.signer.privateKey,
-    ).toString("base64url");
+    const txMessage = `${input.mint}:${input.amount}:${input.at}`;
+    const authorization = this.ledger.authorize({
+      intentId: `${input.mint}:${input.side}`,
+      txMessage,
+      wallet: input.owner,
+      assets: [input.mint],
+      maxSpend: input.amount,
+      maxFees: 0,
+      expiresAt: input.at,
+      at: input.at,
+      reserved: true,
+    });
+    if (!authorization.ok) {
+      return this.record({
+        ...input,
+        state: "rejected",
+        reserved: 0,
+        reason: authorization.reason,
+        signature: null,
+        submittedAt: null,
+      });
+    }
+    const signature = sign(null, Buffer.from(txMessage), this.signer.privateKey).toString(
+      "base64url",
+    );
+    const held = this.ledger.submit(input.at, `${input.mint}:${input.side}`);
     if (input.side === "buy") this.cashReserved += input.amount;
     return this.record({
       ...input,
-      state: "submitted",
+      state: "authorized",
       reserved: input.side === "buy" ? input.amount : 0,
-      reason: null,
+      reason: held.reason,
       signature,
-      submittedAt: input.at,
+      submittedAt: null,
     });
   }
 
@@ -201,7 +245,12 @@ export class ExecutionBook {
       reserved: input.reserved,
       decisionAt: input.at,
       submittedAt: input.submittedAt,
-      latencyMs: input.submittedAt === null ? null : input.submittedAt - input.at,
+      latencyMs:
+        input.state === "authorized"
+          ? 0
+          : input.submittedAt === null
+            ? null
+            : input.submittedAt - input.at,
       coverage: input.coverage,
       cost: emptyCost(),
       signature: input.signature,
