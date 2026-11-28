@@ -23,6 +23,7 @@ const env = {
   PUMP_TRADE_DETAIL_SLOTS: 150,
   BACKFILL_SLOT_MARGIN: 0,
   BSC_WSS_URL: "wss://bsc-rpc.publicnode.com",
+  BSC_INGEST: "off",
   HELIUS_MONTHLY_CREDITS: 10_000_000,
 } as Env;
 
