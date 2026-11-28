@@ -1,5 +1,7 @@
 import {
   admitAutobuy,
+  ExecutionBook,
+  createTestSigner,
   capSizeToLiquidity,
   DEFAULT_WALLET_SIGNAL,
   shouldFetchSniper,
@@ -675,6 +677,18 @@ export async function runPhaseCCycle(input: {
     let openCount = positions.filter((position) => position.arm !== "random_pass").length;
     let spent = await input.store.autobuySpentSince(day.start);
     const intents = [];
+    const simulation =
+      input.env.EXECUTION_SIMULATION === "on"
+        ? new ExecutionBook(
+            {
+              entriesPaused: paused,
+              exitsOnly: false,
+              signingPaused: input.env.AUTOBUY_KILL === "on",
+            },
+            createTestSigner(),
+            config.bankroll ?? 0,
+          )
+        : null;
     for (const entry of result.entries) {
       const decision = admitAutobuy({
         arm: entry.arm,
@@ -687,6 +701,27 @@ export async function runPhaseCCycle(input: {
         paused,
         limits,
       });
+      const simulated =
+        simulation && decision.ok && entry.amount !== null
+          ? simulation.signal({
+              mint: entry.mint,
+              stage: entry.stage,
+              side: "buy",
+              owner: entry.arm,
+              amount: entry.amount,
+              coverage: { stage: entry.stage, buy: "available", sell: "available" },
+              instructions: [
+                {
+                  programId: "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+                  destination: entry.mint,
+                  amount: entry.amount,
+                  referencedAccounts: [entry.mint],
+                },
+              ],
+              allowedAccounts: [entry.mint],
+              at: input.now.getTime(),
+            })
+          : null;
       intents.push({
         kind: "entry" as const,
         mint: entry.mint,
@@ -696,7 +731,11 @@ export async function runPhaseCCycle(input: {
         quotePrice: null,
         expectedOut: null,
         slippageBps: null,
-        reason: decision.ok ? "dry_run" : decision.reason,
+        reason: simulated
+          ? (simulated.reason ?? simulated.state)
+          : decision.ok
+            ? "dry_run"
+            : decision.reason,
         simulated: "skipped" as const,
       });
       if (decision.ok && entry.amount !== null) {
