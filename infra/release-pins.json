@@ -1,5 +1,5 @@
 {
-  "revision": "41c0c1a9464bee47e38763db215510733dc58946",
+  "revision": "2ba284746c25bd61050ff395f07078e66778e351",
   "files": {
     "infra/docker-compose.yml": "741c1b6cd2e628b125358d126f0d55c1cd99561f0f9c353e55d2c2638f4d01d4",
     ".github/workflows/deploy.yml": "dc54022d393a83e601fa406df03280783cb68ebbf3a4b21ef10e4c12f252ffcc",
@@ -12,8 +12,8 @@
     "scripts/pre-merge-deploy-check.sh": "4256d713fbdc6cff593ed15088e9c2159bbae4529115a01ba133399cc67fba7b",
     "scripts/halt-on-schema-drift.sh": "a4496a016214f3f44382cb48a1b4ab4dbf0beae2f92d47a0f800d8d1fdbc76c9",
     "scripts/verify-published-image.sh": "0fd2174b1a7674da48733a025923a3fd75bbef221c2c2bbd833060364ace1ae9",
-    "scripts/setup-deploy-user.sh": "c2fdd15a07a3c93ef2721e31d5b8343baf842c914cdef70fef59776d64d64b5f",
-    "scripts/fomo-deploy-helper": "5cd18535a6645ca960402f82ccebc7bfe6fb90bcb80aef754ed2190bceed7ff4",
+    "scripts/setup-deploy-user.sh": "36d813123763197721c38b096830c5173a683f38fdadd835437f0f900adeaa35",
+    "scripts/fomo-deploy-helper": "b275a6a3df62758d4bf91934372584eb0cb56bbb500cd5f64808604b0f5f35ec",
     "scripts/cutover-report.sh": "857f3483bec8bcb8bdd963d7d3379d011a306d285a73dbedc68429e4015e1f38",
     "scripts/copy-tested-oci.sh": "ab2ba48b4a3defcf59acc63cd0f7f69c1094017d2e105818017ceecbe300a456",
     "scripts/verify-release-handoff.sh": "079438cd67714b16ab9a30afbeea08ea76b8762eef01f3fb4c10ba5164bcfdd7",

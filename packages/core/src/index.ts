@@ -244,14 +244,21 @@ export {
 } from "./autobuy/run.js";
 export { lookupTradableInFomo } from "./phasec/fomoLookup.js";
 export {
-  JUPITER_ULTRA_EXECUTE_URL,
-  JUPITER_ULTRA_ORDER_URL,
+  JUPITER_EXECUTE_URL,
+  JUPITER_ORDER_URL,
+  JUPITER_SWAP_V2_SCHEMA,
   emptyCost,
+  emptyCostStages,
+  maySubmitToNetwork,
+  realizedWithoutDoubleCount,
   replacementAllowed,
   reviewInstructions,
+  swapV2UrlAllowed,
+  type CostStages,
   type ExecutionCost,
   type ExecutionState,
   type RouteCoverage,
+  type SwapV2Exchange,
 } from "./execution/contract.js";
 export { formatWeeklyReview, resolveAlertChat } from "./phasec/deliver.js";
 export {
